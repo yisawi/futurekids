@@ -1,0 +1,15 @@
+# macOS System Files
+.DS_Store
+
+# Go Builds & Binaries
+bin/
+*.exe
+*.out
+*.test
+vendor/
+
+# Environment Variables (Security)
+.env
+
+# IDEs (JetBrains/DataGrip metadata)
+.idea/
