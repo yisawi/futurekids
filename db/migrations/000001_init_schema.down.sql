@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS attendance_logs;
+DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS students;
