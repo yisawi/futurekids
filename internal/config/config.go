@@ -8,7 +8,7 @@ import (
 )
 
 type Config struct {
-	Port string
+	Port  string
 	DBUrl string
 }
 
@@ -17,16 +17,16 @@ func LoadConfig() *Config {
 	if err != nil {
 		slog.Warn("No .env file found, relying on system environment variables")
 	}
-	
+
 	return &Config{
-			Port: getEnv("PORT", "8080"), // default value 8080
-			DBUrl: getEnv("DB_URL", ""),
+		Port:  getEnv("PORT", "8080"), // default value 8080
+		DBUrl: getEnv("DB_URL", ""),
 	}
 }
 
 func getEnv(key, fallback string) string {
 	if value, exists := os.LookupEnv(key); exists {
-			return value
+		return value
 	}
 	return fallback
 }
