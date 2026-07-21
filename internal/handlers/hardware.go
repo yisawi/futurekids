@@ -115,8 +115,8 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 // func to connect with PostegreSQL
 func saveAttendanceLog(db *sql.DB, ev AttendanceEvent) error {
 
-		query := `
-				  INSERT INTO attendance_logs (student_id, device_id, check_time)
+	query := `
+				  INSERT INTO attendance_logs (student_id, device_sn, check_time)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (student_id, check_time) DO NOTHING;
 	`
