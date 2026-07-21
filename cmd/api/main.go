@@ -38,7 +38,8 @@ func main() {
 		w.Write([]byte("Server is healthy and running!"))
 	})
 
-	mux.HandleFunc("/api/attendance/push", appEnv.ADMSHandler)
+	// the path encapsulated with the middleware 
+	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.ADMSHandler))
 
 	slog.Info("Starting server", "port", cfg.Port)
 
