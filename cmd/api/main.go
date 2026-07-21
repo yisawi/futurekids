@@ -7,6 +7,7 @@ import (
 
 	"future_kids/internal/config"
 	"future_kids/internal/database"
+	"future_kids/internal/handlers"
 )
 
 func main() {
@@ -25,6 +26,9 @@ func main() {
 	}
 	defer db.Close()
 
+	
+	appEnv := &handlers.AppEnv{DB: db}
+
 	// 3. Setup the HTTP Server
 	mux := http.NewServeMux()
 
@@ -33,6 +37,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Server is healthy and running!"))
 	})
+
+	mux.HandleFunc("/api/attendance/push", appEnv.ADMSHandler)
 
 	slog.Info("Starting server", "port", cfg.Port)
 

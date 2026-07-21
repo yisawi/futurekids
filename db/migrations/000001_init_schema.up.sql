@@ -21,5 +21,5 @@ CREATE TABLE attendance_logs (
     check_time TIMESTAMP NOT NULL,
     sync_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     log_type SMALLINT,
-    UNIQUE(student_id, check_time)
+    CONSTRAINT unique_student_punch UNIQUE(student_id, check_time)
 );
