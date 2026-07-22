@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,6 +105,26 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		insertedCount++
+
+		studentIDInt, _ := strconv.Atoi(ev.StudentID)
+		var studentName string
+		var fcmToken sql.NullString
+
+		// Query to GET the name and phone token
+		err = app.DB.QueryRow(
+			"SELECT full_name, fcm_token FROM students WHERE id = $1",
+			studentIDInt,
+		).Scan(&studentName, &fcmToken)
+
+		if err == nil && fcmToken.Valid && fcmToken.String != "" {
+			title := "إشعار حضور"
+			body := fmt.Sprintf("تم تسجيل حضور الطالب %s بنجاح الساعة %s", studentName, ev.CheckTime.Format("15:04"))
+
+			// Call the func
+			sendPushNotification(app.FCMClient, fcmToken.String, title, body)
+		} else if err != nil && err != sql.ErrNoRows {
+			slog.Error("Error fetching student details for notification", "student_id", ev.StudentID, "error", err)
+		}
 	}
 
 	slog.Info("ADMS payload processed", "received", len(events), "inserted_or_ignored", insertedCount)
@@ -128,4 +149,32 @@ func saveAttendanceLog(db *sql.DB, ev AttendanceEvent) error {
 	_, err := db.ExecContext(ctx, query, ev.StudentID, ev.DeviceSN, ev.CheckTime)
 	return err
 
+}
+
+// Used for sending notification
+func sendPushNotification(client *messaging.Client, token, title, body string) {
+	if token == "" || client == nil {
+		return // Skip sending if the student does not have a registered phone or the client is not configured.
+	}
+
+	msg := &messaging.Message{
+		Token: token,
+		Notification: &messaging.Notification{
+			Title: title,
+			Body:  body,
+		},
+	}
+
+	// Send the notification in the background so as not to delay the server's response to the data device.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		response, err := client.Send(ctx, msg)
+		if err != nil {
+			slog.Error("Failed to send FCM message", "token", token, "error", err)
+			return
+		}
+		slog.Info("Successfully sent FCM message", "response", response)
+	}()
 }
