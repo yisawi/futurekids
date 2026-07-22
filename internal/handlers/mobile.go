@@ -55,6 +55,12 @@ func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Requ
 		records = append(records, rec)
 	}
 
+	if err := rows.Err(); err != nil {
+		slog.Error("Error during rows iteration", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	// This step ensures an empty array [] is sent instead of null if no one attends today.
 	if records == nil {
 		records = []AttendanceRecord{}
