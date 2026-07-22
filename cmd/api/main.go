@@ -26,7 +26,6 @@ func main() {
 	}
 	defer db.Close()
 
-	
 	appEnv := &handlers.AppEnv{DB: db}
 
 	// 3. Setup the HTTP Server
@@ -38,10 +37,10 @@ func main() {
 		w.Write([]byte("Server is healthy and running!"))
 	})
 
-	// the path encapsulated with the middleware 
+	// the path encapsulated with the middleware
 	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.ADMSHandler))
 	// The path for Flutter App without the middleware
-	mux.HandleFunc("/api/mobile/attendance/today", handlers.GetTodayAttendanceHandler)
+	mux.HandleFunc("/api/mobile/attendance/today", appEnv.GetTodayAttendanceHandler)
 
 	slog.Info("Starting server", "port", cfg.Port)
 
