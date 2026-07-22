@@ -40,6 +40,8 @@ func main() {
 
 	// the path encapsulated with the middleware 
 	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.ADMSHandler))
+	// The path for Flutter App without the middleware
+	mux.HandleFunc("/api/mobile/attendance/today", handlers.GetTodayAttendanceHandler)
 
 	slog.Info("Starting server", "port", cfg.Port)
 
