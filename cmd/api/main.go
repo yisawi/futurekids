@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
+
+	firebase "firebase.google.com/go/v4"
+	"google.golang.org/api/option"
 
 	"future_kids/internal/config"
 	"future_kids/internal/database"
@@ -26,7 +30,26 @@ func main() {
 	}
 	defer db.Close()
 
-	appEnv := &handlers.AppEnv{DB: db}
+	// Initialize Firebase FCM
+	ctx := context.Background()
+	opt := option.WithCredentialsFile("firebase-credentials.json")
+	fbApp, err := firebase.NewApp(ctx, nil, opt)
+	if err != nil {
+		slog.Error("Failed to initialize Firebase", "error", err)
+		os.Exit(1)
+	}
+
+	fcmClient, err := fbApp.Messaging(ctx)
+	if err != nil {
+		slog.Error("Failed to get FCM client", "error", err)
+		os.Exit(1)
+	}
+
+	// Passing the database connection and the notification client together
+	appEnv := &handlers.AppEnv{
+		DB:        db,
+		FCMClient: fcmClient,
+	}
 
 	// 3. Setup the HTTP Server
 	mux := http.NewServeMux()

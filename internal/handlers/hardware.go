@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"firebase.google.com/go/v4/messaging"
 )
 
-
 type AppEnv struct {
-	DB *sql.DB
+	DB        *sql.DB
+	FCMClient *messaging.Client // added to control notifications.
 }
 
 type AttendanceEvent struct {
@@ -110,7 +112,6 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
-
 
 // func to connect with PostegreSQL
 func saveAttendanceLog(db *sql.DB, ev AttendanceEvent) error {
