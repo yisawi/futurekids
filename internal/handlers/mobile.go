@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"future_kids/internal/auth"
 	"log/slog"
 	"net/http"
 	"time"
@@ -89,26 +91,67 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Decode the incoming JSON payload into the LoginRequest struct
+	// 2. Decode the incoming JSON payload
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"status":"error","message":"Invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 
-	// 3. Build the mock success response for initial testing
+	// --- Real Database Validation ---
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var studentID int
+	var parentPhone string
+
+	// 3. Check if the phone number exists in the students table
+	query := `SELECT id, parent_phone FROM students WHERE parent_phone = $1 LIMIT 1`
+	err := app.DB.QueryRowContext(ctx, query, req.PhoneNumber).Scan(&studentID, &parentPhone)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// الهاتف غير موجود في قاعدة البيانات
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"status":"error","message":"رقم الهاتف غير مسجل في النظام"}`))
+			return
+		}
+		// خطأ داخلي في قاعدة البيانات
+		slog.Error("Database query failed during login", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// 4. Update the FCM Token for this guardian's phone number
+	updateQuery := `UPDATE students SET fcm_token = $1 WHERE parent_phone = $2`
+	_, err = app.DB.ExecContext(ctx, updateQuery, req.FCMToken, req.PhoneNumber)
+	if err != nil {
+		slog.Error("Failed to update FCM token", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// 5. Generate the Real JWT Token
+	tokenString, err := auth.GenerateToken(req.PhoneNumber)
+	if err != nil {
+		slog.Error("Failed to generate JWT", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// 6. Send the success response with the real token
 	response := map[string]interface{}{
 		"status": "success",
 		"data": map[string]interface{}{
-			"access_token": "fake_jwt_token_for_testing",
+			"access_token": tokenString, // هنا يتم حقن التوكن الحقيقي المشفر
 			"guardian": map[string]interface{}{
-				"id":   "guardian_987",
-				"name": "ولي أمر تجريبي",
+				"phone":   parentPhone,
+				"message": "تم التحقق من الهاتف وتحديث مفتاح الإشعارات بنجاح",
 			},
 		},
 	}
 
-	// 4. Send the JSON response back to the client
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
