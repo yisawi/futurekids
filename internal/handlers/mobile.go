@@ -16,6 +16,12 @@ type AttendanceRecord struct {
 	DeviceSN  string    `json:"device_sn"`
 }
 
+// LoginRequest represents the expected JSON payload from the Flutter app for login
+type LoginRequest struct {
+	PhoneNumber string `json:"phone_number"`
+	FCMToken    string `json:"fcm_token"`
+}
+
 // this func is now bound to AppEnv to access app.DB.
 func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -24,12 +30,12 @@ func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Requ
 	}
 	// Query for GET Today's Data with Student names
 	query := `
-		SELECT s.id, s.full_name, a.check_time, a.device_sn
-		FROM attendance_logs a
-		JOIN students s ON a.student_id = s.id
-		WHERE DATE(a.check_time) = CURRENT_DATE
-		ORDER BY a.check_time DESC;
-	`
+        SELECT s.id, s.full_name, a.check_time, a.device_sn
+        FROM attendance_logs a
+        JOIN students s ON a.student_id = s.id
+        WHERE DATE(a.check_time) = CURRENT_DATE
+        ORDER BY a.check_time DESC;
+    `
 
 	// Set timeout for Query
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -73,4 +79,37 @@ func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Requ
 		slog.Error("Failed to encode json", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 	}
+}
+
+// MobileLoginHandler handles the authentication request from the mobile app
+func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Ensure the request method is POST only
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 2. Decode the incoming JSON payload into the LoginRequest struct
+	var req LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"status":"error","message":"Invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// 3. Build the mock success response for initial testing
+	response := map[string]interface{}{
+		"status": "success",
+		"data": map[string]interface{}{
+			"access_token": "fake_jwt_token_for_testing",
+			"guardian": map[string]interface{}{
+				"id":   "guardian_987",
+				"name": "ولي أمر تجريبي",
+			},
+		},
+	}
+
+	// 4. Send the JSON response back to the client
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }

@@ -65,6 +65,9 @@ func main() {
 	// The path for Flutter App without the middleware
 	mux.HandleFunc("/api/mobile/attendance/today", appEnv.GetTodayAttendanceHandler)
 
+	// The path for mobile app authentication (Login)
+	mux.HandleFunc("/api/v1/auth/login", appEnv.MobileLoginHandler)
+
 	slog.Info("Starting server", "port", cfg.Port)
 
 	// Start the Server
