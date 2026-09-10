@@ -49,8 +49,8 @@ func parseADMSPayload(deviceSN, rawText string) ([]AttendanceEvent, error) {
 		// Time Object
 		checkTime, err := time.Parse("2006-01-02 15:04:05", timeStr)
 		if err != nil {
-			// Validation: Log the error and skip the corrupted line instead of stopping the entire process.
 			slog.Warn("Invalid time format in payload", "student_id", studentID, "error", err)
+			continue
 		}
 
 		event := AttendanceEvent{
@@ -97,11 +97,15 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 
 	insertedCount := 0
 	for _, ev := range events {
-		err := saveAttendanceLog(app.DB, ev)
+		inserted, err := saveAttendanceLog(app.DB, ev)
 		if err != nil {
 			// We log the error on the server but do not halt the process
 			// (since a single fingerprint might fail while the others succeed).
 			slog.Error("Failed to save attendance log", "student_id", ev.StudentID, "error", err)
+			continue
+		}
+
+		if !inserted {
 			continue
 		}
 		insertedCount++
@@ -127,7 +131,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	slog.Info("ADMS payload processed", "received", len(events), "inserted_or_ignored", insertedCount)
+	slog.Info("ADMS payload processed", "received", len(events), "inserted", insertedCount)
 
 	// Respond to the device acknowledging successful op so it does not re-send the data.
 	w.WriteHeader(http.StatusOK)
@@ -135,7 +139,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // func to connect with PostegreSQL
-func saveAttendanceLog(db *sql.DB, ev AttendanceEvent) error {
+func saveAttendanceLog(db *sql.DB, ev AttendanceEvent) (bool, error) {
 
 	query := `
 				  INSERT INTO attendance_logs (student_id, device_sn, check_time)
@@ -146,8 +150,13 @@ func saveAttendanceLog(db *sql.DB, ev AttendanceEvent) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := db.ExecContext(ctx, query, ev.StudentID, ev.DeviceSN, ev.CheckTime)
-	return err
+	result, err := db.ExecContext(ctx, query, ev.StudentID, ev.DeviceSN, ev.CheckTime)
+	if err != nil {
+		return false, err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	return rowsAffected > 0, nil
 
 }
 

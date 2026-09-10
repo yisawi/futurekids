@@ -60,8 +60,8 @@ func main() {
 		w.Write([]byte("Server is healthy and running!"))
 	})
 
-	// the path encapsulated with the middleware
-	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.ADMSHandler))
+	// Hardware route protected by request logging and active-device validation.
+	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.ADMSHandler)))
 	// The path for Flutter App without the middleware
 	mux.HandleFunc("/api/mobile/attendance/today", handlers.AuthMiddleware(appEnv.GetTodayAttendanceHandler))
 	mux.HandleFunc("/api/mobile/attendance/monthly", handlers.AuthMiddleware(appEnv.GetMonthlyAttendanceHandler))
