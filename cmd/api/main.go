@@ -9,6 +9,7 @@ import (
 	firebase "firebase.google.com/go/v4"
 	"google.golang.org/api/option"
 
+	"future_kids/internal/auth"
 	"future_kids/internal/config"
 	"future_kids/internal/database"
 	"future_kids/internal/handlers"
@@ -21,6 +22,7 @@ func main() {
 
 	// 1. Load the config
 	cfg := config.LoadConfig()
+	auth.InitAuth(cfg.JWTSecret)
 
 	// 2. Connect to the database
 	db, err := database.NewConnection(cfg.DBUrl)

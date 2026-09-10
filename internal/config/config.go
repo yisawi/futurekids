@@ -8,8 +8,9 @@ import (
 )
 
 type Config struct {
-	Port  string
-	DBUrl string
+	Port      string
+	DBUrl     string
+	JWTSecret string
 }
 
 func LoadConfig() *Config {
@@ -19,8 +20,9 @@ func LoadConfig() *Config {
 	}
 
 	return &Config{
-		Port:  getEnv("PORT", "8080"), // default value 8080
-		DBUrl: getEnv("DB_URL", ""),
+		Port:      getEnv("PORT", "8080"),
+		DBUrl:     getEnv("DB_URL", ""),
+		JWTSecret: getEnv("JWT_SECRET", ""),
 	}
 }
 
