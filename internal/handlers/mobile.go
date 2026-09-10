@@ -32,36 +32,40 @@ type StudentRecord struct {
 	FullName string `json:"full_name"`
 }
 
-// this func is now bound to AppEnv to access app.DB.
+// GetTodayAttendanceHandler returns today's attendance for the authenticated parent's students.
 func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-	// Query for GET Today's Data with Student names
-	query := `
-        SELECT s.id, s.full_name, a.check_time, a.device_sn
-        FROM attendance_logs a
-        JOIN students s ON a.student_id = s.id
-        WHERE DATE(a.check_time) = CURRENT_DATE
-        ORDER BY a.check_time DESC;
-    `
 
-	// Set timeout for Query
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	phone, ok := r.Context().Value("phone").(string)
+	if !ok || phone == "" {
+		http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	query := `
+		SELECT s.id, s.full_name, a.check_time, a.device_sn
+		FROM attendance_logs a
+		JOIN students s ON a.student_id = s.id
+		WHERE DATE(a.check_time) = CURRENT_DATE
+		  AND s.parent_phone = $1
+		ORDER BY a.check_time DESC;
+	`
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := app.DB.QueryContext(ctx, query)
+	rows, err := app.DB.QueryContext(ctx, query, phone)
 	if err != nil {
 		slog.Error("Database query failed", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
 	var records []AttendanceRecord
-
-	// Read the data line-by-line
 	for rows.Next() {
 		var rec AttendanceRecord
 		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.CheckTime, &rec.DeviceSN); err != nil {
@@ -73,11 +77,10 @@ func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Requ
 
 	if err := rows.Err(); err != nil {
 		slog.Error("Error during rows iteration", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// This step ensures an empty array [] is sent instead of null if no one attends today.
 	if records == nil {
 		records = []AttendanceRecord{}
 	}
@@ -87,7 +90,6 @@ func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Requ
 
 	if err := json.NewEncoder(w).Encode(records); err != nil {
 		slog.Error("Failed to encode json", "error", err)
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 	}
 }
 
