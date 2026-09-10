@@ -34,7 +34,13 @@ func main() {
 
 	// Initialize Firebase FCM
 	ctx := context.Background()
-	opt := option.WithCredentialsFile("firebase-credentials.json")
+	firebaseJSON := os.Getenv("FIREBASE_CREDENTIALS_JSON")
+	if firebaseJSON == "" {
+		slog.Error("CRITICAL ERROR: FIREBASE_CREDENTIALS_JSON environment variable is missing")
+		os.Exit(1)
+	}
+
+	opt := option.WithCredentialsJSON([]byte(firebaseJSON))
 	fbApp, err := firebase.NewApp(ctx, nil, opt)
 	if err != nil {
 		slog.Error("Failed to initialize Firebase", "error", err)
