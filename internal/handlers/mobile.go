@@ -26,6 +26,12 @@ type LoginRequest struct {
 	FCMToken    string `json:"fcm_token"`
 }
 
+// StudentRecord represents the basic student data needed by the mobile app.
+type StudentRecord struct {
+	ID       int    `json:"id"`
+	FullName string `json:"full_name"`
+}
+
 // this func is now bound to AppEnv to access app.DB.
 func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -209,6 +215,68 @@ func (app *AppEnv) GetMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		"data":   records,
 	}); err != nil {
 		slog.Error("Failed to encode monthly attendance response", "error", err)
+	}
+}
+
+// GetParentStudentsHandler returns the students linked to the authenticated parent's phone number.
+func (app *AppEnv) GetParentStudentsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	phone, ok := r.Context().Value("phone").(string)
+	if !ok || phone == "" {
+		http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	query := `
+		SELECT id, full_name
+		FROM students
+		WHERE parent_phone = $1
+		ORDER BY id ASC;
+	`
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := app.DB.QueryContext(ctx, query, phone)
+	if err != nil {
+		slog.Error("Failed to fetch parent students", "error", err, "phone", phone)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var students []StudentRecord
+	for rows.Next() {
+		var student StudentRecord
+		if err := rows.Scan(&student.ID, &student.FullName); err != nil {
+			slog.Error("Failed to scan student row", "error", err)
+			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+		students = append(students, student)
+	}
+
+	if err := rows.Err(); err != nil {
+		slog.Error("Error during student rows iteration", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if students == nil {
+		students = []StudentRecord{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"data":   students,
+	}); err != nil {
+		slog.Error("Failed to encode parent students response", "error", err)
 	}
 }
 

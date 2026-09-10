@@ -65,6 +65,7 @@ func main() {
 	// The path for Flutter App without the middleware
 	mux.HandleFunc("/api/mobile/attendance/today", handlers.AuthMiddleware(appEnv.GetTodayAttendanceHandler))
 	mux.HandleFunc("/api/mobile/attendance/monthly", handlers.AuthMiddleware(appEnv.GetMonthlyAttendanceHandler))
+	mux.HandleFunc("/api/mobile/students", handlers.AuthMiddleware(appEnv.GetParentStudentsHandler))
 
 	// The path for mobile app authentication (Login)
 	mux.HandleFunc("/api/v1/auth/login", appEnv.MobileLoginHandler)
