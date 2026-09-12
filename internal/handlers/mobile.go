@@ -32,6 +32,17 @@ type StudentRecord struct {
 	FullName string `json:"full_name"`
 }
 
+type SchedulePeriod struct {
+	PeriodNumber int    `json:"period_number"`
+	SubjectName  string `json:"subject_name"`
+	TeacherName  string `json:"teacher_name"`
+}
+
+type DailySchedule struct {
+	DayOfWeek string           `json:"day_of_week"`
+	Periods   []SchedulePeriod `json:"periods"`
+}
+
 // GetTodayAttendanceHandler returns today's attendance for the authenticated parent's students.
 func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -217,6 +228,114 @@ func (app *AppEnv) GetMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		"data":   records,
 	}); err != nil {
 		slog.Error("Failed to encode monthly attendance response", "error", err)
+	}
+}
+
+// GetWeeklyScheduleHandler returns the weekly schedule for an authorized student.
+func (app *AppEnv) GetWeeklyScheduleHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	phone, ok := r.Context().Value("phone").(string)
+	studentIDStr := r.URL.Query().Get("student_id")
+	if !ok || phone == "" || studentIDStr == "" {
+		http.Error(w, `{"status":"error","message":"Unauthorized or missing student_id"}`, http.StatusUnauthorized)
+		return
+	}
+
+	studentID, err := strconv.Atoi(studentIDStr)
+	if err != nil || studentID <= 0 {
+		http.Error(w, `{"status":"error","message":"Invalid student_id"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var grade, section string
+	err = app.DB.QueryRowContext(
+		ctx,
+		"SELECT COALESCE(grade, ''), COALESCE(section, '') FROM students WHERE id = $1 AND parent_phone = $2",
+		studentID,
+		phone,
+	).Scan(&grade, &section)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"status":"error","message":"Student not found or unauthorized"}`, http.StatusForbidden)
+		} else {
+			slog.Error("Failed to fetch student class for schedule", "error", err)
+			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if grade == "" || section == "" {
+		writeWeeklyScheduleResponse(w, []DailySchedule{})
+		return
+	}
+
+	query := `
+		SELECT day_of_week, period_number, subject_name, COALESCE(teacher_name, '')
+		FROM weekly_schedules
+		WHERE grade = $1 AND section = $2
+		ORDER BY
+			CASE day_of_week
+				WHEN 'الأحد' THEN 1 WHEN 'الإثنين' THEN 2 WHEN 'الثلاثاء' THEN 3
+				WHEN 'الأربعاء' THEN 4 WHEN 'الخميس' THEN 5 ELSE 6
+			END,
+			period_number ASC;
+	`
+
+	rows, err := app.DB.QueryContext(ctx, query, grade, section)
+	if err != nil {
+		slog.Error("Failed to fetch weekly schedule", "error", err)
+		http.Error(w, `{"status":"error","message":"Failed to fetch schedule"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	scheduleMap := make(map[string][]SchedulePeriod)
+	var daysOrder []string
+	for rows.Next() {
+		var day string
+		var period SchedulePeriod
+		if err := rows.Scan(&day, &period.PeriodNumber, &period.SubjectName, &period.TeacherName); err != nil {
+			slog.Error("Failed to scan weekly schedule row", "error", err)
+			http.Error(w, `{"status":"error","message":"Failed to fetch schedule"}`, http.StatusInternalServerError)
+			return
+		}
+		if len(scheduleMap[day]) == 0 {
+			daysOrder = append(daysOrder, day)
+		}
+		scheduleMap[day] = append(scheduleMap[day], period)
+	}
+
+	if err := rows.Err(); err != nil {
+		slog.Error("Error during weekly schedule iteration", "error", err)
+		http.Error(w, `{"status":"error","message":"Failed to fetch schedule"}`, http.StatusInternalServerError)
+		return
+	}
+
+	result := make([]DailySchedule, 0, len(daysOrder))
+	for _, day := range daysOrder {
+		result = append(result, DailySchedule{
+			DayOfWeek: day,
+			Periods:   scheduleMap[day],
+		})
+	}
+	writeWeeklyScheduleResponse(w, result)
+}
+
+func writeWeeklyScheduleResponse(w http.ResponseWriter, schedule []DailySchedule) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"data":   schedule,
+	}); err != nil {
+		slog.Error("Failed to encode weekly schedule response", "error", err)
 	}
 }
 

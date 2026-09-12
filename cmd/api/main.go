@@ -78,6 +78,7 @@ func main() {
 	mux.HandleFunc("/api/mobile/attendance/today", handlers.AuthMiddleware(appEnv.GetTodayAttendanceHandler))
 	mux.HandleFunc("/api/mobile/attendance/monthly", handlers.AuthMiddleware(appEnv.GetMonthlyAttendanceHandler))
 	mux.HandleFunc("/api/mobile/students", handlers.AuthMiddleware(appEnv.GetParentStudentsHandler))
+	mux.HandleFunc("/api/mobile/schedule", handlers.AuthMiddleware(appEnv.GetWeeklyScheduleHandler))
 
 	// The path for mobile app authentication (Login)
 	mux.HandleFunc("/api/v1/auth/login", appEnv.MobileLoginHandler)
