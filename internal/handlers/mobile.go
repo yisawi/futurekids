@@ -26,10 +26,13 @@ type LoginRequest struct {
 	FCMToken    string `json:"fcm_token"`
 }
 
-// StudentRecord represents the basic student data needed by the mobile app.
-type StudentRecord struct {
-	ID       int    `json:"id"`
-	FullName string `json:"full_name"`
+// ParentStudent represents the student data needed by the mobile app.
+type ParentStudent struct {
+	ID        int    `json:"id"`
+	FullName  string `json:"full_name"`
+	Grade     string `json:"grade"`
+	Section   string `json:"section"`
+	AvatarURL string `json:"avatar_url"`
 }
 
 type SchedulePeriod struct {
@@ -361,7 +364,7 @@ func (app *AppEnv) GetParentStudentsHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	query := `
-		SELECT id, full_name
+		SELECT id, full_name, COALESCE(grade, ''), COALESCE(section, ''), COALESCE(avatar_url, '')
 		FROM students
 		WHERE parent_phone = $1
 		ORDER BY id ASC;
@@ -378,10 +381,16 @@ func (app *AppEnv) GetParentStudentsHandler(w http.ResponseWriter, r *http.Reque
 	}
 	defer rows.Close()
 
-	var students []StudentRecord
+	var students []ParentStudent
 	for rows.Next() {
-		var student StudentRecord
-		if err := rows.Scan(&student.ID, &student.FullName); err != nil {
+		var student ParentStudent
+		if err := rows.Scan(
+			&student.ID,
+			&student.FullName,
+			&student.Grade,
+			&student.Section,
+			&student.AvatarURL,
+		); err != nil {
 			slog.Error("Failed to scan student row", "error", err)
 			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
 			return
@@ -396,7 +405,7 @@ func (app *AppEnv) GetParentStudentsHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	if students == nil {
-		students = []StudentRecord{}
+		students = []ParentStudent{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
