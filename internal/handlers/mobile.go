@@ -54,6 +54,12 @@ type NotificationRecord struct {
 	CreatedAt string `json:"created_at"`
 }
 
+type AttendanceSummary struct {
+	TotalPresent int `json:"total_present"`
+	TotalLate    int `json:"total_late"`
+	TotalAbsent  int `json:"total_absent"`
+}
+
 // GetTodayAttendanceHandler returns today's attendance for the authenticated parent's students.
 func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -122,6 +128,69 @@ type MonthlyDayRecord struct {
 	EntryTime *string `json:"entry_time"` // 07:45
 	ExitTime  *string `json:"exit_time"`  // 12:30
 	Duration  *string `json:"duration"`   // e.g. "4 ساعات و 45 دقيقة"
+}
+
+// GetAttendanceSummaryHandler returns attendance totals for an authorized student.
+func (app *AppEnv) GetAttendanceSummaryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	phone, ok := r.Context().Value("phone").(string)
+	studentIDStr := r.URL.Query().Get("student_id")
+	if !ok || phone == "" || studentIDStr == "" {
+		http.Error(w, `{"status":"error","message":"Unauthorized or missing student_id"}`, http.StatusUnauthorized)
+		return
+	}
+
+	studentID, err := strconv.Atoi(studentIDStr)
+	if err != nil || studentID <= 0 {
+		http.Error(w, `{"status":"error","message":"Invalid student_id"}`, http.StatusBadRequest)
+		return
+	}
+
+	var exists bool
+	err = app.DB.QueryRowContext(
+		r.Context(),
+		"SELECT EXISTS(SELECT 1 FROM students WHERE id = $1 AND parent_phone = $2)",
+		studentID,
+		phone,
+	).Scan(&exists)
+	if err != nil {
+		slog.Error("Failed to verify student ownership", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, `{"status":"error","message":"Student not found or unauthorized"}`, http.StatusForbidden)
+		return
+	}
+
+	var summary AttendanceSummary
+	err = app.DB.QueryRowContext(r.Context(), `
+		SELECT
+			COUNT(DISTINCT DATE(check_time)) AS total_present,
+			COUNT(CASE WHEN CAST(check_time AS time) > '08:15:00' THEN 1 END) AS total_late
+		FROM attendance_logs
+		WHERE student_id = $1;
+	`, studentID).Scan(&summary.TotalPresent, &summary.TotalLate)
+	if err != nil {
+		slog.Error("Failed to calculate attendance summary", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	summary.TotalAbsent = 0
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"data":   summary,
+	}); err != nil {
+		slog.Error("Failed to encode attendance summary response", "error", err)
+	}
 }
 
 // GetMonthlyAttendanceHandler handles monthly attendance reports for a student.
