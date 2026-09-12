@@ -56,7 +56,7 @@ type NotificationRecord struct {
 
 type AttendanceSummary struct {
 	TotalPresent int `json:"total_present"`
-	TotalLate    int `json:"total_late"`
+	TotalExcused int `json:"total_excused"`
 	TotalAbsent  int `json:"total_absent"`
 }
 
@@ -170,18 +170,19 @@ func (app *AppEnv) GetAttendanceSummaryHandler(w http.ResponseWriter, r *http.Re
 	var summary AttendanceSummary
 	err = app.DB.QueryRowContext(r.Context(), `
 		SELECT
-			COUNT(DISTINCT DATE(check_time)) AS total_present,
-			COUNT(CASE WHEN CAST(check_time AS time) > '08:15:00' THEN 1 END) AS total_late
-		FROM attendance_logs
-		WHERE student_id = $1;
-	`, studentID).Scan(&summary.TotalPresent, &summary.TotalLate)
+			(SELECT COUNT(*) FROM attendance_logs WHERE student_id = $1 AND status = 'present'),
+			(SELECT COUNT(*) FROM attendance_logs WHERE student_id = $1 AND status = 'absent'),
+			(SELECT COUNT(*) FROM student_leaves WHERE student_id = $1);
+	`, studentID).Scan(
+		&summary.TotalPresent,
+		&summary.TotalAbsent,
+		&summary.TotalExcused,
+	)
 	if err != nil {
 		slog.Error("Failed to calculate attendance summary", "error", err)
 		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
 		return
 	}
-
-	summary.TotalAbsent = 0
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
