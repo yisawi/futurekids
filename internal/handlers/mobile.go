@@ -43,6 +43,14 @@ type DailySchedule struct {
 	Periods   []SchedulePeriod `json:"periods"`
 }
 
+type NotificationRecord struct {
+	ID        int    `json:"id"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	IsRead    bool   `json:"is_read"`
+	CreatedAt string `json:"created_at"`
+}
+
 // GetTodayAttendanceHandler returns today's attendance for the authenticated parent's students.
 func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -398,6 +406,71 @@ func (app *AppEnv) GetParentStudentsHandler(w http.ResponseWriter, r *http.Reque
 		"data":   students,
 	}); err != nil {
 		slog.Error("Failed to encode parent students response", "error", err)
+	}
+}
+
+// GetNotificationsHandler returns the authenticated parent's recent notifications.
+func (app *AppEnv) GetNotificationsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	phone, ok := r.Context().Value("phone").(string)
+	if !ok || phone == "" {
+		http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := app.DB.QueryContext(ctx, `
+		SELECT id, title, body, is_read, created_at
+		FROM notifications
+		WHERE parent_phone = $1
+		ORDER BY created_at DESC
+		LIMIT 50;
+	`, phone)
+	if err != nil {
+		slog.Error("Failed to fetch notifications", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	notifications := make([]NotificationRecord, 0)
+	for rows.Next() {
+		var notification NotificationRecord
+		var createdAt time.Time
+		if err := rows.Scan(
+			&notification.ID,
+			&notification.Title,
+			&notification.Body,
+			&notification.IsRead,
+			&createdAt,
+		); err != nil {
+			slog.Error("Failed to scan notification row", "error", err)
+			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+		notification.CreatedAt = createdAt.Format(time.RFC3339)
+		notifications = append(notifications, notification)
+	}
+
+	if err := rows.Err(); err != nil {
+		slog.Error("Error during notification rows iteration", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"data":   notifications,
+	}); err != nil {
+		slog.Error("Failed to encode notifications response", "error", err)
 	}
 }
 

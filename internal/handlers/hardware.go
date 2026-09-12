@@ -113,19 +113,25 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		studentIDInt, _ := strconv.Atoi(ev.StudentID)
 		var studentName string
 		var fcmToken sql.NullString
+		var parentPhone sql.NullString
 
 		// Query to GET the name and phone token
-		err = app.DB.QueryRow(
-			"SELECT full_name, fcm_token FROM students WHERE id = $1",
+		err = app.DB.QueryRowContext(
+			r.Context(),
+			"SELECT full_name, fcm_token, parent_phone FROM students WHERE id = $1",
 			studentIDInt,
-		).Scan(&studentName, &fcmToken)
+		).Scan(&studentName, &fcmToken, &parentPhone)
 
-		if err == nil && fcmToken.Valid && fcmToken.String != "" {
+		if err == nil {
 			title := "إشعار حضور"
 			body := fmt.Sprintf("تم تسجيل حضور الطالب %s بنجاح الساعة %s", studentName, ev.CheckTime.Format("15:04"))
 
-			// Call the func
-			sendPushNotification(app.FCMClient, fcmToken.String, title, body)
+			if parentPhone.Valid && parentPhone.String != "" {
+				go saveNotificationHistory(app.DB, parentPhone.String, title, body)
+			}
+			if fcmToken.Valid && fcmToken.String != "" {
+				sendPushNotification(app.FCMClient, fcmToken.String, title, body)
+			}
 		} else if err != nil && err != sql.ErrNoRows {
 			slog.Error("Error fetching student details for notification", "student_id", ev.StudentID, "error", err)
 		}
@@ -136,6 +142,22 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	// Respond to the device acknowledging successful op so it does not re-send the data.
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
+}
+
+func saveNotificationHistory(db *sql.DB, phone, title, body string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := db.ExecContext(
+		ctx,
+		"INSERT INTO notifications (parent_phone, title, body) VALUES ($1, $2, $3)",
+		phone,
+		title,
+		body,
+	)
+	if err != nil {
+		slog.Error("Failed to save notification history", "error", err)
+	}
 }
 
 // func to connect with PostegreSQL
