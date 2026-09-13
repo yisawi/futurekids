@@ -29,6 +29,17 @@ func GenerateToken(phone string) (string, error) {
 	return token.SignedString(jwtSecret)
 }
 
+// GenerateAdminToken creates a short-lived JWT for an administrator.
+func GenerateAdminToken(username string) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"username": username,
+		"role":     "admin",
+		"exp":      time.Now().Add(7 * 24 * time.Hour).Unix(),
+		"iat":      time.Now().Unix(),
+	})
+	return token.SignedString(jwtSecret)
+}
+
 // ValidateToken parses and validates the JWT token
 func ValidateToken(tokenString string) (jwt.MapClaims, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
