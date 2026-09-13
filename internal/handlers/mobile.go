@@ -60,6 +60,13 @@ type AttendanceSummary struct {
 	TotalAbsent  int `json:"total_absent"`
 }
 
+type Banner struct {
+	ID         int    `json:"id"`
+	Title      string `json:"title"`
+	ImageURL   string `json:"image_url"`
+	ActionLink string `json:"action_link"`
+}
+
 // GetTodayAttendanceHandler returns today's attendance for the authenticated parent's students.
 func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -118,6 +125,53 @@ func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Requ
 
 	if err := json.NewEncoder(w).Encode(records); err != nil {
 		slog.Error("Failed to encode json", "error", err)
+	}
+}
+
+// GetActiveBannersHandler returns active banners ordered from newest to oldest.
+func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	rows, err := app.DB.QueryContext(r.Context(), `
+		SELECT id, COALESCE(title, ''), image_url, COALESCE(action_link, '')
+		FROM banners
+		WHERE is_active = true
+		ORDER BY created_at DESC;
+	`)
+	if err != nil {
+		slog.Error("Failed to fetch banners", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	banners := make([]Banner, 0)
+	for rows.Next() {
+		var banner Banner
+		if err := rows.Scan(&banner.ID, &banner.Title, &banner.ImageURL, &banner.ActionLink); err != nil {
+			slog.Error("Failed to scan banner row", "error", err)
+			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+		banners = append(banners, banner)
+	}
+
+	if err := rows.Err(); err != nil {
+		slog.Error("Error during banner rows iteration", "error", err)
+		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"data":   banners,
+	}); err != nil {
+		slog.Error("Failed to encode banners response", "error", err)
 	}
 }
 

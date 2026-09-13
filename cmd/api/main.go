@@ -84,6 +84,7 @@ func main() {
 	mux.HandleFunc("/api/mobile/students", handlers.AuthMiddleware(appEnv.GetParentStudentsHandler))
 	mux.HandleFunc("/api/mobile/schedule", handlers.AuthMiddleware(appEnv.GetWeeklyScheduleHandler))
 	mux.HandleFunc("/api/mobile/notifications", handlers.AuthMiddleware(appEnv.GetNotificationsHandler))
+	mux.HandleFunc("/api/mobile/banners", handlers.AuthMiddleware(appEnv.GetActiveBannersHandler))
 
 	// Public mobile login route; all other mobile routes require AuthMiddleware.
 	mux.HandleFunc("/api/mobile/login", appEnv.MobileLoginHandler)
