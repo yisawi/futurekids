@@ -120,3 +120,27 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		next.ServeHTTP(w, r)
 	}
 }
+
+// AdminMiddleware permits only valid JWTs carrying the admin role.
+func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		parts := strings.Fields(authHeader)
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+
+		claims, err := auth.ValidateToken(parts[1])
+		if err != nil {
+			http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if role, ok := claims["role"].(string); !ok || role != "admin" {
+			http.Error(w, `{"status":"error","message":"Forbidden"}`, http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}
+}
