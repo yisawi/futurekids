@@ -91,6 +91,7 @@ func main() {
 	mux.HandleFunc("/api/v1/auth/login", appEnv.MobileLoginHandler)
 	mux.HandleFunc("/api/admin/login", appEnv.AdminLoginHandler)
 	mux.HandleFunc("/api/admin/dashboard", handlers.AdminMiddleware(appEnv.AdminDashboardHandler))
+	mux.HandleFunc("/api/admin/students", handlers.AdminMiddleware(appEnv.AdminStudentsHandler))
 
 	loc, err := time.LoadLocation("Asia/Baghdad")
 	if err != nil {
