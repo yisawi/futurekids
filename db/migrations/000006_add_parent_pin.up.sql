@@ -1,0 +1,1 @@
+ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_pin VARCHAR(255);

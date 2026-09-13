@@ -22,8 +22,8 @@ type AttendanceRecord struct {
 
 // LoginRequest represents the expected JSON payload from the Flutter app for login
 type LoginRequest struct {
-	PhoneNumber string `json:"phone_number"`
-	FCMToken    string `json:"fcm_token"`
+	Phone string `json:"phone"`
+	PIN   string `json:"pin"`
 }
 
 // ParentStudent represents the student data needed by the mobile app.
@@ -568,61 +568,45 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Real Database Validation ---
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if req.Phone == "" || req.PIN == "" {
+		http.Error(w, `{"status":"error","message":"Phone and PIN are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var studentID int
-	var parentPhone string
-
-	// 3. Check if the phone number exists in the students table
-	query := `SELECT id, parent_phone FROM students WHERE parent_phone = $1 LIMIT 1`
-	err := app.DB.QueryRowContext(ctx, query, req.PhoneNumber).Scan(&studentID, &parentPhone)
-
+	var exists bool
+	err := app.DB.QueryRowContext(
+		ctx,
+		"SELECT EXISTS(SELECT 1 FROM students WHERE parent_phone = $1 AND parent_pin = $2)",
+		req.Phone,
+		req.PIN,
+	).Scan(&exists)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			// الهاتف غير موجود في قاعدة البيانات
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"status":"error","message":"رقم الهاتف غير مسجل في النظام"}`))
-			return
-		}
-		// خطأ داخلي في قاعدة البيانات
 		slog.Error("Database query failed during login", "error", err)
 		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
 		return
 	}
-
-	// 4. Update the FCM Token for this guardian's phone number
-	updateQuery := `UPDATE students SET fcm_token = $1 WHERE parent_phone = $2`
-	_, err = app.DB.ExecContext(ctx, updateQuery, req.FCMToken, req.PhoneNumber)
-	if err != nil {
-		slog.Error("Failed to update FCM token", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+	if !exists {
+		http.Error(w, `{"status":"error","message":"رقم الهاتف أو الرمز السري غير صحيح"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// 5. Generate the Real JWT Token
-	tokenString, err := auth.GenerateToken(req.PhoneNumber)
+	tokenString, err := auth.GenerateToken(req.Phone)
 	if err != nil {
 		slog.Error("Failed to generate JWT", "error", err)
 		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// 6. Send the success response with the real token
-	response := map[string]interface{}{
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "success",
 		"data": map[string]interface{}{
-			"access_token": tokenString, // هنا يتم حقن التوكن الحقيقي المشفر
-			"guardian": map[string]interface{}{
-				"phone":   parentPhone,
-				"message": "تم التحقق من الهاتف وتحديث مفتاح الإشعارات بنجاح",
-			},
+			"token": tokenString,
 		},
+	}); err != nil {
+		slog.Error("Failed to encode login response", "error", err)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
 }
