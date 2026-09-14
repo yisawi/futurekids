@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"future_kids/internal/auth"
+	excelize "github.com/xuri/excelize/v2"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -365,3 +366,100 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		"data":   records,
 	})
 }
+
+func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	yearParam := r.URL.Query().Get("year")
+	if yearParam == "" {
+		loc, _ := time.LoadLocation("Asia/Baghdad")
+		yearParam = time.Now().In(loc).Format("2006")
+	}
+
+	// ملاحظة: عمود parent_name غير موجود في المخطط الحالي، نستخدم parent_phone كبديل
+	query := `
+		SELECT 
+			s.full_name, 
+			COALESCE(s.parent_phone, 'غير مدخل'), 
+			s.parent_phone,
+			COUNT(al.id) as total_present,
+			(SELECT COUNT(*) FROM student_leaves sl WHERE sl.student_id = s.id AND EXTRACT(YEAR FROM sl.leave_date::date) = $1::int) as total_excused
+		FROM students s
+		LEFT JOIN attendance_logs al ON s.id = al.student_id AND EXTRACT(YEAR FROM al.check_time) = $1::int
+		GROUP BY s.id, s.full_name, s.parent_phone
+		ORDER BY s.full_name ASC
+	`
+
+	rows, err := app.DB.QueryContext(r.Context(), query, yearParam)
+	if err != nil {
+		slog.Error("Failed to fetch yearly attendance for export", "error", err)
+		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	f := excelize.NewFile()
+	defer f.Close()
+	sheet := "Sheet1"
+	f.SetSheetName("Sheet1", "التقرير السنوي")
+	sheet = "التقرير السنوي"
+
+	rtl := true
+	f.SetSheetView(sheet, 0, &excelize.ViewOptions{RightToLeft: &rtl})
+
+	// دمج وتنسيق ترويسة المدرسة والوزارة
+	f.MergeCell(sheet, "A1", "E2")
+	f.SetCellValue(sheet, "A1", "وزارة التربية والتعليم\nمدرسة الرحمن الابتدائية الأهلية\nالتقرير السنوي الشامل للحضور والانصراف - عام "+yearParam)
+
+	titleStyle, _ := f.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
+		Font:      &excelize.Font{Bold: true, Size: 14, Family: "Arial"},
+	})
+	f.SetCellStyle(sheet, "A1", "E2", titleStyle)
+
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Family: "Arial", Size: 12},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#DCE6F1"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+
+	headers := []string{"اسم الطالب", "اسم ولي الأمر", "رقم الهاتف", "إجمالي أيام الحضور", "إجمالي الإجازات"}
+	for i, header := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 3)
+		f.SetCellValue(sheet, cell, header)
+		f.SetCellStyle(sheet, cell, cell, headerStyle)
+	}
+
+	rowNum := 4
+	for rows.Next() {
+		var fullName, parentName, parentPhone string
+		var presentDays, excusedDays int
+		if err := rows.Scan(&fullName, &parentName, &parentPhone, &presentDays, &excusedDays); err != nil {
+			slog.Error("Failed to scan student row for yearly excel export", "error", err)
+			continue
+		}
+
+		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowNum), fullName)
+		f.SetCellValue(sheet, fmt.Sprintf("B%d", rowNum), parentName)
+		f.SetCellValue(sheet, fmt.Sprintf("C%d", rowNum), parentPhone)
+		f.SetCellValue(sheet, fmt.Sprintf("D%d", rowNum), presentDays)
+		f.SetCellValue(sheet, fmt.Sprintf("E%d", rowNum), excusedDays)
+		rowNum++
+	}
+
+	f.SetColWidth(sheet, "A", "B", 30)
+	f.SetColWidth(sheet, "C", "C", 20)
+	f.SetColWidth(sheet, "D", "E", 18)
+
+	fileName := fmt.Sprintf("annual_report_%s.xlsx", yearParam)
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+	if err := f.Write(w); err != nil {
+		slog.Error("Failed to write yearly excel file to response", "error", err)
+	}
+}
+
+
