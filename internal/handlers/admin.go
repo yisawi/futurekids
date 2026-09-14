@@ -292,3 +292,76 @@ func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Reques
 		"data":    map[string]int{"leave_id": leaveID},
 	})
 }
+
+type DailyAttendanceRecord struct {
+	StudentID int    `json:"student_id"`
+	FullName  string `json:"full_name"`
+	Status    string `json:"status"` // Present, Absent, Excused
+	CheckTime string `json:"check_time,omitempty"`
+}
+
+func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// استلام التاريخ من الرابط، وإذا كان فارغاً نستخدم تاريخ اليوم (توقيت بغداد)
+	dateParam := r.URL.Query().Get("date")
+	if dateParam == "" {
+		loc, _ := time.LoadLocation("Asia/Baghdad")
+		dateParam = time.Now().In(loc).Format("2006-01-02")
+	}
+
+	// استعلام مركب يجلب كل الطلاب ويحدد حالتهم بناءً على الجداول المرتبطة
+	// نستخدم subquery لتجميع سجلات الحضور أولاً لتجنب تكرار الصفوف عند وجود أكثر من بصمة
+	query := `
+		SELECT 
+			s.id, 
+			s.full_name,
+			CASE 
+				WHEN al.student_id IS NOT NULL THEN 'Present'
+				WHEN sl.id IS NOT NULL THEN 'Excused'
+				ELSE 'Absent'
+			END as status,
+			COALESCE(CAST(al.first_check AS TEXT), '') as check_time
+		FROM students s
+		LEFT JOIN (
+			SELECT student_id, MIN(check_time) AS first_check
+			FROM attendance_logs
+			WHERE DATE(check_time) = $1
+			GROUP BY student_id
+		) al ON s.id = al.student_id
+		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = $1
+		ORDER BY status DESC, s.full_name ASC
+	`
+
+	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
+	if err != nil {
+		slog.Error("Failed to fetch daily attendance", "error", err)
+		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var records []DailyAttendanceRecord
+	for rows.Next() {
+		var rec DailyAttendanceRecord
+		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckTime); err != nil {
+			slog.Error("Failed to scan attendance record", "error", err)
+			continue
+		}
+		records = append(records, rec)
+	}
+
+	if records == nil {
+		records = []DailyAttendanceRecord{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"date":   dateParam,
+		"data":   records,
+	})
+}
