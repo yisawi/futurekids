@@ -82,7 +82,7 @@ func main() {
 	mux.HandleFunc("/api/mobile/attendance/monthly", handlers.AuthMiddleware(appEnv.GetMonthlyAttendanceHandler))
 	mux.HandleFunc("/api/mobile/attendance/summary", handlers.AuthMiddleware(appEnv.GetAttendanceSummaryHandler))
 	mux.HandleFunc("/api/mobile/students", handlers.AuthMiddleware(appEnv.MobileStudentsHandler))
-	mux.HandleFunc("/api/mobile/schedule", handlers.AuthMiddleware(appEnv.GetWeeklyScheduleHandler))
+	mux.HandleFunc("/api/mobile/schedule", handlers.AuthMiddleware(appEnv.MobileScheduleHandler))
 	mux.HandleFunc("/api/mobile/notifications", handlers.AuthMiddleware(appEnv.MobileNotificationsHandler))
 	mux.HandleFunc("/api/mobile/banners", handlers.AuthMiddleware(appEnv.GetActiveBannersHandler))
 
