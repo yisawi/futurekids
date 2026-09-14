@@ -563,3 +563,90 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
 	}
 }
+
+type DevicePayload struct {
+	SerialNumber string `json:"serial_number"`
+	LocationName string `json:"location_name"`
+	IsActive     bool   `json:"is_active"`
+	LastSync     string `json:"last_sync,omitempty"`
+}
+
+func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case http.MethodGet:
+		query := `SELECT serial_number, location_name, is_active, COALESCE(TO_CHAR(last_sync, 'YYYY-MM-DD HH24:MI:SS'), '') FROM devices ORDER BY location_name ASC`
+		rows, err := app.DB.QueryContext(r.Context(), query)
+		if err != nil {
+			http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var devices []DevicePayload
+		for rows.Next() {
+			var d DevicePayload
+			if err := rows.Scan(&d.SerialNumber, &d.LocationName, &d.IsActive, &d.LastSync); err == nil {
+				devices = append(devices, d)
+			}
+		}
+		if devices == nil { devices = []DevicePayload{} }
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": devices})
+
+	case http.MethodPost:
+		var req DevicePayload
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SerialNumber == "" {
+			http.Error(w, `{"status":"error","message":"Invalid payload or missing SN"}`, http.StatusBadRequest)
+			return
+		}
+
+		query := `INSERT INTO devices (serial_number, location_name, is_active) VALUES ($1, $2, $3)`
+		_, err := app.DB.ExecContext(r.Context(), query, req.SerialNumber, req.LocationName, req.IsActive)
+		if err != nil {
+			http.Error(w, `{"status":"error","message":"Device SN already exists or invalid data"}`, http.StatusConflict)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Device added successfully"})
+
+	case http.MethodPut:
+		var req DevicePayload
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SerialNumber == "" {
+			http.Error(w, `{"status":"error","message":"Invalid payload"}`, http.StatusBadRequest)
+			return
+		}
+
+		query := `UPDATE devices SET location_name = $1, is_active = $2 WHERE serial_number = $3`
+		res, err := app.DB.ExecContext(r.Context(), query, req.LocationName, req.IsActive, req.SerialNumber)
+		if err != nil {
+			http.Error(w, `{"status":"error","message":"Failed to update device"}`, http.StatusInternalServerError)
+			return
+		}
+		
+		rowsAffected, _ := res.RowsAffected()
+		if rowsAffected == 0 {
+			http.Error(w, `{"status":"error","message":"Device not found"}`, http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Device updated successfully"})
+
+	case http.MethodDelete:
+		sn := r.URL.Query().Get("sn")
+		if sn == "" {
+			http.Error(w, `{"status":"error","message":"Missing device SN"}`, http.StatusBadRequest)
+			return
+		}
+
+		// تعطيل الجهاز بدلاً من حذفه للحفاظ على تكامل قاعدة البيانات
+		query := `UPDATE devices SET is_active = false WHERE serial_number = $1`
+		_, err := app.DB.ExecContext(r.Context(), query, sn)
+		if err != nil {
+			http.Error(w, `{"status":"error","message":"Failed to disable device"}`, http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Device disabled logically"})
+
+	default:
+		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
+	}
+}

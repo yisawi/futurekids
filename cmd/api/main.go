@@ -104,6 +104,7 @@ func main() {
 	mux.HandleFunc("/api/admin/attendance", handlers.AdminMiddleware(appEnv.AdminDailyAttendanceHandler))
 	mux.HandleFunc("/api/admin/export/excel", handlers.AdminMiddleware(appEnv.AdminExportExcelHandler))
 	mux.HandleFunc("/api/admin/settings", handlers.AdminMiddleware(appEnv.AdminSettingsHandler))
+	mux.HandleFunc("/api/admin/devices", handlers.AdminMiddleware(appEnv.AdminDevicesHandler))
 
 	// مسار الموبايل العام (بدون AuthMiddleware)
 	mux.HandleFunc("/api/mobile/settings", appEnv.MobileSettingsHandler)
