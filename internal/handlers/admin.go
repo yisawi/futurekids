@@ -21,9 +21,10 @@ type AdminLoginRequest struct {
 
 type DashboardStats struct {
 	TotalStudents int `json:"total_students"`
+	TotalParents  int `json:"total_parents"`
 	PresentToday  int `json:"present_today"`
-	AbsentToday   int `json:"absent_today"`
 	ExcusedToday  int `json:"excused_today"`
+	AbsentToday   int `json:"absent_today"`
 }
 
 type StudentPayload struct {
@@ -90,47 +91,47 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	loc, err := time.LoadLocation("Asia/Baghdad")
-	if err != nil {
-		slog.Error("Failed to load Baghdad timezone", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-		return
-	}
+	loc, _ := time.LoadLocation("Asia/Baghdad")
 	today := time.Now().In(loc).Format("2006-01-02")
 
+	// استعلام CTE ذكي يحسب جميع الإحصائيات دفعة واحدة وبأداء عالٍ جداً
 	query := `
-		SELECT
-			(SELECT COUNT(*) FROM students) AS total_students,
-			(SELECT COUNT(DISTINCT student_id)
-			 FROM attendance_logs
-			 WHERE DATE(check_time) = $1 AND status = 'present') AS present_today,
-			(SELECT COUNT(DISTINCT student_id)
-			 FROM attendance_logs
-			 WHERE DATE(check_time) = $1 AND status = 'absent') AS absent_today,
-			(SELECT COUNT(DISTINCT student_id)
-			 FROM student_leaves
-			 WHERE leave_date = $1) AS excused_today;
+		WITH stats AS (
+			SELECT 
+				(SELECT COUNT(*) FROM students) as total_students,
+				(SELECT COUNT(*) FROM parents) as total_parents,
+				(SELECT COUNT(DISTINCT student_id) FROM attendance_logs WHERE DATE(check_time) = $1) as present_today,
+				(SELECT COUNT(*) FROM student_leaves WHERE leave_date = $1) as excused_today
+		)
+		SELECT 
+			total_students, 
+			total_parents, 
+			present_today, 
+			excused_today, 
+			GREATEST(0, total_students - present_today - excused_today) as absent_today
+		FROM stats
 	`
 
 	var stats DashboardStats
-	if err := app.DB.QueryRowContext(r.Context(), query, today).Scan(
+	err := app.DB.QueryRowContext(r.Context(), query, today).Scan(
 		&stats.TotalStudents,
+		&stats.TotalParents,
 		&stats.PresentToday,
-		&stats.AbsentToday,
 		&stats.ExcusedToday,
-	); err != nil {
-		slog.Error("Failed to fetch admin dashboard statistics", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		&stats.AbsentToday,
+	)
+
+	if err != nil {
+		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "success",
+		"date":   today,
 		"data":   stats,
-	}); err != nil {
-		slog.Error("Failed to encode admin dashboard response", "error", err)
-	}
+	})
 }
 
 func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) {
