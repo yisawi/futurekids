@@ -243,3 +243,52 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
 	}
 }
+
+type LeavePayload struct {
+	StudentID int    `json:"student_id"`
+	LeaveDate string `json:"leave_date"` // Format: YYYY-MM-DD
+	Notes     string `json:"notes"`
+}
+
+func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req LeavePayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"status":"error","message":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.StudentID == 0 || req.LeaveDate == "" {
+		http.Error(w, `{"status":"error","message":"student_id and leave_date are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// استخدام ON CONFLICT لتحديث الملاحظات إذا كانت الإجازة مسجلة مسبقاً لنفس اليوم
+	query := `
+		INSERT INTO student_leaves (student_id, leave_date, notes) 
+		VALUES ($1, $2, $3)
+		ON CONFLICT (student_id, leave_date) 
+		DO UPDATE SET notes = EXCLUDED.notes
+		RETURNING id
+	`
+
+	var leaveID int
+	err := app.DB.QueryRowContext(r.Context(), query, req.StudentID, req.LeaveDate, req.Notes).Scan(&leaveID)
+
+	if err != nil {
+		slog.Error("Failed to create leave record", "error", err)
+		http.Error(w, `{"status":"error","message":"Failed to create leave record"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "success",
+		"message": "Leave recorded successfully",
+		"data":    map[string]int{"leave_id": leaveID},
+	})
+}
