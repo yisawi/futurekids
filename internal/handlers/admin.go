@@ -29,6 +29,7 @@ type DashboardStats struct {
 type StudentPayload struct {
 	ID          int    `json:"id,omitempty"`
 	Name        string `json:"name"`
+	ParentName  string `json:"parent_name"`
 	ParentPhone string `json:"parent_phone"`
 	ParentPin   string `json:"parent_pin"`
 	RfidTag     string `json:"rfid_tag"`
@@ -136,8 +137,21 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
+
+	// 1. القراءة (JOIN بين جدول الطلاب والآباء)
 	case http.MethodGet:
-		query := `SELECT id, full_name, parent_phone, COALESCE(parent_pin, '1234'), COALESCE(rfid_tag, '') FROM students ORDER BY id DESC`
+		query := `
+			SELECT 
+				s.id, 
+				s.full_name, 
+				p.full_name as parent_name, 
+				p.phone_number, 
+				p.pin_code, 
+				COALESCE(s.rfid_tag, '') 
+			FROM students s
+			JOIN parents p ON s.parent_id = p.id
+			ORDER BY s.id DESC
+		`
 		rows, err := app.DB.QueryContext(r.Context(), query)
 		if err != nil {
 			slog.Error("Failed to fetch students", "error", err)
@@ -148,12 +162,12 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 
 		var students []StudentPayload
 		for rows.Next() {
-			var student StudentPayload
-			if err := rows.Scan(&student.ID, &student.Name, &student.ParentPhone, &student.ParentPin, &student.RfidTag); err != nil {
+			var s StudentPayload
+			if err := rows.Scan(&s.ID, &s.Name, &s.ParentName, &s.ParentPhone, &s.ParentPin, &s.RfidTag); err != nil {
 				slog.Error("Failed to scan student", "error", err)
 				continue
 			}
-			students = append(students, student)
+			students = append(students, s)
 		}
 		if err := rows.Err(); err != nil {
 			slog.Error("Failed while reading students", "error", err)
@@ -165,39 +179,72 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": students})
 
+	// 2. الإضافة (CTE ذكي لإنشاء/تحديث ولي الأمر وربطه بالطالب فوراً)
 	case http.MethodPost:
-		var student StudentPayload
-		if err := json.NewDecoder(r.Body).Decode(&student); err != nil {
+		var req StudentPayload
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"status":"error","message":"Invalid request body"}`, http.StatusBadRequest)
 			return
 		}
-		if student.ParentPin == "" {
-			student.ParentPin = "1234"
+		if req.ParentPin == "" {
+			req.ParentPin = "1234"
 		}
-		if student.RfidTag == "" {
-			student.RfidTag = fmt.Sprintf("admin-%d", time.Now().UnixNano())
+		if req.ParentName == "" {
+			req.ParentName = "غير مدخل"
+		}
+		if req.RfidTag == "" {
+			req.RfidTag = fmt.Sprintf("admin-%d", time.Now().UnixNano())
 		}
 
-		query := `INSERT INTO students (full_name, parent_phone, parent_pin, rfid_tag) VALUES ($1, $2, $3, $4) RETURNING id`
-		if err := app.DB.QueryRowContext(r.Context(), query, student.Name, student.ParentPhone, student.ParentPin, student.RfidTag).Scan(&student.ID); err != nil {
-			slog.Error("Failed to create student", "error", err)
-			http.Error(w, `{"status":"error","message":"Failed to create student"}`, http.StatusInternalServerError)
+		query := `
+			WITH upsert_parent AS (
+				INSERT INTO parents (full_name, phone_number, pin_code)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (phone_number) DO UPDATE 
+				SET full_name = EXCLUDED.full_name, pin_code = EXCLUDED.pin_code
+				RETURNING id
+			)
+			INSERT INTO students (full_name, rfid_tag, parent_id) 
+			VALUES ($4, $5, (SELECT id FROM upsert_parent)) 
+			RETURNING id
+		`
+		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, req.ParentPin, req.Name, req.RfidTag).Scan(&req.ID); err != nil {
+			slog.Error("Failed to create student and parent", "error", err)
+			http.Error(w, `{"status":"error","message":"Failed to create student and parent"}`, http.StatusInternalServerError)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Student created", "data": student})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Student created", "data": req})
 
+	// 3. التعديل
 	case http.MethodPut:
-		var student StudentPayload
-		if err := json.NewDecoder(r.Body).Decode(&student); err != nil || student.ID == 0 {
+		var req StudentPayload
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
 			http.Error(w, `{"status":"error","message":"Invalid request body or missing ID"}`, http.StatusBadRequest)
 			return
 		}
-		if student.RfidTag == "" {
-			student.RfidTag = fmt.Sprintf("admin-%d", time.Now().UnixNano())
+		if req.ParentPin == "" {
+			req.ParentPin = "1234"
+		}
+		if req.ParentName == "" {
+			req.ParentName = "غير مدخل"
+		}
+		if req.RfidTag == "" {
+			req.RfidTag = fmt.Sprintf("admin-%d", time.Now().UnixNano())
 		}
 
-		query := `UPDATE students SET full_name = $1, parent_phone = $2, parent_pin = $3, rfid_tag = $4 WHERE id = $5`
-		result, err := app.DB.ExecContext(r.Context(), query, student.Name, student.ParentPhone, student.ParentPin, student.RfidTag, student.ID)
+		query := `
+			WITH upsert_parent AS (
+				INSERT INTO parents (full_name, phone_number, pin_code)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (phone_number) DO UPDATE 
+				SET full_name = EXCLUDED.full_name, pin_code = EXCLUDED.pin_code
+				RETURNING id
+			)
+			UPDATE students 
+			SET full_name = $4, rfid_tag = $5, parent_id = (SELECT id FROM upsert_parent)
+			WHERE id = $6
+		`
+		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, req.ParentPin, req.Name, req.RfidTag, req.ID)
 		if err != nil {
 			slog.Error("Failed to update student", "error", err)
 			http.Error(w, `{"status":"error","message":"Failed to update student"}`, http.StatusInternalServerError)
@@ -215,6 +262,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Student updated"})
 
+	// 4. الحذف (يحذف الطالب فقط ويبقي بيانات ولي الأمر)
 	case http.MethodDelete:
 		id, err := strconv.Atoi(r.URL.Query().Get("id"))
 		if err != nil || id == 0 {
@@ -225,7 +273,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		result, err := app.DB.ExecContext(r.Context(), `DELETE FROM students WHERE id = $1`, id)
 		if err != nil {
 			slog.Error("Failed to delete student", "error", err)
-			http.Error(w, `{"status":"error","message":"Cannot delete student. Check related attendance records."}`, http.StatusConflict)
+			http.Error(w, `{"status":"error","message":"Cannot delete student. Check related records."}`, http.StatusConflict)
 			return
 		}
 		rowsAffected, err := result.RowsAffected()
