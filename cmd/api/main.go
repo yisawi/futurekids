@@ -78,12 +78,12 @@ func main() {
 	// Hardware route protected by request logging and active-device validation.
 	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.ADMSHandler)))
 	// The path for Flutter App without the middleware
-	mux.HandleFunc("/api/mobile/attendance/today", handlers.AuthMiddleware(appEnv.GetTodayAttendanceHandler))
+	mux.HandleFunc("/api/mobile/attendance/today", handlers.AuthMiddleware(appEnv.MobileTodayAttendanceHandler))
 	mux.HandleFunc("/api/mobile/attendance/monthly", handlers.AuthMiddleware(appEnv.GetMonthlyAttendanceHandler))
 	mux.HandleFunc("/api/mobile/attendance/summary", handlers.AuthMiddleware(appEnv.GetAttendanceSummaryHandler))
-	mux.HandleFunc("/api/mobile/students", handlers.AuthMiddleware(appEnv.GetParentStudentsHandler))
+	mux.HandleFunc("/api/mobile/students", handlers.AuthMiddleware(appEnv.MobileStudentsHandler))
 	mux.HandleFunc("/api/mobile/schedule", handlers.AuthMiddleware(appEnv.GetWeeklyScheduleHandler))
-	mux.HandleFunc("/api/mobile/notifications", handlers.AuthMiddleware(appEnv.GetNotificationsHandler))
+	mux.HandleFunc("/api/mobile/notifications", handlers.AuthMiddleware(appEnv.MobileNotificationsHandler))
 	mux.HandleFunc("/api/mobile/banners", handlers.AuthMiddleware(appEnv.GetActiveBannersHandler))
 
 	// Public mobile login route; all other mobile routes require AuthMiddleware.

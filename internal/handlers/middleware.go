@@ -87,37 +87,40 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 	}
 }
 
-// AuthMiddleware protects routes by validating the JWT token
+// ParentIDKey is the typed context key used to pass the authenticated parent's DB id.
+type contextKey string
+
+const ParentIDKey contextKey = "parent_id"
+
+// AuthMiddleware protects mobile routes by validating the JWT token and injecting parent_id into context.
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 1. Search for the Authorization header
+		// 1. Extract Authorization header
 		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			http.Error(w, `{"status":"error","message":"غير مصرح بالوصول: التوكن مفقود"}`, http.StatusUnauthorized)
-			return
-		}
-
-		// 2. Validate the Bearer format
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, `{"status":"error","message":"غير مصرح بالوصول: صيغة التوكن غير صحيحة"}`, http.StatusUnauthorized)
+			http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
 
-		// 3. Validate the token via the auth package
-		tokenString := parts[1]
-		claims, err := auth.ValidateToken(tokenString)
+		// 2. Validate token via auth package
+		claims, err := auth.ValidateToken(parts[1])
 		if err != nil {
-			http.Error(w, `{"status":"error","message":"غير مصرح بالوصول: التوكن غير صالح أو منتهي الصلاحية"}`, http.StatusUnauthorized)
+			http.Error(w, `{"status":"error","message":"Invalid or expired token"}`, http.StatusUnauthorized)
 			return
 		}
 
-		// 4. Extract phone number and pass it to the context
-		ctx := context.WithValue(r.Context(), "phone", claims["phone"])
-		r = r.WithContext(ctx)
+		// 3. Enforce parent role
+		if role, ok := claims["role"].(string); !ok || role != "parent" {
+			http.Error(w, `{"status":"error","message":"Access denied"}`, http.StatusForbidden)
+			return
+		}
 
-		// 5. Allow access to the next handler
-		next.ServeHTTP(w, r)
+		// 4. Inject parent_id into context so handlers cannot be spoofed
+		parentID := int(claims["parent_id"].(float64))
+		ctx := context.WithValue(r.Context(), ParentIDKey, parentID)
+
+		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
 

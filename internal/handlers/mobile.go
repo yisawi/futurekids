@@ -12,22 +12,23 @@ import (
 	"time"
 )
 
-// Struct that will be JSON for Flutter
-type AttendanceRecord struct {
-	StudentID int       `json:"student_id"` // change it to 'int' based on our DB
-	FullName  string    `json:"full_name"`
-	CheckTime time.Time `json:"check_time"`
-	DeviceSN  string    `json:"device_sn"`
+type MobileAttendanceRecord struct {
+	StudentID int    `json:"student_id"`
+	FullName  string `json:"full_name"`
+	Status    string `json:"status"` // Present, Absent, Excused
+	CheckTime string `json:"check_time,omitempty"`
 }
 
-// LoginRequest represents the expected JSON payload from the Flutter app for login
-type LoginRequest struct {
+// MobileLoginRequest is the expected JSON payload from the Flutter app for login.
+type MobileLoginRequest struct {
 	Phone string `json:"phone"`
-	PIN   string `json:"pin"`
+	Pin   string `json:"pin"`
 }
 
-// ParentStudent represents the student data needed by the mobile app.
-type ParentStudent struct {
+// LoginRequest kept for backwards-compatibility.
+type LoginRequest = MobileLoginRequest
+
+type MobileStudentPayload struct {
 	ID        int    `json:"id"`
 	FullName  string `json:"full_name"`
 	Grade     string `json:"grade"`
@@ -46,7 +47,7 @@ type DailySchedule struct {
 	Periods   []SchedulePeriod `json:"periods"`
 }
 
-type NotificationRecord struct {
+type MobileNotificationPayload struct {
 	ID        int    `json:"id"`
 	Title     string `json:"title"`
 	Body      string `json:"body"`
@@ -67,65 +68,59 @@ type Banner struct {
 	ActionLink string `json:"action_link"`
 }
 
-// GetTodayAttendanceHandler returns today's attendance for the authenticated parent's students.
-func (app *AppEnv) GetTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
+func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	phone, ok := r.Context().Value("phone").(string)
-	if !ok || phone == "" {
-		http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
+	if !ok {
+		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
 		return
 	}
 
+	loc, _ := time.LoadLocation("Asia/Baghdad")
+	today := time.Now().In(loc).Format("2006-01-02")
+
 	query := `
-		SELECT s.id, s.full_name, a.check_time, a.device_sn
-		FROM attendance_logs a
-		JOIN students s ON a.student_id = s.id
-		WHERE DATE(a.check_time) = CURRENT_DATE
-		  AND s.parent_phone = $1
-		ORDER BY a.check_time DESC;
+		SELECT 
+			s.id, 
+			s.full_name,
+			CASE 
+				WHEN al.id IS NOT NULL THEN 'Present'
+				WHEN sl.id IS NOT NULL THEN 'Excused'
+				ELSE 'Absent'
+			END as status,
+			COALESCE(CAST(al.check_time AS TEXT), '') as check_time
+		FROM students s
+		LEFT JOIN attendance_logs al ON s.id = al.student_id AND DATE(al.check_time) = $2
+		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = $2
+		WHERE s.parent_id = $1
 	`
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	rows, err := app.DB.QueryContext(ctx, query, phone)
+	rows, err := app.DB.QueryContext(r.Context(), query, parentID, today)
 	if err != nil {
-		slog.Error("Database query failed", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	var records []AttendanceRecord
+	var records []MobileAttendanceRecord
 	for rows.Next() {
-		var rec AttendanceRecord
-		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.CheckTime, &rec.DeviceSN); err != nil {
-			slog.Error("Row scan failed", "error", err)
+		var rec MobileAttendanceRecord
+		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckTime); err != nil {
 			continue
 		}
 		records = append(records, rec)
 	}
 
-	if err := rows.Err(); err != nil {
-		slog.Error("Error during rows iteration", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-		return
-	}
-
 	if records == nil {
-		records = []AttendanceRecord{}
+		records = []MobileAttendanceRecord{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	if err := json.NewEncoder(w).Encode(records); err != nil {
-		slog.Error("Failed to encode json", "error", err)
-	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "date": today, "data": records})
 }
 
 // GetActiveBannersHandler returns active banners ordered from newest to oldest.
@@ -191,9 +186,9 @@ func (app *AppEnv) GetAttendanceSummaryHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	phone, ok := r.Context().Value("phone").(string)
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
 	studentIDStr := r.URL.Query().Get("student_id")
-	if !ok || phone == "" || studentIDStr == "" {
+	if !ok || parentID == 0 || studentIDStr == "" {
 		http.Error(w, `{"status":"error","message":"Unauthorized or missing student_id"}`, http.StatusUnauthorized)
 		return
 	}
@@ -204,12 +199,13 @@ func (app *AppEnv) GetAttendanceSummaryHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Ownership check: student must belong to this parent
 	var exists bool
 	err = app.DB.QueryRowContext(
 		r.Context(),
-		"SELECT EXISTS(SELECT 1 FROM students WHERE id = $1 AND parent_phone = $2)",
+		"SELECT EXISTS(SELECT 1 FROM students WHERE id = $1 AND parent_id = $2)",
 		studentID,
-		phone,
+		parentID,
 	).Scan(&exists)
 	if err != nil {
 		slog.Error("Failed to verify student ownership", "error", err)
@@ -272,8 +268,8 @@ func (app *AppEnv) GetMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	phone, ok := r.Context().Value("phone").(string)
-	if !ok || phone == "" {
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
+	if !ok || parentID == 0 {
 		http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -287,7 +283,7 @@ func (app *AppEnv) GetMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		FROM attendance_logs a
 		JOIN students s ON a.student_id = s.id
 		WHERE a.student_id = $1
-		  AND s.parent_phone = $2
+		  AND s.parent_id = $2
 		  AND EXTRACT(YEAR FROM a.check_time) = $3
 		  AND EXTRACT(MONTH FROM a.check_time) = $4
 		GROUP BY TO_CHAR(a.check_time, 'YYYY-MM-DD')
@@ -297,7 +293,7 @@ func (app *AppEnv) GetMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := app.DB.QueryContext(ctx, query, studentID, phone, year, month)
+	rows, err := app.DB.QueryContext(ctx, query, studentID, parentID, year, month)
 	if err != nil {
 		slog.Error("Failed to fetch monthly attendance", "error", err)
 		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
@@ -366,6 +362,9 @@ func (app *AppEnv) GetMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	}
 }
 
+
+
+
 // GetWeeklyScheduleHandler returns the weekly schedule for an authorized student.
 func (app *AppEnv) GetWeeklyScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -373,9 +372,9 @@ func (app *AppEnv) GetWeeklyScheduleHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	phone, ok := r.Context().Value("phone").(string)
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
 	studentIDStr := r.URL.Query().Get("student_id")
-	if !ok || phone == "" || studentIDStr == "" {
+	if !ok || parentID == 0 || studentIDStr == "" {
 		http.Error(w, `{"status":"error","message":"Unauthorized or missing student_id"}`, http.StatusUnauthorized)
 		return
 	}
@@ -392,9 +391,9 @@ func (app *AppEnv) GetWeeklyScheduleHandler(w http.ResponseWriter, r *http.Reque
 	var grade, section string
 	err = app.DB.QueryRowContext(
 		ctx,
-		"SELECT COALESCE(grade, ''), COALESCE(section, '') FROM students WHERE id = $1 AND parent_phone = $2",
+		"SELECT COALESCE(grade, ''), COALESCE(section, '') FROM students WHERE id = $1 AND parent_id = $2",
 		studentID,
-		phone,
+		parentID,
 	).Scan(&grade, &section)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -463,6 +462,8 @@ func (app *AppEnv) GetWeeklyScheduleHandler(w http.ResponseWriter, r *http.Reque
 	writeWeeklyScheduleResponse(w, result)
 }
 
+
+
 func writeWeeklyScheduleResponse(w http.ResponseWriter, schedule []DailySchedule) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -474,155 +475,118 @@ func writeWeeklyScheduleResponse(w http.ResponseWriter, schedule []DailySchedule
 	}
 }
 
-// GetParentStudentsHandler returns the students linked to the authenticated parent's phone number.
-func (app *AppEnv) GetParentStudentsHandler(w http.ResponseWriter, r *http.Request) {
+func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	phone, ok := r.Context().Value("phone").(string)
-	if !ok || phone == "" {
-		http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+	// استخراج هوية الأب من سياق الطلب (تم حقنها عبر AuthMiddleware)
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
+	if !ok {
+		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
 		return
 	}
 
 	query := `
-		SELECT id, full_name, COALESCE(grade, ''), COALESCE(section, ''), COALESCE(avatar_url, '')
-		FROM students
-		WHERE parent_phone = $1
-		ORDER BY id ASC;
+		SELECT id, full_name, COALESCE(grade, ''), COALESCE(section, ''), COALESCE(avatar_url, '') 
+		FROM students 
+		WHERE parent_id = $1 
+		ORDER BY id ASC
 	`
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	rows, err := app.DB.QueryContext(ctx, query, phone)
+	
+	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
 	if err != nil {
-		slog.Error("Failed to fetch parent students", "error", err, "phone", phone)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	var students []ParentStudent
+	var students []MobileStudentPayload
 	for rows.Next() {
-		var student ParentStudent
-		if err := rows.Scan(
-			&student.ID,
-			&student.FullName,
-			&student.Grade,
-			&student.Section,
-			&student.AvatarURL,
-		); err != nil {
-			slog.Error("Failed to scan student row", "error", err)
-			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-			return
+		var s MobileStudentPayload
+		if err := rows.Scan(&s.ID, &s.FullName, &s.Grade, &s.Section, &s.AvatarURL); err != nil {
+			continue
 		}
-		students = append(students, student)
-	}
-
-	if err := rows.Err(); err != nil {
-		slog.Error("Error during student rows iteration", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-		return
+		students = append(students, s)
 	}
 
 	if students == nil {
-		students = []ParentStudent{}
+		students = []MobileStudentPayload{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "success",
-		"data":   students,
-	}); err != nil {
-		slog.Error("Failed to encode parent students response", "error", err)
-	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": students})
 }
 
-// GetNotificationsHandler returns the authenticated parent's recent notifications.
-func (app *AppEnv) GetNotificationsHandler(w http.ResponseWriter, r *http.Request) {
+
+
+
+func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	phone, ok := r.Context().Value("phone").(string)
-	if !ok || phone == "" {
-		http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+	// 1. استخراج parent_id من السياق المحمي
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
+	if !ok {
+		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
+	// 2. استعلام JOIN لجلب الإشعارات عبر مطابقة رقم الهاتف المرتبط بـ parent_id
+	query := `
+		SELECT n.id, n.title, n.body, n.is_read, n.created_at
+		FROM notifications n
+		JOIN parents p ON n.parent_phone = p.phone_number
+		WHERE p.id = $1
+		ORDER BY n.created_at DESC
+	`
 
-	rows, err := app.DB.QueryContext(ctx, `
-		SELECT id, title, body, is_read, created_at
-		FROM notifications
-		WHERE parent_phone = $1
-		ORDER BY created_at DESC
-		LIMIT 50;
-	`, phone)
+	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
 	if err != nil {
-		slog.Error("Failed to fetch notifications", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	notifications := make([]NotificationRecord, 0)
+	var notifications []MobileNotificationPayload
 	for rows.Next() {
-		var notification NotificationRecord
+		var n MobileNotificationPayload
 		var createdAt time.Time
-		if err := rows.Scan(
-			&notification.ID,
-			&notification.Title,
-			&notification.Body,
-			&notification.IsRead,
-			&createdAt,
-		); err != nil {
-			slog.Error("Failed to scan notification row", "error", err)
-			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-			return
+		if err := rows.Scan(&n.ID, &n.Title, &n.Body, &n.IsRead, &createdAt); err != nil {
+			continue
 		}
-		notification.CreatedAt = createdAt.Format(time.RFC3339)
-		notifications = append(notifications, notification)
+		// تنسيق الوقت ليقبله تطبيق فلاتر بسلاسة
+		n.CreatedAt = createdAt.Format(time.RFC3339)
+		notifications = append(notifications, n)
 	}
 
-	if err := rows.Err(); err != nil {
-		slog.Error("Error during notification rows iteration", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-		return
+	if notifications == nil {
+		notifications = []MobileNotificationPayload{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "success",
-		"data":   notifications,
-	}); err != nil {
-		slog.Error("Failed to encode notifications response", "error", err)
-	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": notifications})
 }
 
-// MobileLoginHandler handles the authentication request from the mobile app
+
+
+// MobileLoginHandler authenticates a parent against the parents table and issues a parent_id JWT.
 func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
-	// 1. Ensure the request method is POST only
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	// 2. Decode the incoming JSON payload
-	var req LoginRequest
+	var req MobileLoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"status":"error","message":"Invalid request body"}`, http.StatusBadRequest)
+		http.Error(w, `{"status":"error","message":"Invalid request"}`, http.StatusBadRequest)
 		return
 	}
 
-	if req.Phone == "" || req.PIN == "" {
+	if req.Phone == "" || req.Pin == "" {
 		http.Error(w, `{"status":"error","message":"Phone and PIN are required"}`, http.StatusBadRequest)
 		return
 	}
@@ -630,24 +594,20 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var exists bool
-	err := app.DB.QueryRowContext(
-		ctx,
-		"SELECT EXISTS(SELECT 1 FROM students WHERE parent_phone = $1 AND parent_pin = $2)",
-		req.Phone,
-		req.PIN,
-	).Scan(&exists)
-	if err != nil {
-		slog.Error("Database query failed during login", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-		return
-	}
-	if !exists {
-		http.Error(w, `{"status":"error","message":"رقم الهاتف أو الرمز السري غير صحيح"}`, http.StatusUnauthorized)
+	var parentID int
+	var parentName, dbPin string
+
+	// البحث حصراً في جدول الآباء
+	query := `SELECT id, full_name, pin_code FROM parents WHERE phone_number = $1`
+	err := app.DB.QueryRowContext(ctx, query, req.Phone).Scan(&parentID, &parentName, &dbPin)
+
+	if err != nil || req.Pin != dbPin {
+		// توحيد رسالة الخطأ أمنياً لمنع هجمات التخمين
+		http.Error(w, `{"status":"error","message":"Invalid phone number or PIN"}`, http.StatusUnauthorized)
 		return
 	}
 
-	tokenString, err := auth.GenerateToken(req.Phone)
+	tokenString, err := auth.GenerateParentToken(parentID, req.Phone)
 	if err != nil {
 		slog.Error("Failed to generate JWT", "error", err)
 		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
@@ -659,6 +619,11 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 		"status": "success",
 		"data": map[string]interface{}{
 			"token": tokenString,
+			"parent": map[string]interface{}{
+				"id":    parentID,
+				"name":  parentName,
+				"phone": req.Phone,
+			},
 		},
 	}); err != nil {
 		slog.Error("Failed to encode login response", "error", err)
