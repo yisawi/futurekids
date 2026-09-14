@@ -6,7 +6,6 @@ import (
 	"future_kids/internal/auth"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 )
 
@@ -53,10 +52,12 @@ type MobileNotificationPayload struct {
 	CreatedAt string `json:"created_at"`
 }
 
-type AttendanceSummary struct {
-	TotalPresent int `json:"total_present"`
-	TotalExcused int `json:"total_excused"`
-	TotalAbsent  int `json:"total_absent"`
+type StudentSummary struct {
+	StudentID    int    `json:"student_id"`
+	FullName     string `json:"full_name"`
+	TotalPresent int    `json:"total_present"`
+	TotalExcused int    `json:"total_excused"`
+	TotalAbsent  int    `json:"total_absent"`
 }
 
 type Banner struct {
@@ -180,69 +181,82 @@ type StudentMonthlyReport struct {
 	Records   []MonthlyRecord `json:"records"`
 }
 
-// GetAttendanceSummaryHandler returns attendance totals for an authorized student.
-func (app *AppEnv) GetAttendanceSummaryHandler(w http.ResponseWriter, r *http.Request) {
+func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
 	parentID, ok := r.Context().Value(ParentIDKey).(int)
-	studentIDStr := r.URL.Query().Get("student_id")
-	if !ok || parentID == 0 || studentIDStr == "" {
-		http.Error(w, `{"status":"error","message":"Unauthorized or missing student_id"}`, http.StatusUnauthorized)
+	if !ok {
+		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
 		return
 	}
 
-	studentID, err := strconv.Atoi(studentIDStr)
-	if err != nil || studentID <= 0 {
-		http.Error(w, `{"status":"error","message":"Invalid student_id"}`, http.StatusBadRequest)
-		return
+	monthParam := r.URL.Query().Get("month")
+	if monthParam == "" {
+		loc, _ := time.LoadLocation("Asia/Baghdad")
+		monthParam = time.Now().In(loc).Format("2006-01")
 	}
 
-	// Ownership check: student must belong to this parent
-	var exists bool
-	err = app.DB.QueryRowContext(
-		r.Context(),
-		"SELECT EXISTS(SELECT 1 FROM students WHERE id = $1 AND parent_id = $2)",
-		studentID,
-		parentID,
-	).Scan(&exists)
+	// CTE ذكي يحسب الأيام الفعلية للدوام حتى تاريخ اليوم (يستبعد الجمعة، السبت، والأيام المستقبلية)
+	query := `
+		WITH valid_days AS (
+			SELECT m_date
+			FROM generate_series(
+				DATE($1 || '-01'), 
+				LEAST((DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, CURRENT_DATE), 
+				'1 day'::interval
+			) AS md(m_date)
+			WHERE EXTRACT(DOW FROM m_date) NOT IN (5, 6)
+		)
+		SELECT 
+			s.id, 
+			s.full_name,
+			COUNT(al.id) as present_days,
+			COUNT(sl.id) as excused_days,
+			(SELECT COUNT(*) FROM valid_days) - COUNT(al.id) - COUNT(sl.id) as absent_days
+		FROM students s
+		CROSS JOIN valid_days vd
+		LEFT JOIN attendance_logs al ON s.id = al.student_id AND DATE(al.check_time) = vd.m_date
+		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = vd.m_date
+		WHERE s.parent_id = $2
+		GROUP BY s.id, s.full_name
+		ORDER BY s.id ASC
+	`
+
+	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID)
 	if err != nil {
-		slog.Error("Failed to verify student ownership", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
 		return
 	}
-	if !exists {
-		http.Error(w, `{"status":"error","message":"Student not found or unauthorized"}`, http.StatusForbidden)
-		return
+	defer rows.Close()
+
+	var summaries []StudentSummary
+	for rows.Next() {
+		var s StudentSummary
+		if err := rows.Scan(&s.StudentID, &s.FullName, &s.TotalPresent, &s.TotalExcused, &s.TotalAbsent); err != nil {
+			continue
+		}
+
+		// منع ظهور قيم سالبة في حال وجود خطأ في إدخالات الإجازات/الحضور في أيام العطل
+		if s.TotalAbsent < 0 {
+			s.TotalAbsent = 0
+		}
+
+		summaries = append(summaries, s)
 	}
 
-	var summary AttendanceSummary
-	err = app.DB.QueryRowContext(r.Context(), `
-		SELECT
-			(SELECT COUNT(*) FROM attendance_logs WHERE student_id = $1 AND status = 'present'),
-			(SELECT COUNT(*) FROM attendance_logs WHERE student_id = $1 AND status = 'absent'),
-			(SELECT COUNT(*) FROM student_leaves WHERE student_id = $1);
-	`, studentID).Scan(
-		&summary.TotalPresent,
-		&summary.TotalAbsent,
-		&summary.TotalExcused,
-	)
-	if err != nil {
-		slog.Error("Failed to calculate attendance summary", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-		return
+	if summaries == nil {
+		summaries = []StudentSummary{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "success",
-		"data":   summary,
-	}); err != nil {
-		slog.Error("Failed to encode attendance summary response", "error", err)
-	}
+		"month":  monthParam,
+		"data":   summaries,
+	})
 }
 
 func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Request) {
