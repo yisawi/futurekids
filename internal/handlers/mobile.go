@@ -559,3 +559,34 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 		slog.Error("Failed to encode login response", "error", err)
 	}
 }
+
+func (app *AppEnv) MobileSettingsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := `SELECT setting_key, setting_value FROM settings`
+	rows, err := app.DB.QueryContext(r.Context(), query)
+	if err != nil {
+		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	// تحويل البيانات إلى خريطة (Map) ليسهل على فلاتر قراءتها
+	settings := make(map[string]string)
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			continue
+		}
+		settings[key] = value
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"data":   settings,
+	})
+}

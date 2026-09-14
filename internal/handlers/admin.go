@@ -511,3 +511,55 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		slog.Error("Failed to write yearly excel file to response", "error", err)
 	}
 }
+
+type SettingPayload struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case http.MethodGet:
+		query := `SELECT setting_key, setting_value FROM settings`
+		rows, err := app.DB.QueryContext(r.Context(), query)
+		if err != nil {
+			http.Error(w, `{"status":"error"}`, http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		settings := make(map[string]string)
+		for rows.Next() {
+			var k, v string
+			if err := rows.Scan(&k, &v); err == nil {
+				settings[k] = v
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": settings})
+
+	case http.MethodPut:
+		var req SettingPayload
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
+			http.Error(w, `{"status":"error","message":"Invalid payload"}`, http.StatusBadRequest)
+			return
+		}
+
+		query := `
+			INSERT INTO settings (setting_key, setting_value, updated_at) 
+			VALUES ($1, $2, CURRENT_TIMESTAMP)
+			ON CONFLICT (setting_key) 
+			DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
+		`
+		_, err := app.DB.ExecContext(r.Context(), query, req.Key, req.Value)
+		if err != nil {
+			http.Error(w, `{"status":"error","message":"Failed to update setting"}`, http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Setting saved"})
+	default:
+		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
+	}
+}

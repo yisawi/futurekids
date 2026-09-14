@@ -103,6 +103,10 @@ func main() {
 	mux.HandleFunc("/api/admin/leaves", handlers.AdminMiddleware(appEnv.AdminCreateLeaveHandler))
 	mux.HandleFunc("/api/admin/attendance", handlers.AdminMiddleware(appEnv.AdminDailyAttendanceHandler))
 	mux.HandleFunc("/api/admin/export/excel", handlers.AdminMiddleware(appEnv.AdminExportExcelHandler))
+	mux.HandleFunc("/api/admin/settings", handlers.AdminMiddleware(appEnv.AdminSettingsHandler))
+
+	// مسار الموبايل العام (بدون AuthMiddleware)
+	mux.HandleFunc("/api/mobile/settings", appEnv.MobileSettingsHandler)
 
 	loc, err := time.LoadLocation("Asia/Baghdad")
 	if err != nil {
