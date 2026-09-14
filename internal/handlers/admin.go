@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -419,97 +420,129 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 
 func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	yearParam := r.URL.Query().Get("year")
-	if yearParam == "" {
+	dateParam := r.URL.Query().Get("date")
+	if dateParam == "" {
 		loc, _ := time.LoadLocation("Asia/Baghdad")
-		yearParam = time.Now().In(loc).Format("2006")
+		dateParam = time.Now().In(loc).Format("2006-01-02")
 	}
 
-	// ملاحظة: عمود parent_name غير موجود في المخطط الحالي، نستخدم parent_phone كبديل
+	// Fix 1: Use LATERAL subquery to prevent duplicate rows if a student has
+	// multiple attendance_logs for the same day (bypassed ON CONFLICT via bad migration etc.)
 	query := `
 		SELECT 
+			s.id, 
 			s.full_name, 
-			COALESCE(s.parent_phone, 'غير مدخل'), 
-			s.parent_phone,
-			COUNT(al.id) as total_present,
-			(SELECT COUNT(*) FROM student_leaves sl WHERE sl.student_id = s.id AND EXTRACT(YEAR FROM sl.leave_date::date) = $1::int) as total_excused
+			COALESCE(s.grade, 'غير محدد'), 
+			COALESCE(s.section, '-'), 
+			p.full_name as parent_name, 
+			p.phone_number,
+			-- Fix 2: Priority: Present > Excused > Absent (actual punch overrides a granted leave)
+			CASE 
+				WHEN al.id IS NOT NULL THEN 'حاضر'
+				WHEN sl.id IS NOT NULL THEN 'مجاز'
+				ELSE 'غائب'
+			END as status,
+			COALESCE(TO_CHAR(al.check_time, 'HH24:MI'), '') as check_time
 		FROM students s
-		LEFT JOIN attendance_logs al ON s.id = al.student_id AND EXTRACT(YEAR FROM al.check_time) = $1::int
-		GROUP BY s.id, s.full_name, s.parent_phone
-		ORDER BY s.full_name ASC
+		JOIN parents p ON s.parent_id = p.id
+		LEFT JOIN LATERAL (
+			SELECT id, check_time FROM attendance_logs
+			WHERE student_id = s.id AND DATE(check_time) = $1
+			LIMIT 1
+		) al ON true
+		LEFT JOIN LATERAL (
+			SELECT id FROM student_leaves
+			WHERE student_id = s.id AND leave_date = $1
+			LIMIT 1
+		) sl ON true
+		ORDER BY status DESC, s.full_name ASC
 	`
 
-	rows, err := app.DB.QueryContext(r.Context(), query, yearParam)
+	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
 	if err != nil {
-		slog.Error("Failed to fetch yearly attendance for export", "error", err)
 		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
 	f := excelize.NewFile()
-	defer f.Close()
+	defer f.Close() // Fix 3: Always close excelize file to release internal zip/memory resources
+
 	sheet := "Sheet1"
-	f.SetSheetName("Sheet1", "التقرير السنوي")
-	sheet = "التقرير السنوي"
 
-	rtl := true
-	f.SetSheetView(sheet, 0, &excelize.ViewOptions{RightToLeft: &rtl})
+	// 1. تحويل اتجاه الشيت من اليمين إلى اليسار (RTL)
+	rtlEnable := true
+	f.SetSheetView(sheet, 0, &excelize.ViewOptions{RightToLeft: &rtlEnable})
 
-	// دمج وتنسيق ترويسة المدرسة والوزارة
-	f.MergeCell(sheet, "A1", "E2")
-	f.SetCellValue(sheet, "A1", "وزارة التربية والتعليم\nمدرسة الرحمن الابتدائية الأهلية\nالتقرير السنوي الشامل للحضور والانصراف - عام "+yearParam)
-
+	// 2. إعداد تنسيق العناوين (توسيط وخط عريض)
 	titleStyle, _ := f.NewStyle(&excelize.Style{
-		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
-		Font:      &excelize.Font{Bold: true, Size: 14, Family: "Arial"},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Font:      &excelize.Font{Bold: true, Size: 14},
 	})
-	f.SetCellStyle(sheet, "A1", "E2", titleStyle)
 
+	// 3. كتابة الترويسة الرسمية ودمج الخلايا من العمود A إلى H
+	f.MergeCell(sheet, "A1", "H1")
+	f.SetCellValue(sheet, "A1", "وزارة التربية والتعليم")
+	
+	f.MergeCell(sheet, "A2", "H2")
+	f.SetCellValue(sheet, "A2", "مدرسة الرحمن الابتدائية الأهلية")
+	
+	f.MergeCell(sheet, "A3", "H3")
+	f.SetCellValue(sheet, "A3", fmt.Sprintf("تقرير الحضور والغياب اليومي الشامل - تاريخ: %s", dateParam))
+
+	// تطبيق التنسيق على الترويسة
+	f.SetCellStyle(sheet, "A1", "H3", titleStyle)
+
+	// 4. إعداد ترويسة أعمدة الجدول (في الصف الخامس لترك مسافة)
 	headerStyle, _ := f.NewStyle(&excelize.Style{
-		Font:      &excelize.Font{Bold: true, Family: "Arial", Size: 12},
-		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#DCE6F1"}, Pattern: 1},
-		Alignment: &excelize.Alignment{Horizontal: "center"},
+		Font: &excelize.Font{Bold: true},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
 	})
-
-	headers := []string{"اسم الطالب", "اسم ولي الأمر", "رقم الهاتف", "إجمالي أيام الحضور", "إجمالي الإجازات"}
+	
+	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت البصمة"}
 	for i, header := range headers {
-		cell, _ := excelize.CoordinatesToCellName(i+1, 3)
+		cell, _ := excelize.CoordinatesToCellName(i+1, 5)
 		f.SetCellValue(sheet, cell, header)
-		f.SetCellStyle(sheet, cell, cell, headerStyle)
 	}
+	f.SetCellStyle(sheet, "A5", "H5", headerStyle)
 
-	rowNum := 4
+	// 5. تعبئة البيانات (ابتداءً من الصف السادس)
+	rowIndex := 6
 	for rows.Next() {
-		var fullName, parentName, parentPhone string
-		var presentDays, excusedDays int
-		if err := rows.Scan(&fullName, &parentName, &parentPhone, &presentDays, &excusedDays); err != nil {
-			slog.Error("Failed to scan student row for yearly excel export", "error", err)
+		var id int
+		var studentName, grade, section, parentName, phone, status, checkTime string
+		// Fix 4: Log scan errors instead of silently skipping
+		if err := rows.Scan(&id, &studentName, &grade, &section, &parentName, &phone, &status, &checkTime); err != nil {
+			slog.Error("Failed to scan attendance row for excel export", "row", rowIndex, "error", err)
 			continue
 		}
-
-		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowNum), fullName)
-		f.SetCellValue(sheet, fmt.Sprintf("B%d", rowNum), parentName)
-		f.SetCellValue(sheet, fmt.Sprintf("C%d", rowNum), parentPhone)
-		f.SetCellValue(sheet, fmt.Sprintf("D%d", rowNum), presentDays)
-		f.SetCellValue(sheet, fmt.Sprintf("E%d", rowNum), excusedDays)
-		rowNum++
+		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowIndex), id)
+		f.SetCellValue(sheet, fmt.Sprintf("B%d", rowIndex), studentName)
+		f.SetCellValue(sheet, fmt.Sprintf("C%d", rowIndex), grade)
+		f.SetCellValue(sheet, fmt.Sprintf("D%d", rowIndex), section)
+		f.SetCellValue(sheet, fmt.Sprintf("E%d", rowIndex), parentName)
+		f.SetCellValue(sheet, fmt.Sprintf("F%d", rowIndex), phone)
+		f.SetCellValue(sheet, fmt.Sprintf("G%d", rowIndex), status)
+		f.SetCellValue(sheet, fmt.Sprintf("H%d", rowIndex), checkTime)
+		rowIndex++
 	}
 
-	f.SetColWidth(sheet, "A", "B", 30)
-	f.SetColWidth(sheet, "C", "C", 20)
-	f.SetColWidth(sheet, "D", "E", 18)
+	// Fix 5: Write to buffer first so we can return a clean HTTP error if generation fails.
+	// Once we start writing bytes to the ResponseWriter, the 200 header is already committed
+	// and http.Error() becomes dead code — this pattern prevents that.
+	var buf bytes.Buffer
+	if err := f.Write(&buf); err != nil {
+		http.Error(w, `{"status":"error","message":"Failed to generate excel file"}`, http.StatusInternalServerError)
+		return
+	}
 
-	fileName := fmt.Sprintf("annual_report_%s.xlsx", yearParam)
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
-	if err := f.Write(w); err != nil {
-		slog.Error("Failed to write yearly excel file to response", "error", err)
-	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=attendance_%s.xlsx", dateParam))
+	w.Write(buf.Bytes())
 }
 
 type SettingPayload struct {
