@@ -79,7 +79,7 @@ func main() {
 	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.ADMSHandler)))
 	// The path for Flutter App without the middleware
 	mux.HandleFunc("/api/mobile/attendance/today", handlers.AuthMiddleware(appEnv.MobileTodayAttendanceHandler))
-	mux.HandleFunc("/api/mobile/attendance/monthly", handlers.AuthMiddleware(appEnv.GetMonthlyAttendanceHandler))
+	mux.HandleFunc("/api/mobile/attendance/monthly", handlers.AuthMiddleware(appEnv.MobileMonthlyAttendanceHandler))
 	mux.HandleFunc("/api/mobile/attendance/summary", handlers.AuthMiddleware(appEnv.GetAttendanceSummaryHandler))
 	mux.HandleFunc("/api/mobile/students", handlers.AuthMiddleware(appEnv.MobileStudentsHandler))
 	mux.HandleFunc("/api/mobile/schedule", handlers.AuthMiddleware(appEnv.MobileScheduleHandler))

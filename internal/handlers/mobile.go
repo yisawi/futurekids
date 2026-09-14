@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"future_kids/internal/auth"
 	"log/slog"
 	"net/http"
@@ -169,13 +168,16 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// MonthlyDayRecord represents the attendance details for one day.
-type MonthlyDayRecord struct {
-	Date      string  `json:"date"`       // YYYY-MM-DD
-	Status    string  `json:"status"`     // present, late, absent
-	EntryTime *string `json:"entry_time"` // 07:45
-	ExitTime  *string `json:"exit_time"`  // 12:30
-	Duration  *string `json:"duration"`   // e.g. "4 ساعات و 45 دقيقة"
+type MonthlyRecord struct {
+	Date      string `json:"date"`
+	Status    string `json:"status"` // Present, Absent, Excused
+	CheckTime string `json:"check_time,omitempty"`
+}
+
+type StudentMonthlyReport struct {
+	StudentID int             `json:"student_id"`
+	FullName  string          `json:"full_name"`
+	Records   []MonthlyRecord `json:"records"`
 }
 
 // GetAttendanceSummaryHandler returns attendance totals for an authorized student.
@@ -243,122 +245,102 @@ func (app *AppEnv) GetAttendanceSummaryHandler(w http.ResponseWriter, r *http.Re
 	}
 }
 
-// GetMonthlyAttendanceHandler handles monthly attendance reports for a student.
-func (app *AppEnv) GetMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Request) {
+func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	studentIDStr := r.URL.Query().Get("student_id")
-	yearStr := r.URL.Query().Get("year")
-	monthStr := r.URL.Query().Get("month")
-
-	if studentIDStr == "" || yearStr == "" || monthStr == "" {
-		http.Error(w, `{"status":"error","message":"student_id, year, and month are required"}`, http.StatusBadRequest)
-		return
-	}
-
-	studentID, err := strconv.Atoi(studentIDStr)
-	year, errY := strconv.Atoi(yearStr)
-	month, errM := strconv.Atoi(monthStr)
-	if err != nil || errY != nil || errM != nil || month < 1 || month > 12 {
-		http.Error(w, `{"status":"error","message":"Invalid query parameters"}`, http.StatusBadRequest)
-		return
-	}
-
 	parentID, ok := r.Context().Value(ParentIDKey).(int)
-	if !ok || parentID == 0 {
-		http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+	if !ok {
+		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
 		return
 	}
 
+	monthParam := r.URL.Query().Get("month")
+	if monthParam == "" {
+		loc, _ := time.LoadLocation("Asia/Baghdad")
+		monthParam = time.Now().In(loc).Format("2006-01")
+	}
+
+	// استعلام CTE يولد أيام الشهر، يستبعد المستقبل وعطلة نهاية الأسبوع (5=الجمعة، 6=السبت)
 	query := `
-		SELECT
-			TO_CHAR(a.check_time, 'YYYY-MM-DD') AS day_date,
-			MIN(a.check_time) AS first_punch,
-			MAX(a.check_time) AS last_punch,
-			COUNT(*) AS punch_count
-		FROM attendance_logs a
-		JOIN students s ON a.student_id = s.id
-		WHERE a.student_id = $1
-		  AND s.parent_id = $2
-		  AND EXTRACT(YEAR FROM a.check_time) = $3
-		  AND EXTRACT(MONTH FROM a.check_time) = $4
-		GROUP BY TO_CHAR(a.check_time, 'YYYY-MM-DD')
-		ORDER BY day_date ASC;
+		WITH month_dates AS (
+			SELECT generate_series(
+				DATE($1 || '-01'), 
+				(DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, 
+				'1 day'::interval
+			)::DATE as m_date
+		)
+		SELECT 
+			s.id, 
+			s.full_name, 
+			TO_CHAR(md.m_date, 'YYYY-MM-DD') as record_date,
+			CASE 
+				WHEN al.id IS NOT NULL THEN 'Present'
+				WHEN sl.id IS NOT NULL THEN 'Excused'
+				ELSE 'Absent'
+			END as status,
+			COALESCE(TO_CHAR(al.check_time, 'HH24:MI'), '') as check_time
+		FROM students s
+		CROSS JOIN month_dates md
+		LEFT JOIN attendance_logs al ON s.id = al.student_id AND DATE(al.check_time) = md.m_date
+		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = md.m_date
+		WHERE s.parent_id = $2
+		  AND md.m_date <= CURRENT_DATE
+		  AND EXTRACT(DOW FROM md.m_date) NOT IN (5, 6)
+		ORDER BY s.id, md.m_date DESC
 	`
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	rows, err := app.DB.QueryContext(ctx, query, studentID, parentID, year, month)
+	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID)
 	if err != nil {
-		slog.Error("Failed to fetch monthly attendance", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	var records []MonthlyDayRecord
+	// تجميع البيانات هيكلياً لتسهيل عرضها في فلاتر
+	reportMap := make(map[int]*StudentMonthlyReport)
+	var studentIDs []int // للحفاظ على ترتيب الأبناء
+
 	for rows.Next() {
-		var dayDate string
-		var firstPunch, lastPunch time.Time
-		var punchCount int
+		var studentID int
+		var fullName, recordDate, status, checkTime string
 
-		if err := rows.Scan(&dayDate, &firstPunch, &lastPunch, &punchCount); err != nil {
-			slog.Error("Failed to scan monthly attendance row", "error", err)
-			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-			return
+		if err := rows.Scan(&studentID, &fullName, &recordDate, &status, &checkTime); err != nil {
+			continue
 		}
 
-		entryStr := firstPunch.Format("15:04")
-		var exitStr *string
-		var durationStr *string
-		status := "present"
-
-		if firstPunch.Hour() > 8 || (firstPunch.Hour() == 8 && firstPunch.Minute() > 0) {
-			status = "late"
+		if _, exists := reportMap[studentID]; !exists {
+			reportMap[studentID] = &StudentMonthlyReport{
+				StudentID: studentID,
+				FullName:  fullName,
+				Records:   []MonthlyRecord{},
+			}
+			studentIDs = append(studentIDs, studentID)
 		}
 
-		if punchCount > 1 && !lastPunch.Equal(firstPunch) {
-			formattedExit := lastPunch.Format("15:04")
-			exitStr = &formattedExit
-
-			diff := lastPunch.Sub(firstPunch)
-			hours := int(diff.Hours())
-			minutes := int(diff.Minutes()) % 60
-			duration := fmt.Sprintf("%d ساعة و %d دقيقة", hours, minutes)
-			durationStr = &duration
-		}
-
-		records = append(records, MonthlyDayRecord{
-			Date:      dayDate,
+		reportMap[studentID].Records = append(reportMap[studentID].Records, MonthlyRecord{
+			Date:      recordDate,
 			Status:    status,
-			EntryTime: &entryStr,
-			ExitTime:  exitStr,
-			Duration:  durationStr,
+			CheckTime: checkTime,
 		})
 	}
 
-	if err := rows.Err(); err != nil {
-		slog.Error("Error during monthly attendance iteration", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
-		return
+	var data []StudentMonthlyReport
+	for _, id := range studentIDs {
+		data = append(data, *reportMap[id])
 	}
-
-	if records == nil {
-		records = []MonthlyDayRecord{}
+	if data == nil {
+		data = []StudentMonthlyReport{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "success",
-		"data":   records,
-	}); err != nil {
-		slog.Error("Failed to encode monthly attendance response", "error", err)
-	}
+		"month":  monthParam,
+		"data":   data,
+	})
 }
 
 
