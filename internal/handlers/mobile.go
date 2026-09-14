@@ -357,9 +357,6 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 	})
 }
 
-
-
-
 func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
@@ -432,7 +429,7 @@ func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request)
 		WHERE parent_id = $1 
 		ORDER BY id ASC
 	`
-	
+
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
 	if err != nil {
 		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
@@ -456,9 +453,6 @@ func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": students})
 }
-
-
-
 
 func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -508,8 +502,6 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": notifications})
 }
-
-
 
 // MobileLoginHandler authenticates a parent against the parents table and issues a parent_id JWT.
 func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -142,6 +143,58 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	// Respond to the device acknowledging successful op so it does not re-send the data.
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
+}
+
+type HardwarePushPayload struct {
+	DeviceSN string `json:"device_sn"`
+	RFIDTag  string `json:"rfid_tag"`
+	PushTime string `json:"push_time"` // صيغة: YYYY-MM-DD HH:MM:SS
+}
+
+func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// حماية الذاكرة: رفض أي حمولة أكبر من 1 ميجابايت (يمنع هجمات DDoS من أجهزة مخترقة)
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+
+	var req HardwarePushPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"status":"error","message":"Invalid payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	// استعلام ذري: يبحث عن الطالب بالـ RFID ويدخل الحضور.
+	// ON CONFLICT DO NOTHING يضمن عدم تكرار السجل إذا أعاد الجهاز الإرسال.
+	query := `
+		WITH student AS (
+			SELECT id FROM students WHERE rfid_tag = $1 LIMIT 1
+		)
+		INSERT INTO attendance_logs (student_id, device_sn, check_time, status)
+		SELECT id, $2, $3, 'Present' FROM student
+		ON CONFLICT (student_id, check_time) DO NOTHING;
+	`
+
+	res, err := app.DB.ExecContext(r.Context(), query, req.RFIDTag, req.DeviceSN, req.PushTime)
+	if err != nil {
+		// في حال فشل قاعدة البيانات، نرد بخطأ 500 ليحتفظ الجهاز بالبصمة ويعيد إرسالها لاحقاً
+		http.Error(w, `{"status":"error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// نتحقق مما إذا كان تم العثور على الطالب فعلاً
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		// البصمة مكررة أو الـ RFID غير مسجل. في كلتا الحالتين نرد بنجاح للجهاز لكي لا يعلق
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"success","message":"Ignored or Duplicate"}`))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"success","message":"Punched successfully"}`))
 }
 
 func saveNotificationHistory(db *sql.DB, phone, title, body string) {

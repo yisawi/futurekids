@@ -35,6 +35,13 @@ func main() {
 	}
 	defer db.Close()
 
+	// تحديد أقصى عدد للاتصالات المفتوحة (يمنع خنق السيرفر)
+	db.SetMaxOpenConns(25)
+	// تحديد أقصى عدد للاتصالات الخاملة (يحافظ على الذاكرة)
+	db.SetMaxIdleConns(25)
+	// إغلاق الاتصالات التي ظلت خاملة لفترة طويلة
+	db.SetConnMaxLifetime(15 * time.Minute)
+
 	// Initialize Firebase FCM
 	ctx := context.Background()
 	var opt option.ClientOption
@@ -75,8 +82,9 @@ func main() {
 		w.Write([]byte("Server is healthy and running!"))
 	})
 
-	// Hardware route protected by request logging and active-device validation.
+	// Hardware routes: ADMS (ZKTeco text format) and JSON push
 	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.ADMSHandler)))
+	mux.HandleFunc("/api/attendance/push/json", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.HardwareAttendancePushHandler)))
 	// The path for Flutter App without the middleware
 	mux.HandleFunc("/api/mobile/attendance/today", handlers.AuthMiddleware(appEnv.MobileTodayAttendanceHandler))
 	mux.HandleFunc("/api/mobile/attendance/monthly", handlers.AuthMiddleware(appEnv.MobileMonthlyAttendanceHandler))
