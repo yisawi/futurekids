@@ -82,6 +82,13 @@ func main() {
 		w.Write([]byte("Server is healthy and running!"))
 	})
 
+	// -------------------------------------------------------------------------
+	// ZKTeco ADMS device routes — PUBLIC, no auth middleware.
+	// The device firmware speaks raw ADMS; it cannot carry JWT tokens.
+	// Route must live at the root level, NOT under /api or /v1.
+	// -------------------------------------------------------------------------
+	mux.HandleFunc("/iclock/cdata", handlers.ADMSHandshakeHandler)
+
 	// Hardware routes: ADMS (ZKTeco text format) and JSON push
 	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.ADMSHandler)))
 	mux.HandleFunc("/api/attendance/push/json", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.HardwareAttendancePushHandler)))
