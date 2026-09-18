@@ -87,12 +87,14 @@ func main() {
 	// The device firmware speaks raw ADMS; it cannot carry JWT tokens.
 	// Routes live at the root level, NOT under /api or /v1.
 	//
-	// /iclock/cdata  GET  — device registration / heartbeat on boot
-	// /iclock/cdata  POST — device pushes attendance/user data
-	// /iclock/getrequest GET — device polls for pending server commands
+	// GET  /iclock/cdata       — device registration / heartbeat on boot (stateless, no DB)
+	// POST /iclock/cdata       — device pushes attendance data (→ appEnv.ADMSHandler, needs DB)
+	// GET  /iclock/getrequest  — device polls for server commands (stateless, no DB)
+	//
+	// NOTE: POST must use appEnv.ADMSHandler, NOT the stateless ADMSCdataHandler stub.
 	// -------------------------------------------------------------------------
 	mux.HandleFunc("GET /iclock/cdata", handlers.ADMSCdataHandler)
-	mux.HandleFunc("POST /iclock/cdata", handlers.ADMSCdataHandler)
+	mux.HandleFunc("POST /iclock/cdata", appEnv.ADMSHandler)      // ← real handler: parses ATTLOG + saves to DB
 	mux.HandleFunc("GET /iclock/getrequest", handlers.ADMSGetRequestHandler)
 
 	// Hardware routes: ADMS (ZKTeco text format) and JSON push
