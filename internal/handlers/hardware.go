@@ -26,97 +26,154 @@ type AttendanceEvent struct {
 	CheckTime time.Time // time
 }
 
-// raw text parsing function
-func parseADMSPayload(deviceSN, rawText string) ([]AttendanceEvent, error) {
-	/*
-		read the text line by line,
-		the device may send multiple fingerprints at once if it is offline
-	*/
+// parseATTLOG parses the ADMS ATTLOG payload sent by ZKTeco devices.
+//
+// Each line is tab-separated key=value pairs, for example:
+//
+//	PIN=1001\tDateTime=2026-09-18 14:32:11\tVerified=1\tStatus=0
+//
+// The function extracts PIN (→ StudentID) and DateTime, skips malformed lines,
+// and never returns an error — bad lines are logged and skipped so the caller
+// can always ACK the device with "OK".
+func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 	var events []AttendanceEvent
 
-	lines := strings.Split(strings.TrimSpace(rawText), "\n")
+	lines := strings.Split(strings.TrimSpace(rawBody), "\n")
 	for _, line := range lines {
-		// Separating values ​​based on tabs
-		parts := strings.Fields(line)
-
-		if len(parts) < 3 {
-			continue // Skip empty or incomplete lines
-		}
-
-		studentID := parts[0]
-		// Combine date and time into a single string.
-		timeStr := fmt.Sprintf("%s %s", parts[1], parts[2])
-
-		// Time Object
-		checkTime, err := time.Parse("2006-01-02 15:04:05", timeStr)
-		if err != nil {
-			slog.Warn("Invalid time format in payload", "student_id", studentID, "error", err)
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
 
-		event := AttendanceEvent{
-			DeviceSN:  deviceSN,
-			StudentID: studentID,
-			CheckTime: checkTime,
+		// Build a key→value map from the tab-separated fields.
+		kv := make(map[string]string)
+		fields := strings.Split(line, "\t")
+		for _, field := range fields {
+			idx := strings.IndexByte(field, '=')
+			if idx < 0 {
+				continue // not a key=value pair, skip
+			}
+			key := strings.TrimSpace(field[:idx])
+			val := strings.TrimSpace(field[idx+1:])
+			kv[key] = val
 		}
-		events = append(events, event)
+
+		pin, hasPIN := kv["PIN"]
+		dateTimeStr, hasDateTime := kv["DateTime"]
+		if !hasPIN || !hasDateTime {
+			slog.Warn("ATTLOG line missing PIN or DateTime, skipping",
+				"device_sn", deviceSN,
+				"line", line,
+			)
+			continue
+		}
+
+		checkTime, err := time.Parse("2006-01-02 15:04:05", dateTimeStr)
+		if err != nil {
+			slog.Warn("ATTLOG invalid DateTime format, skipping",
+				"device_sn", deviceSN,
+				"pin", pin,
+				"datetime", dateTimeStr,
+				"error", err,
+			)
+			continue
+		}
+
+		events = append(events, AttendanceEvent{
+			DeviceSN:  deviceSN,
+			StudentID: pin,
+			CheckTime: checkTime,
+		})
 	}
 
-	return events, nil
+	return events
 }
 
-// first thing the device will do
-// The path that will receive the request from the device.
+// ADMSHandler is the authoritative POST handler for /iclock/cdata.
+//
+// The device pushes different table types to the same endpoint. Only
+// table=ATTLOG carries attendance records; everything else (OPERLOG, USER, etc.)
+// is ACKed immediately so the device clears its buffer without a parse attempt.
+//
+// IMPORTANT: This handler MUST always respond with HTTP 200 plain-text "OK".
+// Any other response causes the device to retry indefinitely.
 func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
-	// Device will send the data from A POST
+	// The ADMS protocol only POSTs data; reject anything else.
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Query Parameter extract deviceSN
-	deviceSN := r.URL.Query().Get("SN")
+	q := r.URL.Query()
+	deviceSN := q.Get("SN")
+	table := q.Get("table")
+
 	if deviceSN == "" {
-		http.Error(w, "Device SN is required", http.StatusBadRequest)
+		// Even with a missing SN we must respond OK so the device doesn't stall.
+		slog.Warn("ADMS POST received without SN parameter")
+		writeADMSOK(w)
 		return
 	}
 
+	// ── Table routing ────────────────────────────────────────────────────────
+	// Only ATTLOG contains attendance data. All other tables (OPERLOG, USER,
+	// BLACKLIST, …) are ACKed immediately — we log them but do not parse.
+	if table != "ATTLOG" {
+		slog.Info("ADMS non-attendance table received, ACKing",
+			"device_sn", deviceSN,
+			"table", table,
+		)
+		writeADMSOK(w)
+		return
+	}
+
+	// ── Read body ─────────────────────────────────────────────────────────────
+	defer r.Body.Close()
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
+		slog.Error("ADMS: failed to read ATTLOG body", "device_sn", deviceSN, "error", err)
+		// Still ACK so the device doesn't stall; we will miss this batch.
+		writeADMSOK(w)
 		return
 	}
 
-	defer r.Body.Close()
+	// ── Parse ATTLOG lines ────────────────────────────────────────────────────
+	events := parseATTLOG(deviceSN, string(bodyBytes))
+	slog.Info("ADMS ATTLOG received",
+		"device_sn", deviceSN,
+		"lines_parsed", len(events),
+	)
 
-	// Passing the raw text to the parsing function
-	events, err := parseADMSPayload(deviceSN, string(bodyBytes))
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse ADMS payload: %v", err), http.StatusBadRequest)
-		return
-	}
-
+	// ── Persist & notify ──────────────────────────────────────────────────────
 	insertedCount := 0
 	for _, ev := range events {
 		inserted, err := saveAttendanceLog(app.DB, ev)
 		if err != nil {
-			// We log the error on the server but do not halt the process
-			// (since a single fingerprint might fail while the others succeed).
-			slog.Error("Failed to save attendance log", "student_id", ev.StudentID, "error", err)
+			// Log but continue — one bad row must not block the others.
+			slog.Error("Failed to save attendance log",
+				"device_sn", deviceSN,
+				"student_id", ev.StudentID,
+				"error", err,
+			)
 			continue
 		}
-
 		if !inserted {
+			// Duplicate — device re-sent a record we already have.
+			slog.Info("Duplicate ATTLOG record, skipping",
+				"device_sn", deviceSN,
+				"student_id", ev.StudentID,
+				"check_time", ev.CheckTime,
+			)
 			continue
 		}
 		insertedCount++
 
+		// Fetch student details for the push notification.
 		studentIDInt, _ := strconv.Atoi(ev.StudentID)
 		var studentName string
 		var fcmToken sql.NullString
 		var parentPhone sql.NullString
 
-		// Query to GET the name and phone token
 		err = app.DB.QueryRowContext(
 			r.Context(),
 			"SELECT full_name, fcm_token, parent_phone FROM students WHERE id = $1",
@@ -125,7 +182,8 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 
 		if err == nil {
 			title := "إشعار حضور"
-			body := fmt.Sprintf("تم تسجيل حضور الطالب %s بنجاح الساعة %s", studentName, ev.CheckTime.Format("15:04"))
+			body := fmt.Sprintf("تم تسجيل حضور الطالب %s بنجاح الساعة %s",
+				studentName, ev.CheckTime.Format("15:04"))
 
 			if parentPhone.Valid && parentPhone.String != "" {
 				go saveNotificationHistory(app.DB, parentPhone.String, title, body)
@@ -133,16 +191,22 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 			if fcmToken.Valid && fcmToken.String != "" {
 				sendPushNotification(app.FCMClient, fcmToken.String, title, body)
 			}
-		} else if err != nil && err != sql.ErrNoRows {
-			slog.Error("Error fetching student details for notification", "student_id", ev.StudentID, "error", err)
+		} else if err != sql.ErrNoRows {
+			slog.Error("Error fetching student for notification",
+				"student_id", ev.StudentID,
+				"error", err,
+			)
 		}
 	}
 
-	slog.Info("ADMS payload processed", "received", len(events), "inserted", insertedCount)
+	slog.Info("ADMS ATTLOG processed",
+		"device_sn", deviceSN,
+		"received", len(events),
+		"inserted", insertedCount,
+	)
 
-	// Respond to the device acknowledging successful op so it does not re-send the data.
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	// Always ACK with plain-text OK — the device clears its buffer on receipt.
+	writeADMSOK(w)
 }
 
 type HardwarePushPayload struct {
