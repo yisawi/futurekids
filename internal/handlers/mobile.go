@@ -18,8 +18,9 @@ type MobileAttendanceRecord struct {
 
 // MobileLoginRequest is the expected JSON payload from the Flutter app for login.
 type MobileLoginRequest struct {
-	Phone string `json:"phone"`
-	Pin   string `json:"pin"`
+	Phone    string `json:"phone"`
+	Pin      string `json:"pin"`
+	FCMToken string `json:"fcm_token"`
 }
 
 // LoginRequest kept for backwards-compatibility.
@@ -542,6 +543,13 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 		slog.Error("Failed to generate JWT", "error", err)
 		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
 		return
+	}
+
+	if req.FCMToken != "" {
+		_, err := app.DB.ExecContext(ctx, "UPDATE students SET fcm_token = $1 WHERE parent_id = $2", req.FCMToken, parentID)
+		if err != nil {
+			slog.Error("Failed to update fcm_token for students", "parent_id", parentID, "error", err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

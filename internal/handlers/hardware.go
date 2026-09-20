@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"firebase.google.com/go/v4/messaging"
+	"future_kids/internal/notify"
 )
 
 type AppEnv struct {
@@ -281,7 +282,10 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 
 		notifyErr := app.DB.QueryRowContext(
 			r.Context(),
-			"SELECT full_name, fcm_token, parent_phone FROM students WHERE id = $1",
+			`SELECT s.full_name, s.fcm_token, p.phone_number 
+			 FROM students s 
+			 LEFT JOIN parents p ON s.parent_id = p.id 
+			 WHERE s.id = $1`,
 			studentIDInt,
 		).Scan(&studentName, &fcmToken, &parentPhone)
 
@@ -306,10 +310,10 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		)
 
 		if parentPhone.Valid && parentPhone.String != "" {
-			go saveNotificationHistory(app.DB, parentPhone.String, title, body)
+			go notify.SaveNotificationHistory(app.DB, parentPhone.String, title, body)
 		}
 		if fcmToken.Valid && fcmToken.String != "" {
-			sendPushNotification(app.FCMClient, fcmToken.String, title, body)
+			notify.SendPushNotification(app.FCMClient, fcmToken.String, title, body)
 		}
 	}
 
@@ -375,22 +379,6 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 	w.Write([]byte(`{"status":"success","message":"Punched successfully"}`))
 }
 
-func saveNotificationHistory(db *sql.DB, phone, title, body string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	_, err := db.ExecContext(
-		ctx,
-		"INSERT INTO notifications (parent_phone, title, body) VALUES ($1, $2, $3)",
-		phone,
-		title,
-		body,
-	)
-	if err != nil {
-		slog.Error("Failed to save notification history", "error", err)
-	}
-}
-
 // func to connect with PostegreSQL
 func saveAttendanceLog(db *sql.DB, ev AttendanceEvent) (bool, error) {
 
@@ -413,30 +401,4 @@ func saveAttendanceLog(db *sql.DB, ev AttendanceEvent) (bool, error) {
 
 }
 
-// Used for sending notification
-func sendPushNotification(client *messaging.Client, token, title, body string) {
-	if token == "" || client == nil {
-		return // Skip sending if the student does not have a registered phone or the client is not configured.
-	}
 
-	msg := &messaging.Message{
-		Token: token,
-		Notification: &messaging.Notification{
-			Title: title,
-			Body:  body,
-		},
-	}
-
-	// Send the notification in the background so as not to delay the server's response to the data device.
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		response, err := client.Send(ctx, msg)
-		if err != nil {
-			slog.Error("Failed to send FCM message", "token", token, "error", err)
-			return
-		}
-		slog.Info("Successfully sent FCM message", "response", response)
-	}()
-}

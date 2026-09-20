@@ -2,12 +2,16 @@ package cron
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"time"
+
+	"firebase.google.com/go/v4/messaging"
+	"future_kids/internal/notify"
 )
 
 // ProcessDailyAbsences تُنفذ عند الساعة 12:00 ظهراً بتوقيت العراق
-func ProcessDailyAbsences(db *sql.DB) {
+func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 	// الاعتماد الصارم على توقيت بغداد
 	loc, err := time.LoadLocation("Asia/Baghdad")
 	if err != nil {
@@ -20,12 +24,13 @@ func ProcessDailyAbsences(db *sql.DB) {
 
 	// استعلام يستثني الحاضرين والمجازين معاً
 	query := `
-		SELECT id, full_name, parent_phone, fcm_token 
-		FROM students 
-		WHERE id NOT IN (
+		SELECT s.id, s.full_name, p.phone_number, s.fcm_token 
+		FROM students s
+		LEFT JOIN parents p ON s.parent_id = p.id
+		WHERE s.id NOT IN (
 			SELECT student_id FROM attendance_logs WHERE DATE(check_time) = $1
 		) 
-		AND id NOT IN (
+		AND s.id NOT IN (
 			SELECT student_id FROM student_leaves WHERE leave_date = $1
 		)
 	`
@@ -39,7 +44,8 @@ func ProcessDailyAbsences(db *sql.DB) {
 
 	for rows.Next() {
 		var id int
-		var fullName, parentPhone string
+		var fullName string
+		var parentPhone sql.NullString
 		var fcmToken sql.NullString // استخدام NullString لتجنب أعطال فلاتر إذا كان التوكن فارغاً
 
 		if err := rows.Scan(&id, &fullName, &parentPhone, &fcmToken); err != nil {
@@ -48,10 +54,14 @@ func ProcessDailyAbsences(db *sql.DB) {
 		}
 
 		// هنا يتم استدعاء كود إرسال الإشعار الخاص بك (Firebase)
-		// Example:
-		// if fcmToken.Valid && fcmToken.String != "" {
-		//     SendPushNotification(fcmToken.String, "إشعار غياب", "الطالب " + fullName + " غائب هذا اليوم.")
-		// }
+		title := "إشعار غياب"
+		body := fmt.Sprintf("الطالب %s غائب اليوم", fullName)
+		if parentPhone.Valid && parentPhone.String != "" {
+			notify.SaveNotificationHistory(db, parentPhone.String, title, body)
+		}
+		if fcmToken.Valid && fcmToken.String != "" {
+			notify.SendPushNotification(fcmClient, fcmToken.String, title, body)
+		}
 
 		log.Printf("Processed absence for student ID: %d, Name: %s", id, fullName)
 	}
