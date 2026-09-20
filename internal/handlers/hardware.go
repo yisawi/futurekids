@@ -47,29 +47,14 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 	var events []AttendanceEvent
 
 	lines := strings.Split(strings.TrimSpace(rawBody), "\n")
-	slog.Info("[DEBUG] parseATTLOG: starting",
-		"device_sn", deviceSN,
-		"total_lines", len(lines),
-	)
 
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
-			slog.Info("[DEBUG] parseATTLOG: skipping empty line", "line_index", i)
 			continue
 		}
 
-		slog.Info("[DEBUG] parseATTLOG: processing line",
-			"line_index", i,
-			"raw_line", line,
-		)
-
 		fields := strings.Split(line, "\t")
-		slog.Info("[DEBUG] parseATTLOG: split result",
-			"line_index", i,
-			"field_count", len(fields),
-			"fields", fields,
-		)
 
 		var pin, dateTimeStr string
 
@@ -91,13 +76,9 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 				slog.Warn("[DEBUG] parseATTLOG: key=value line missing PIN or DateTime — SKIPPING",
 					"line_index", i,
 					"device_sn", deviceSN,
-					"parsed_kv", kv,
-					"raw_line", line,
 				)
 				continue
 			}
-			slog.Info("[DEBUG] parseATTLOG: detected key=value format",
-				"line_index", i, "pin", pin, "datetime", dateTimeStr)
 		} else {
 			// Positional format: PIN\tDateTime\tVerified\tStatus\t...
 			// Field[0] = PIN, Field[1] = "YYYY-MM-DD HH:MM:SS" (single tab-delimited field)
@@ -106,19 +87,16 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 					"line_index", i,
 					"device_sn", deviceSN,
 					"field_count", len(fields),
-					"raw_line", line,
 				)
 				continue
 			}
 			pin = strings.TrimSpace(fields[0])
 			dateTimeStr = strings.TrimSpace(fields[1])
-			slog.Info("[DEBUG] parseATTLOG: detected positional format",
-				"line_index", i, "pin", pin, "datetime", dateTimeStr)
 		}
 
 		if pin == "" {
 			slog.Warn("[DEBUG] parseATTLOG: PIN is empty after extraction — SKIPPING",
-				"line_index", i, "device_sn", deviceSN, "raw_line", line)
+				"line_index", i, "device_sn", deviceSN)
 			continue
 		}
 
@@ -127,18 +105,11 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 			slog.Warn("[DEBUG] parseATTLOG: time.Parse failed — SKIPPING",
 				"line_index", i,
 				"device_sn", deviceSN,
-				"pin", pin,
-				"datetime_raw", dateTimeStr,
 				"error", err,
 			)
 			continue
 		}
 
-		slog.Info("[DEBUG] parseATTLOG: parsed event OK",
-			"line_index", i,
-			"pin", pin,
-			"check_time", checkTime,
-		)
 		events = append(events, AttendanceEvent{
 			DeviceSN:  deviceSN,
 			StudentID: pin,
@@ -146,10 +117,6 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 		})
 	}
 
-	slog.Info("[DEBUG] parseATTLOG: finished",
-		"device_sn", deviceSN,
-		"events_parsed", len(events),
-	)
 	return events
 }
 
@@ -171,18 +138,8 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	deviceSN := q.Get("SN")
 	table := q.Get("table")
-	cmd := q.Get("c")
-	stamp := q.Get("Stamp")
-
-	// ── [DEBUG] Dump all incoming query params ─────────────────────────────
-	slog.Info("[DEBUG] ADMSHandler: incoming POST",
-		"device_sn", deviceSN,
-		"table", table,
-		"command", cmd,
-		"stamp", stamp,
-		"raw_url", r.URL.String(),
-		"remote_addr", r.RemoteAddr,
-	)
+	_ = q.Get("c")
+	_ = q.Get("Stamp")
 
 	if deviceSN == "" {
 		slog.Warn("[DEBUG] ADMSHandler: missing SN — ACKing anyway")
@@ -248,23 +205,13 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rawBody := string(bodyBytes)
-	slog.Info("[DEBUG] ADMSHandler: raw ATTLOG body",
-		"device_sn", deviceSN,
-		"body_bytes", len(bodyBytes),
-		"raw_body", rawBody,
-	)
 
 	// ── Parse ──────────────────────────────────────────────────────────────────
 	events := parseATTLOG(deviceSN, rawBody)
-	slog.Info("[DEBUG] ADMSHandler: parseATTLOG result",
-		"device_sn", deviceSN,
-		"events_count", len(events),
-	)
 
 	if len(events) == 0 {
-		slog.Warn("[DEBUG] ADMSHandler: parser returned 0 events — check [DEBUG] parseATTLOG logs above for skip reasons",
+		slog.Warn("[DEBUG] ADMSHandler: parser returned 0 events",
 			"device_sn", deviceSN,
-			"raw_body", rawBody,
 		)
 		writeADMSOK(w)
 		return
@@ -273,12 +220,6 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	// ── Persist & notify ───────────────────────────────────────────────────────
 	insertedCount := 0
 	for _, ev := range events {
-		slog.Info("[DEBUG] ADMSHandler: processing punch",
-			"device_sn", ev.DeviceSN,
-			"raw_device_pin", ev.StudentID,
-			"check_time", ev.CheckTime,
-		)
-
 		// 1. Resolve true internal students.id from the ZKTeco PIN (rfid_tag)
 		var internalStudentID int
 		lookupErr := app.DB.QueryRowContext(
@@ -290,12 +231,11 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		if lookupErr == sql.ErrNoRows {
 			slog.Warn("[DEBUG] ADMSHandler: Unknown device PIN received — skipping punch",
 				"device_sn", ev.DeviceSN,
-				"unrecognized_pin", ev.StudentID,
 			)
 			continue // Gracefully skip unmapped punches
 		} else if lookupErr != nil {
 			slog.Error("[DEBUG] ADMSHandler: DB error during PIN lookup",
-				"unrecognized_pin", ev.StudentID,
+				"device_sn", ev.DeviceSN,
 				"error", lookupErr,
 			)
 			continue
@@ -304,42 +244,25 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		// 2. Override the event's StudentID with the true internal ID for safe insertion
 		ev.StudentID = strconv.Itoa(internalStudentID)
 
-		slog.Info("[DEBUG] ADMSHandler: attempting DB insert",
-			"device_sn", ev.DeviceSN,
-			"internal_student_id", ev.StudentID,
-			"check_time", ev.CheckTime,
-		)
-
 		inserted, err := saveAttendanceLog(app.DB, ev)
 		if err != nil {
 			// Covers type mismatches and all other SQL errors.
-			slog.Error("[DEBUG] ADMSHandler: saveAttendanceLog FAILED — possible FK violation if student_id not in students table",
+			slog.Error("[DEBUG] ADMSHandler: saveAttendanceLog FAILED",
 				"device_sn", ev.DeviceSN,
-				"student_id", ev.StudentID,
-				"check_time", ev.CheckTime,
-				"sql_error", err.Error(),
+				"error", err,
 			)
 			continue
 		}
 		if !inserted {
-			slog.Info("[DEBUG] ADMSHandler: ON CONFLICT DO NOTHING triggered — duplicate record already exists",
-				"device_sn", ev.DeviceSN,
-				"student_id", ev.StudentID,
-				"check_time", ev.CheckTime,
-			)
 			continue
 		}
 		insertedCount++
-		slog.Info("[DEBUG] ADMSHandler: DB insert SUCCESS",
-			"student_id", ev.StudentID,
-			"check_time", ev.CheckTime,
-		)
 
 		// Fetch student details for the push notification.
 		studentIDInt, convErr := strconv.Atoi(ev.StudentID)
 		if convErr != nil {
 			slog.Warn("[DEBUG] ADMSHandler: student_id is not a valid integer — cannot send notification",
-				"student_id", ev.StudentID, "error", convErr)
+				"error", convErr)
 			continue
 		}
 
@@ -391,11 +314,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	slog.Info("[DEBUG] ADMSHandler: ATTLOG processing complete",
-		"device_sn", deviceSN,
-		"events_received", len(events),
-		"events_inserted", insertedCount,
-	)
+	log.Printf("ADMS [Device: %s]: Successfully processed %d attendance records", deviceSN, insertedCount)
 
 	// Always ACK with plain-text OK — the device clears its buffer on receipt.
 	writeADMSOK(w)
@@ -448,6 +367,7 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 		w.Write([]byte(`{"status":"success","message":"Ignored or Duplicate"}`))
 		return
 	}
+
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"success","message":"Punched successfully"}`))
