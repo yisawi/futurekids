@@ -35,7 +35,7 @@ type StudentPayload struct {
 	ParentName  string `json:"parent_name"`
 	ParentPhone string `json:"parent_phone"`
 	ParentPin   string `json:"parent_pin"`
-	RfidTag     string `json:"rfid_tag"`
+	RfidTag     string `json:"rfid_tag"` // IMPORTANT: this must equal the PIN the student is enrolled under on the ZKTeco device, not a physical RFID card value
 }
 
 func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {

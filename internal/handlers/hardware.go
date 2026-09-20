@@ -236,16 +236,46 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	// ── Persist & notify ───────────────────────────────────────────────────────
 	insertedCount := 0
 	for _, ev := range events {
+		slog.Info("[DEBUG] ADMSHandler: processing punch",
+			"device_sn", ev.DeviceSN,
+			"raw_device_pin", ev.StudentID,
+			"check_time", ev.CheckTime,
+		)
+
+		// 1. Resolve true internal students.id from the ZKTeco PIN (rfid_tag)
+		var internalStudentID int
+		lookupErr := app.DB.QueryRowContext(
+			r.Context(),
+			"SELECT id FROM students WHERE rfid_tag = $1",
+			ev.StudentID,
+		).Scan(&internalStudentID)
+
+		if lookupErr == sql.ErrNoRows {
+			slog.Warn("[DEBUG] ADMSHandler: Unknown device PIN received — skipping punch",
+				"device_sn", ev.DeviceSN,
+				"unrecognized_pin", ev.StudentID,
+			)
+			continue // Gracefully skip unmapped punches
+		} else if lookupErr != nil {
+			slog.Error("[DEBUG] ADMSHandler: DB error during PIN lookup",
+				"unrecognized_pin", ev.StudentID,
+				"error", lookupErr,
+			)
+			continue
+		}
+
+		// 2. Override the event's StudentID with the true internal ID for safe insertion
+		ev.StudentID = strconv.Itoa(internalStudentID)
+
 		slog.Info("[DEBUG] ADMSHandler: attempting DB insert",
 			"device_sn", ev.DeviceSN,
-			"student_id", ev.StudentID,
+			"internal_student_id", ev.StudentID,
 			"check_time", ev.CheckTime,
 		)
 
 		inserted, err := saveAttendanceLog(app.DB, ev)
 		if err != nil {
-			// Covers FK violations (student_id not in students table),
-			// type mismatches, and all other SQL errors.
+			// Covers type mismatches and all other SQL errors.
 			slog.Error("[DEBUG] ADMSHandler: saveAttendanceLog FAILED — possible FK violation if student_id not in students table",
 				"device_sn", ev.DeviceSN,
 				"student_id", ev.StudentID,
