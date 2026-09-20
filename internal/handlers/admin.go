@@ -100,7 +100,7 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 	query := `
 		WITH stats AS (
 			SELECT 
-				(SELECT COUNT(*) FROM students) as total_students,
+				(SELECT COUNT(*) FROM students WHERE is_active = true) as total_students,
 				(SELECT COUNT(*) FROM parents) as total_parents,
 				(SELECT COUNT(DISTINCT student_id) FROM attendance_logs WHERE DATE(check_time) = $1) as present_today,
 				(SELECT COUNT(*) FROM student_leaves WHERE leave_date = $1) as excused_today
@@ -152,6 +152,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				COALESCE(s.rfid_tag, '') 
 			FROM students s
 			JOIN parents p ON s.parent_id = p.id
+			WHERE s.is_active = true
 			ORDER BY s.id DESC
 		`
 		rows, err := app.DB.QueryContext(r.Context(), query)
@@ -287,7 +288,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		result, err := app.DB.ExecContext(r.Context(), `DELETE FROM students WHERE id = $1`, id)
+		result, err := app.DB.ExecContext(r.Context(), `UPDATE students SET is_active = false WHERE id = $1`, id)
 		if err != nil {
 			slog.Error("Failed to delete student", "error", err)
 			http.Error(w, `{"status":"error","message":"Cannot delete student. Check related records."}`, http.StatusConflict)
@@ -399,6 +400,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 			GROUP BY student_id
 		) al ON s.id = al.student_id
 		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = $1
+		WHERE s.is_active = true
 		ORDER BY status DESC, s.full_name ASC
 	`
 
@@ -473,6 +475,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 			WHERE student_id = s.id AND leave_date = $1
 			LIMIT 1
 		) sl ON true
+		WHERE s.is_active = true
 		ORDER BY status DESC, s.full_name ASC
 	`
 

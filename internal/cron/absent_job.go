@@ -28,7 +28,7 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 		SELECT s.id, s.full_name, p.phone_number, s.fcm_token 
 		FROM students s
 		LEFT JOIN parents p ON s.parent_id = p.id
-		WHERE NOT EXISTS (
+		WHERE s.is_active = true AND NOT EXISTS (
 			SELECT 1 FROM attendance_logs al 
 			WHERE al.student_id = s.id AND DATE(al.check_time) = $1
 		) 
