@@ -20,9 +20,9 @@ import (
 //  2. POST — Data push (attendance logs, user records, etc.).
 //     After registration the device POSTs tab-delimited records to the same
 //     path with query params:
-//       ?SN=<serial>&table=ATTLOG   → attendance records
-//       ?SN=<serial>&table=USER     → employee records
-//       ?SN=<serial>&table=OPERLOG  → operator-audit records
+//     ?SN=<serial>&table=ATTLOG   → attendance records
+//     ?SN=<serial>&table=USER     → employee records
+//     ?SN=<serial>&table=OPERLOG  → operator-audit records
 //     The body is newline-separated ADMS text lines.
 //
 // Route:    GET|POST /iclock/cdata

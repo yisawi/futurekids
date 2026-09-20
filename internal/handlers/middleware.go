@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"log"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -70,6 +71,11 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 		}
 
 		go func(sn string) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("Recovered panic in async goroutine: %v", r)
+				}
+			}()
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 

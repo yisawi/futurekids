@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"database/sql"
+	"log"
 	"log/slog"
 	"time"
 
@@ -43,7 +44,7 @@ func SendPushNotification(client *messaging.Client, token, title, body string) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("recovered from panic in SendPushNotification", "panic", r)
+				log.Printf("Recovered panic in async goroutine: %v", r)
 			}
 		}()
 

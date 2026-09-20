@@ -21,7 +21,7 @@ func LoadConfig() *Config {
 	}
 
 	return &Config{
-		Port:      getEnv("PORT", "8080"),
+		Port: getEnv("PORT", "8080"),
 		// Railway injects DATABASE_URL; DB_URL is kept as a local-dev fallback.
 		DBUrl:     getEnvFirstMatch("DATABASE_URL", "DB_URL"),
 		JWTSecret: getEnv("JWT_SECRET", ""),

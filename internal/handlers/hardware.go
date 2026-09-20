@@ -6,14 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"firebase.google.com/go/v4/messaging"
 	"future_kids/internal/notify"
+
+	"firebase.google.com/go/v4/messaging"
 )
 
 type AppEnv struct {
@@ -375,7 +377,14 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		)
 
 		if parentPhone.Valid && parentPhone.String != "" {
-			go notify.SaveNotificationHistory(app.DB, parentPhone.String, title, body)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("Recovered panic in async goroutine: %v", r)
+					}
+				}()
+				notify.SaveNotificationHistory(app.DB, parentPhone.String, title, body)
+			}()
 		}
 		if fcmToken.Valid && fcmToken.String != "" {
 			notify.SendPushNotification(app.FCMClient, fcmToken.String, title, body)
@@ -465,5 +474,3 @@ func saveAttendanceLog(db *sql.DB, ev AttendanceEvent) (bool, error) {
 	return rowsAffected > 0, nil
 
 }
-
-

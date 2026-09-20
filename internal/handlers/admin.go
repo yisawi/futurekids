@@ -501,10 +501,10 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 	// 3. كتابة الترويسة الرسمية ودمج الخلايا من العمود A إلى H
 	f.MergeCell(sheet, "A1", "H1")
 	f.SetCellValue(sheet, "A1", "وزارة التربية والتعليم")
-	
+
 	f.MergeCell(sheet, "A2", "H2")
 	f.SetCellValue(sheet, "A2", "مدرسة الرحمن الابتدائية الأهلية")
-	
+
 	f.MergeCell(sheet, "A3", "H3")
 	f.SetCellValue(sheet, "A3", fmt.Sprintf("تقرير الحضور والغياب اليومي الشامل - تاريخ: %s", dateParam))
 
@@ -516,7 +516,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		Font: &excelize.Font{Bold: true},
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
 	})
-	
+
 	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت البصمة"}
 	for i, header := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 5)
@@ -638,7 +638,9 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 				devices = append(devices, d)
 			}
 		}
-		if devices == nil { devices = []DevicePayload{} }
+		if devices == nil {
+			devices = []DevicePayload{}
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": devices})
 
 	case http.MethodPost:
@@ -669,7 +671,7 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","message":"Failed to update device"}`, http.StatusInternalServerError)
 			return
 		}
-		
+
 		rowsAffected, _ := res.RowsAffected()
 		if rowsAffected == 0 {
 			http.Error(w, `{"status":"error","message":"Device not found"}`, http.StatusNotFound)

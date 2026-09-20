@@ -94,7 +94,7 @@ func main() {
 	// NOTE: POST must use appEnv.ADMSHandler, NOT the stateless ADMSCdataHandler stub.
 	// -------------------------------------------------------------------------
 	mux.HandleFunc("GET /iclock/cdata", handlers.ADMSCdataHandler)
-	mux.HandleFunc("POST /iclock/cdata", appEnv.ADMSHandler)      // ← real handler: parses ATTLOG + saves to DB
+	mux.HandleFunc("POST /iclock/cdata", appEnv.ADMSHandler) // ← real handler: parses ATTLOG + saves to DB
 	mux.HandleFunc("GET /iclock/getrequest", handlers.ADMSGetRequestHandler)
 
 	// Hardware routes: ADMS (ZKTeco text format) and JSON push
