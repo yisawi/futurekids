@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"future_kids/internal/handlers"
@@ -37,7 +38,7 @@ func TestAdminExportExcelHandler_Structure(t *testing.T) {
 	if dsn == "" {
 		dsn = "postgres://yisawi@localhost:5432/future_kids?sslmode=disable"
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("Failed to connect to test database: %v", err)
 	}
@@ -56,8 +57,8 @@ func TestAdminExportExcelHandler_Structure(t *testing.T) {
 	res := rec.Result()
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("Expected HTTP 200, got %d", res.StatusCode)
+	if status := rec.Code; status != http.StatusOK {
+		t.Errorf("Expected HTTP 200, got %v. Body: %s", status, rec.Body.String())
 	}
 
 	contentType := res.Header.Get("Content-Type")

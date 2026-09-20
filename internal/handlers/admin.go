@@ -104,7 +104,7 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 				COUNT(*) FILTER (WHERE st.status = 'Present') as present_today,
 				COUNT(*) FILTER (WHERE st.status = 'Excused') as excused_today
 			FROM students s
-			CROSS JOIN LATERAL get_student_status(s.id, $1) st
+			CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
 			WHERE s.is_active = true
 		)
 		SELECT 
@@ -391,7 +391,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 			st.status,
 			COALESCE(CAST(st.first_check AS TEXT), '') as check_time
 		FROM students s
-		CROSS JOIN LATERAL get_student_status(s.id, $1) st
+		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
 		WHERE s.is_active = true
 		ORDER BY st.status DESC, s.full_name ASC
 	`
@@ -456,7 +456,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 			COALESCE(TO_CHAR(st.first_check, 'HH24:MI'), '') as check_time
 		FROM students s
 		JOIN parents p ON s.parent_id = p.id
-		CROSS JOIN LATERAL get_student_status(s.id, $1) st
+		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
 		WHERE s.is_active = true
 		ORDER BY st.status DESC, s.full_name ASC
 	`

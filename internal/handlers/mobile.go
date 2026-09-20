@@ -92,7 +92,7 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 			st.status,
 			COALESCE(CAST(st.first_check AS TEXT), '') as check_time
 		FROM students s
-		CROSS JOIN LATERAL get_student_status(s.id, $2) st
+		CROSS JOIN LATERAL get_student_status(s.id, $2::DATE) st
 		WHERE s.parent_id = $1 AND s.is_active = true
 	`
 
