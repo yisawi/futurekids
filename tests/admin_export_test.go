@@ -33,8 +33,11 @@ func TestAdminExportExcelHandler_Structure(t *testing.T) {
 	// Open a real test DB. Adjust DSN to your local test database.
 	// If you want a fully mocked test (no DB), you can stub AppEnv.DB
 	// with a sqlmock library instead.
-	dsn := "postgres://yisawi@localhost:5432/future_kids?sslmode=disable"
-	db, err := sql.Open("pgx", dsn)
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://yisawi@localhost:5432/future_kids?sslmode=disable"
+	}
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("Failed to connect to test database: %v", err)
 	}

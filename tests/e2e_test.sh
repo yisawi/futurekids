@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-DB_URL="postgresql://yisawi@localhost:5432/future_kids?sslmode=disable"
+DB_URL="${TEST_DATABASE_URL:-postgresql://yisawi@localhost:5432/future_kids?sslmode=disable}"
 API_URL="http://localhost:8080"
 
 # Colors
