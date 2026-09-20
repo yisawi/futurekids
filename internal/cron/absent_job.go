@@ -20,25 +20,30 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 		return
 	}
 	today := time.Now().In(loc).Format("2006-01-02")
+	tomorrow := time.Now().In(loc).AddDate(0, 0, 1).Format("2006-01-02")
 
 	log.Printf("Starting daily absence processing for date: %s", today)
 
-	// استعلام يستثني الحاضرين والمجازين معاً
 	query := `
 		SELECT s.id, s.full_name, p.phone_number, s.fcm_token 
 		FROM students s
 		LEFT JOIN parents p ON s.parent_id = p.id
-		WHERE s.is_active = true AND NOT EXISTS (
-			SELECT 1 FROM attendance_logs al 
-			WHERE al.student_id = s.id AND DATE(al.check_time) = $1
-		) 
+		WHERE s.is_active = true 
 		AND NOT EXISTS (
-			SELECT 1 FROM student_leaves sl 
-			WHERE sl.student_id = s.id AND sl.leave_date = $1
+			SELECT 1 
+			FROM attendance_logs al 
+			WHERE al.student_id = s.id 
+			AND al.check_time >= $1 AND al.check_time < $2
+		)
+		AND NOT EXISTS (
+			SELECT 1 
+			FROM student_leaves sl 
+			WHERE sl.student_id = s.id 
+			AND sl.leave_date = $1
 		)
 	`
 
-	rows, err := db.Query(query, today)
+	rows, err := db.Query(query, today, tomorrow)
 	if err != nil {
 		log.Printf("Failed to fetch absent students: %v", err)
 		return
