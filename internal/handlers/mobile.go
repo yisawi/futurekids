@@ -98,7 +98,7 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 		FROM students s
 		LEFT JOIN attendance_logs al ON s.id = al.student_id AND DATE(al.check_time) = $2
 		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = $2
-		WHERE s.parent_id = $1
+		WHERE s.parent_id = $1 AND s.is_active = true
 	`
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID, today)
@@ -223,7 +223,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 		CROSS JOIN valid_days vd
 		LEFT JOIN attendance_logs al ON s.id = al.student_id AND DATE(al.check_time) = vd.m_date
 		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = vd.m_date
-		WHERE s.parent_id = $2
+		WHERE s.parent_id = $2 AND s.is_active = true
 		GROUP BY s.id, s.full_name
 		ORDER BY s.id ASC
 	`
@@ -303,7 +303,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		CROSS JOIN month_dates md
 		LEFT JOIN attendance_logs al ON s.id = al.student_id AND DATE(al.check_time) = md.m_date
 		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = md.m_date
-		WHERE s.parent_id = $2
+		WHERE s.parent_id = $2 AND s.is_active = true
 		  AND md.m_date <= CURRENT_DATE
 		  AND EXTRACT(DOW FROM md.m_date) NOT IN (5, 6)
 		ORDER BY s.id, md.m_date DESC
@@ -385,7 +385,7 @@ func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request)
 			ws.teacher_name
 		FROM students s
 		JOIN weekly_schedules ws ON s.grade = ws.grade AND s.section = ws.section
-		WHERE s.parent_id = $1
+		WHERE s.parent_id = $1 AND s.is_active = true
 		ORDER BY s.id ASC, ws.day_of_week ASC, ws.period_number ASC
 	`
 
@@ -429,7 +429,7 @@ func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request)
 	query := `
 		SELECT id, full_name, COALESCE(grade, ''), COALESCE(section, ''), COALESCE(avatar_url, '') 
 		FROM students 
-		WHERE parent_id = $1 
+		WHERE parent_id = $1 AND is_active = true
 		ORDER BY id ASC
 	`
 

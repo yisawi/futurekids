@@ -73,7 +73,7 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 			pin, ok1 = kv["PIN"]
 			dateTimeStr, ok2 = kv["DateTime"]
 			if !ok1 || !ok2 {
-				slog.Warn("[DEBUG] parseATTLOG: key=value line missing PIN or DateTime — SKIPPING",
+				slog.Warn("parseATTLOG: key=value line missing PIN or DateTime — SKIPPING",
 					"line_index", i,
 					"device_sn", deviceSN,
 				)
@@ -83,7 +83,7 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 			// Positional format: PIN\tDateTime\tVerified\tStatus\t...
 			// Field[0] = PIN, Field[1] = "YYYY-MM-DD HH:MM:SS" (single tab-delimited field)
 			if len(fields) < 2 {
-				slog.Warn("[DEBUG] parseATTLOG: positional line has fewer than 2 tab-fields — SKIPPING",
+				slog.Warn("parseATTLOG: positional line has fewer than 2 tab-fields — SKIPPING",
 					"line_index", i,
 					"device_sn", deviceSN,
 					"field_count", len(fields),
@@ -95,14 +95,14 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 		}
 
 		if pin == "" {
-			slog.Warn("[DEBUG] parseATTLOG: PIN is empty after extraction — SKIPPING",
+			slog.Warn("parseATTLOG: PIN is empty after extraction — SKIPPING",
 				"line_index", i, "device_sn", deviceSN)
 			continue
 		}
 
 		checkTime, err := time.Parse("2006-01-02 15:04:05", dateTimeStr)
 		if err != nil {
-			slog.Warn("[DEBUG] parseATTLOG: time.Parse failed — SKIPPING",
+			slog.Warn("parseATTLOG: time.Parse failed — SKIPPING",
 				"line_index", i,
 				"device_sn", deviceSN,
 				"error", err,
@@ -142,7 +142,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	_ = q.Get("Stamp")
 
 	if deviceSN == "" {
-		slog.Warn("[DEBUG] ADMSHandler: missing SN — ACKing anyway")
+		slog.Warn("ADMSHandler: missing SN — ACKing anyway")
 		writeADMSOK(w)
 		return
 	}
@@ -198,7 +198,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Error("[DEBUG] ADMSHandler: io.ReadAll failed",
+		slog.Error("ADMSHandler: io.ReadAll failed",
 			"device_sn", deviceSN, "error", err)
 		writeADMSOK(w)
 		return
@@ -210,7 +210,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	events := parseATTLOG(deviceSN, rawBody)
 
 	if len(events) == 0 {
-		slog.Warn("[DEBUG] ADMSHandler: parser returned 0 events",
+		slog.Warn("ADMSHandler: parser returned 0 events",
 			"device_sn", deviceSN,
 		)
 		writeADMSOK(w)
@@ -229,12 +229,12 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		).Scan(&internalStudentID)
 
 		if lookupErr == sql.ErrNoRows {
-			slog.Warn("[DEBUG] ADMSHandler: Unknown device PIN received — skipping punch",
+			slog.Warn("ADMSHandler: Unknown device PIN received — skipping punch",
 				"device_sn", ev.DeviceSN,
 			)
 			continue // Gracefully skip unmapped punches
 		} else if lookupErr != nil {
-			slog.Error("[DEBUG] ADMSHandler: DB error during PIN lookup",
+			slog.Error("ADMSHandler: DB error during PIN lookup",
 				"device_sn", ev.DeviceSN,
 				"error", lookupErr,
 			)
@@ -247,7 +247,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		inserted, err := saveAttendanceLog(app.DB, ev)
 		if err != nil {
 			// Covers type mismatches and all other SQL errors.
-			slog.Error("[DEBUG] ADMSHandler: saveAttendanceLog FAILED",
+			slog.Error("ADMSHandler: saveAttendanceLog FAILED",
 				"device_sn", ev.DeviceSN,
 				"error", err,
 			)
@@ -261,7 +261,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		// Fetch student details for the push notification.
 		studentIDInt, convErr := strconv.Atoi(ev.StudentID)
 		if convErr != nil {
-			slog.Warn("[DEBUG] ADMSHandler: student_id is not a valid integer — cannot send notification",
+			slog.Warn("ADMSHandler: student_id is not a valid integer — cannot send notification",
 				"error", convErr)
 			continue
 		}
@@ -280,11 +280,11 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		).Scan(&studentName, &fcmToken, &parentPhone)
 
 		if notifyErr == sql.ErrNoRows {
-			slog.Warn("[DEBUG] ADMSHandler: student not found in DB for notification",
+			slog.Warn("ADMSHandler: student not found in DB for notification",
 				"student_id_int", studentIDInt)
 			continue
 		} else if notifyErr != nil {
-			slog.Error("[DEBUG] ADMSHandler: error querying student for notification",
+			slog.Error("ADMSHandler: error querying student for notification",
 				"student_id", ev.StudentID, "error", notifyErr)
 			continue
 		}
