@@ -89,15 +89,10 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 		SELECT 
 			s.id, 
 			s.full_name,
-			CASE 
-				WHEN al.id IS NOT NULL THEN 'Present'
-				WHEN sl.id IS NOT NULL THEN 'Excused'
-				ELSE 'Absent'
-			END as status,
-			COALESCE(CAST(al.check_time AS TEXT), '') as check_time
+			st.status,
+			COALESCE(CAST(st.first_check AS TEXT), '') as check_time
 		FROM students s
-		LEFT JOIN attendance_logs al ON s.id = al.student_id AND DATE(al.check_time) = $2
-		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = $2
+		CROSS JOIN LATERAL get_student_status(s.id, $2) st
 		WHERE s.parent_id = $1 AND s.is_active = true
 	`
 
@@ -205,24 +200,26 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 	// CTE ذكي يحسب الأيام الفعلية للدوام حتى تاريخ اليوم (يستبعد الجمعة، السبت، والأيام المستقبلية)
 	query := `
 		WITH valid_days AS (
-			SELECT m_date
-			FROM generate_series(
+			SELECT generate_series(
 				DATE($1 || '-01'), 
 				LEAST((DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, CURRENT_DATE), 
 				'1 day'::interval
-			) AS md(m_date)
-			WHERE EXTRACT(DOW FROM m_date) NOT IN (5, 6)
+			)::DATE AS m_date
+			WHERE EXTRACT(DOW FROM generate_series(
+				DATE($1 || '-01'), 
+				LEAST((DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, CURRENT_DATE), 
+				'1 day'::interval
+			)) NOT IN (5, 6)
 		)
 		SELECT 
 			s.id, 
 			s.full_name,
-			COUNT(al.id) as present_days,
-			COUNT(sl.id) as excused_days,
-			(SELECT COUNT(*) FROM valid_days) - COUNT(al.id) - COUNT(sl.id) as absent_days
+			COUNT(CASE WHEN st.status = 'Present' THEN 1 END) as present_days,
+			COUNT(CASE WHEN st.status = 'Excused' THEN 1 END) as excused_days,
+			COUNT(CASE WHEN st.status = 'Absent' THEN 1 END) as absent_days
 		FROM students s
 		CROSS JOIN valid_days vd
-		LEFT JOIN attendance_logs al ON s.id = al.student_id AND DATE(al.check_time) = vd.m_date
-		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = vd.m_date
+		CROSS JOIN LATERAL get_student_status(s.id, vd.m_date) st
 		WHERE s.parent_id = $2 AND s.is_active = true
 		GROUP BY s.id, s.full_name
 		ORDER BY s.id ASC
@@ -287,22 +284,17 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 				DATE($1 || '-01'), 
 				(DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, 
 				'1 day'::interval
-			)::DATE as m_date
+			)::DATE AS m_date
 		)
 		SELECT 
-			s.id, 
-			s.full_name, 
+			s.id as student_id,
+			s.full_name,
 			TO_CHAR(md.m_date, 'YYYY-MM-DD') as record_date,
-			CASE 
-				WHEN al.id IS NOT NULL THEN 'Present'
-				WHEN sl.id IS NOT NULL THEN 'Excused'
-				ELSE 'Absent'
-			END as status,
-			COALESCE(TO_CHAR(al.check_time, 'HH24:MI'), '') as check_time
+			st.status,
+			COALESCE(TO_CHAR(st.first_check, 'HH24:MI'), '') as check_time
 		FROM students s
 		CROSS JOIN month_dates md
-		LEFT JOIN attendance_logs al ON s.id = al.student_id AND DATE(al.check_time) = md.m_date
-		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = md.m_date
+		CROSS JOIN LATERAL get_student_status(s.id, md.m_date) st
 		WHERE s.parent_id = $2 AND s.is_active = true
 		  AND md.m_date <= CURRENT_DATE
 		  AND EXTRACT(DOW FROM md.m_date) NOT IN (5, 6)

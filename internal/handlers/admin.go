@@ -100,14 +100,16 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 	query := `
 		WITH stats AS (
 			SELECT 
-				(SELECT COUNT(*) FROM students WHERE is_active = true) as total_students,
-				(SELECT COUNT(*) FROM parents) as total_parents,
-				(SELECT COUNT(DISTINCT student_id) FROM attendance_logs WHERE DATE(check_time) = $1) as present_today,
-				(SELECT COUNT(*) FROM student_leaves WHERE leave_date = $1) as excused_today
+				COUNT(*) as total_students,
+				COUNT(*) FILTER (WHERE st.status = 'Present') as present_today,
+				COUNT(*) FILTER (WHERE st.status = 'Excused') as excused_today
+			FROM students s
+			CROSS JOIN LATERAL get_student_status(s.id, $1) st
+			WHERE s.is_active = true
 		)
 		SELECT 
 			total_students, 
-			total_parents, 
+			(SELECT COUNT(*) FROM parents) as total_parents, 
 			present_today, 
 			excused_today, 
 			GREATEST(0, total_students - present_today - excused_today) as absent_today
@@ -386,22 +388,12 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		SELECT 
 			s.id, 
 			s.full_name,
-			CASE 
-				WHEN al.student_id IS NOT NULL THEN 'Present'
-				WHEN sl.id IS NOT NULL THEN 'Excused'
-				ELSE 'Absent'
-			END as status,
-			COALESCE(CAST(al.first_check AS TEXT), '') as check_time
+			st.status,
+			COALESCE(CAST(st.first_check AS TEXT), '') as check_time
 		FROM students s
-		LEFT JOIN (
-			SELECT student_id, MIN(check_time) AS first_check
-			FROM attendance_logs
-			WHERE DATE(check_time) = $1
-			GROUP BY student_id
-		) al ON s.id = al.student_id
-		LEFT JOIN student_leaves sl ON s.id = sl.student_id AND sl.leave_date = $1
+		CROSS JOIN LATERAL get_student_status(s.id, $1) st
 		WHERE s.is_active = true
-		ORDER BY status DESC, s.full_name ASC
+		ORDER BY st.status DESC, s.full_name ASC
 	`
 
 	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
@@ -456,27 +448,17 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 			COALESCE(s.section, '-'), 
 			p.full_name as parent_name, 
 			p.phone_number,
-			-- Fix 2: Priority: Present > Excused > Absent (actual punch overrides a granted leave)
-			CASE 
-				WHEN al.id IS NOT NULL THEN 'حاضر'
-				WHEN sl.id IS NOT NULL THEN 'مجاز'
+			CASE st.status
+				WHEN 'Present' THEN 'حاضر'
+				WHEN 'Excused' THEN 'مجاز'
 				ELSE 'غائب'
 			END as status,
-			COALESCE(TO_CHAR(al.check_time, 'HH24:MI'), '') as check_time
+			COALESCE(TO_CHAR(st.first_check, 'HH24:MI'), '') as check_time
 		FROM students s
 		JOIN parents p ON s.parent_id = p.id
-		LEFT JOIN LATERAL (
-			SELECT id, check_time FROM attendance_logs
-			WHERE student_id = s.id AND DATE(check_time) = $1
-			LIMIT 1
-		) al ON true
-		LEFT JOIN LATERAL (
-			SELECT id FROM student_leaves
-			WHERE student_id = s.id AND leave_date = $1
-			LIMIT 1
-		) sl ON true
+		CROSS JOIN LATERAL get_student_status(s.id, $1) st
 		WHERE s.is_active = true
-		ORDER BY status DESC, s.full_name ASC
+		ORDER BY st.status DESC, s.full_name ASC
 	`
 
 	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
