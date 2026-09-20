@@ -34,7 +34,7 @@ type StudentPayload struct {
 	Name        string `json:"name"`
 	ParentName  string `json:"parent_name"`
 	ParentPhone string `json:"parent_phone"`
-	ParentPin   string `json:"parent_pin"`
+	ParentPin   string `json:"parent_pin,omitempty"`
 	RfidTag     string `json:"rfid_tag"` // IMPORTANT: this must equal the PIN the student is enrolled under on the ZKTeco device, not a physical RFID card value
 }
 
@@ -149,7 +149,6 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				s.full_name, 
 				p.full_name as parent_name, 
 				p.phone_number, 
-				p.pin_code, 
 				COALESCE(s.rfid_tag, '') 
 			FROM students s
 			JOIN parents p ON s.parent_id = p.id
@@ -166,7 +165,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		var students []StudentPayload
 		for rows.Next() {
 			var s StudentPayload
-			if err := rows.Scan(&s.ID, &s.Name, &s.ParentName, &s.ParentPhone, &s.ParentPin, &s.RfidTag); err != nil {
+			if err := rows.Scan(&s.ID, &s.Name, &s.ParentName, &s.ParentPhone, &s.RfidTag); err != nil {
 				slog.Error("Failed to scan student", "error", err)
 				continue
 			}
@@ -192,6 +191,13 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		if req.ParentPin == "" {
 			req.ParentPin = "1234"
 		}
+		hashedPin, err := bcrypt.GenerateFromPassword([]byte(req.ParentPin), bcrypt.DefaultCost)
+		if err != nil {
+			slog.Error("Failed to hash PIN", "error", err)
+			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+
 		if req.ParentName == "" {
 			req.ParentName = "غير مدخل"
 		}
@@ -211,11 +217,12 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			VALUES ($4, $5, (SELECT id FROM upsert_parent)) 
 			RETURNING id
 		`
-		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, req.ParentPin, req.Name, req.RfidTag).Scan(&req.ID); err != nil {
+		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag).Scan(&req.ID); err != nil {
 			slog.Error("Failed to create student and parent", "error", err)
 			http.Error(w, `{"status":"error","message":"Failed to create student and parent"}`, http.StatusInternalServerError)
 			return
 		}
+		req.ParentPin = "" // Don't echo it back
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Student created", "data": req})
 
 	// 3. التعديل
@@ -228,6 +235,13 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		if req.ParentPin == "" {
 			req.ParentPin = "1234"
 		}
+		hashedPin, err := bcrypt.GenerateFromPassword([]byte(req.ParentPin), bcrypt.DefaultCost)
+		if err != nil {
+			slog.Error("Failed to hash PIN", "error", err)
+			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+
 		if req.ParentName == "" {
 			req.ParentName = "غير مدخل"
 		}
@@ -247,7 +261,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			SET full_name = $4, rfid_tag = $5, parent_id = (SELECT id FROM upsert_parent)
 			WHERE id = $6
 		`
-		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, req.ParentPin, req.Name, req.RfidTag, req.ID)
+		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.ID)
 		if err != nil {
 			slog.Error("Failed to update student", "error", err)
 			http.Error(w, `{"status":"error","message":"Failed to update student"}`, http.StatusInternalServerError)

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type MobileAttendanceRecord struct {
@@ -532,7 +534,12 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	query := `SELECT id, full_name, pin_code FROM parents WHERE phone_number = $1`
 	err := app.DB.QueryRowContext(ctx, query, req.Phone).Scan(&parentID, &parentName, &dbPin)
 
-	if err != nil || req.Pin != dbPin {
+	if err != nil {
+		http.Error(w, `{"status":"error","message":"Invalid phone number or PIN"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(dbPin), []byte(req.Pin)); err != nil {
 		// توحيد رسالة الخطأ أمنياً لمنع هجمات التخمين
 		http.Error(w, `{"status":"error","message":"Invalid phone number or PIN"}`, http.StatusUnauthorized)
 		return
