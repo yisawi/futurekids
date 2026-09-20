@@ -188,6 +188,36 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ── Device authorization (Protocol-Safe) ──────────────────────────────────
+	var isActive bool
+	err := app.DB.QueryRowContext(r.Context(), "SELECT is_active FROM devices WHERE serial_number = $1", deviceSN).Scan(&isActive)
+
+	if err == sql.ErrNoRows {
+		slog.Warn("ADMSHandler: unregistered device attempted ADMS push", "device_sn", deviceSN, "remote_addr", r.RemoteAddr)
+		writeADMSOK(w)
+		return
+	} else if err != nil {
+		slog.Error("ADMSHandler: database error verifying device status", "device_sn", deviceSN, "error", err)
+		writeADMSOK(w)
+		return
+	}
+
+	if !isActive {
+		slog.Warn("ADMSHandler: disabled device attempted ADMS push", "device_sn", deviceSN, "remote_addr", r.RemoteAddr)
+		writeADMSOK(w)
+		return
+	}
+
+	// Device is valid and active. Update last_sync asynchronously so we don't delay the ADMS response.
+	go func(sn string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, updateErr := app.DB.ExecContext(ctx, "UPDATE devices SET last_sync = CURRENT_TIMESTAMP WHERE serial_number = $1", sn)
+		if updateErr != nil {
+			slog.Error("Failed to update device last_sync in ADMSHandler", "device_sn", sn, "error", updateErr)
+		}
+	}(deviceSN)
+
 	// ── Table routing ─────────────────────────────────────────────────────────
 	// Only ATTLOG contains attendance data. All other tables (OPERLOG, USER,
 	// BLACKLIST, …) are ACKed immediately without parsing.
