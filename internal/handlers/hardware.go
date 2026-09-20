@@ -210,6 +210,11 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Device is valid and active. Update last_sync asynchronously so we don't delay the ADMS response.
 	go func(sn string) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("recovered from panic in ADMSHandler last_sync goroutine", "device_sn", sn, "panic", r)
+			}
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_, updateErr := app.DB.ExecContext(ctx, "UPDATE devices SET last_sync = CURRENT_TIMESTAMP WHERE serial_number = $1", sn)
