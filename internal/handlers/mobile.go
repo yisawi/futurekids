@@ -25,7 +25,6 @@ type MobileLoginRequest struct {
 	FCMToken string `json:"fcm_token"`
 }
 
-
 type MobileStudentPayload struct {
 	ID        int    `json:"id"`
 	FullName  string `json:"full_name"`
@@ -70,13 +69,13 @@ type Banner struct {
 
 func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	parentID, ok := r.Context().Value(ParentIDKey).(int)
 	if !ok {
-		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
 		return
 	}
 
@@ -96,7 +95,7 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID, today)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -114,14 +113,13 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 		records = []MobileAttendanceRecord{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "date": today, "data": records})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "date": today, "data": records})
 }
 
 // GetActiveBannersHandler returns active banners ordered from newest to oldest.
 func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -133,7 +131,7 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 	`)
 	if err != nil {
 		slog.Error("Failed to fetch banners", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 	defer rows.Close()
@@ -143,7 +141,7 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 		var banner Banner
 		if err := rows.Scan(&banner.ID, &banner.Title, &banner.ImageURL, &banner.ActionLink); err != nil {
 			slog.Error("Failed to scan banner row", "error", err)
-			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Internal server error")
 			return
 		}
 		banners = append(banners, banner)
@@ -151,18 +149,11 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 
 	if err := rows.Err(); err != nil {
 		slog.Error("Error during banner rows iteration", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "success",
-		"data":   banners,
-	}); err != nil {
-		slog.Error("Failed to encode banners response", "error", err)
-	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": banners})
 }
 
 type MonthlyRecord struct {
@@ -179,13 +170,13 @@ type StudentMonthlyReport struct {
 
 func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	parentID, ok := r.Context().Value(ParentIDKey).(int)
 	if !ok {
-		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
 		return
 	}
 
@@ -225,7 +216,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 
 	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -249,8 +240,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 		summaries = []StudentSummary{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"month":  monthParam,
 		"data":   summaries,
@@ -259,13 +249,13 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 
 func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	parentID, ok := r.Context().Value(ParentIDKey).(int)
 	if !ok {
-		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
 		return
 	}
 
@@ -301,7 +291,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 
 	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -342,8 +332,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		data = []StudentMonthlyReport{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"month":  monthParam,
 		"data":   data,
@@ -352,13 +341,13 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 
 func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	parentID, ok := r.Context().Value(ParentIDKey).(int)
 	if !ok {
-		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
 		return
 	}
 
@@ -381,7 +370,7 @@ func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request)
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -399,20 +388,19 @@ func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request)
 		schedules = []MobileSchedulePayload{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": schedules})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": schedules})
 }
 
 func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	// استخراج هوية الأب من سياق الطلب (تم حقنها عبر AuthMiddleware)
 	parentID, ok := r.Context().Value(ParentIDKey).(int)
 	if !ok {
-		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
 		return
 	}
 
@@ -425,7 +413,7 @@ func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request)
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -443,20 +431,19 @@ func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request)
 		students = []MobileStudentPayload{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": students})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": students})
 }
 
 func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	// 1. استخراج parent_id من السياق المحمي
 	parentID, ok := r.Context().Value(ParentIDKey).(int)
 	if !ok {
-		http.Error(w, `{"status":"error","message":"Unauthorized context"}`, http.StatusUnauthorized)
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
 		return
 	}
 
@@ -471,7 +458,7 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -492,25 +479,24 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 		notifications = []MobileNotificationPayload{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": notifications})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": notifications})
 }
 
 // MobileLoginHandler authenticates a parent against the parents table and issues a parent_id JWT.
 func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	var req MobileLoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"status":"error","message":"Invalid request"}`, http.StatusBadRequest)
+		respondError(w, http.StatusBadRequest, "Invalid request")
 		return
 	}
 
 	if req.Phone == "" || req.Pin == "" {
-		http.Error(w, `{"status":"error","message":"Phone and PIN are required"}`, http.StatusBadRequest)
+		respondError(w, http.StatusBadRequest, "Phone and PIN are required")
 		return
 	}
 
@@ -525,20 +511,20 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	err := app.DB.QueryRowContext(ctx, query, req.Phone).Scan(&parentID, &parentName, &dbPin)
 
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Invalid phone number or PIN"}`, http.StatusUnauthorized)
+		respondError(w, http.StatusUnauthorized, "Invalid phone number or PIN")
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(dbPin), []byte(req.Pin)); err != nil {
 		// توحيد رسالة الخطأ أمنياً لمنع هجمات التخمين
-		http.Error(w, `{"status":"error","message":"Invalid phone number or PIN"}`, http.StatusUnauthorized)
+		respondError(w, http.StatusUnauthorized, "Invalid phone number or PIN")
 		return
 	}
 
 	tokenString, err := auth.GenerateParentToken(parentID, req.Phone)
 	if err != nil {
 		slog.Error("Failed to generate JWT", "error", err)
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
@@ -549,8 +535,7 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"data": map[string]interface{}{
 			"token": tokenString,
@@ -560,21 +545,19 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 				"phone": req.Phone,
 			},
 		},
-	}); err != nil {
-		slog.Error("Failed to encode login response", "error", err)
-	}
+	})
 }
 
 func (app *AppEnv) MobileSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	query := `SELECT setting_key, setting_value FROM settings`
 	rows, err := app.DB.QueryContext(r.Context(), query)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -589,8 +572,7 @@ func (app *AppEnv) MobileSettingsHandler(w http.ResponseWriter, r *http.Request)
 		settings[key] = value
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"data":   settings,
 	})

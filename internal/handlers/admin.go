@@ -38,15 +38,24 @@ type StudentPayload struct {
 	RfidTag     string `json:"rfid_tag"` // IMPORTANT: this must equal the PIN the student is enrolled under on the ZKTeco device, not a physical RFID card value
 }
 
+// getRequestedDateOrDefault returns the ?date= query param, defaulting to today in Asia/Baghdad.
+func getRequestedDateOrDefault(r *http.Request) string {
+	if d := r.URL.Query().Get("date"); d != "" {
+		return d
+	}
+	loc, _ := time.LoadLocation("Asia/Baghdad")
+	return time.Now().In(loc).Format("2006-01-02")
+}
+
 func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	var req AdminLoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"status":"error","message":"Invalid request"}`, http.StatusBadRequest)
+		respondError(w, http.StatusBadRequest, "Invalid request")
 		return
 	}
 
@@ -57,39 +66,36 @@ func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			http.Error(w, `{"status":"error","message":"بيانات الدخول غير صحيحة"}`, http.StatusUnauthorized)
+			respondError(w, http.StatusUnauthorized, "بيانات الدخول غير صحيحة")
 			return
 		}
-		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
 	// مقارنة كلمة المرور المدخلة مع الهاش
 	err = bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(req.Password))
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"بيانات الدخول غير صحيحة"}`, http.StatusUnauthorized)
+		respondError(w, http.StatusUnauthorized, "بيانات الدخول غير صحيحة")
 		return
 	}
 
 	// إصدار توكن الإدارة
 	tokenString, err := auth.GenerateAdminToken(req.Username)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Could not generate token"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Could not generate token")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "success",
-		"data": map[string]string{
-			"token": tokenString,
-		},
+		"data":   map[string]string{"token": tokenString},
 	})
 }
 
 func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -126,12 +132,11 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 	)
 
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"date":   today,
 		"data":   stats,
@@ -139,8 +144,6 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
 	switch r.Method {
 
 	// 1. القراءة (JOIN بين جدول الطلاب والآباء)
@@ -160,7 +163,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		rows, err := app.DB.QueryContext(r.Context(), query)
 		if err != nil {
 			slog.Error("Failed to fetch students", "error", err)
-			http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Database error")
 			return
 		}
 		defer rows.Close()
@@ -176,19 +179,19 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		if err := rows.Err(); err != nil {
 			slog.Error("Failed while reading students", "error", err)
-			http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Database error")
 			return
 		}
 		if students == nil {
 			students = []StudentPayload{}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": students})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": students})
 
 	// 2. الإضافة (CTE ذكي لإنشاء/تحديث ولي الأمر وربطه بالطالب فوراً)
 	case http.MethodPost:
 		var req StudentPayload
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, `{"status":"error","message":"Invalid request body"}`, http.StatusBadRequest)
+			respondError(w, http.StatusBadRequest, "Invalid request body")
 			return
 		}
 		if req.ParentPin == "" {
@@ -197,7 +200,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		hashedPin, err := bcrypt.GenerateFromPassword([]byte(req.ParentPin), bcrypt.DefaultCost)
 		if err != nil {
 			slog.Error("Failed to hash PIN", "error", err)
-			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Internal server error")
 			return
 		}
 
@@ -222,17 +225,17 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		`
 		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag).Scan(&req.ID); err != nil {
 			slog.Error("Failed to create student and parent", "error", err)
-			http.Error(w, `{"status":"error","message":"Failed to create student and parent"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Failed to create student and parent")
 			return
 		}
 		req.ParentPin = "" // Don't echo it back
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Student created", "data": req})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Student created", "data": req})
 
 	// 3. التعديل
 	case http.MethodPut:
 		var req StudentPayload
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
-			http.Error(w, `{"status":"error","message":"Invalid request body or missing ID"}`, http.StatusBadRequest)
+			respondError(w, http.StatusBadRequest, "Invalid request body or missing ID")
 			return
 		}
 		if req.ParentPin == "" {
@@ -241,7 +244,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		hashedPin, err := bcrypt.GenerateFromPassword([]byte(req.ParentPin), bcrypt.DefaultCost)
 		if err != nil {
 			slog.Error("Failed to hash PIN", "error", err)
-			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Internal server error")
 			return
 		}
 
@@ -267,49 +270,49 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.ID)
 		if err != nil {
 			slog.Error("Failed to update student", "error", err)
-			http.Error(w, `{"status":"error","message":"Failed to update student"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Failed to update student")
 			return
 		}
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
 			slog.Error("Failed to inspect student update", "error", err)
-			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Internal server error")
 			return
 		}
 		if rowsAffected == 0 {
-			http.Error(w, `{"status":"error","message":"Student not found"}`, http.StatusNotFound)
+			respondError(w, http.StatusNotFound, "Student not found")
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Student updated"})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Student updated"})
 
 	// 4. الحذف (يحذف الطالب فقط ويبقي بيانات ولي الأمر)
 	case http.MethodDelete:
 		id, err := strconv.Atoi(r.URL.Query().Get("id"))
 		if err != nil || id == 0 {
-			http.Error(w, `{"status":"error","message":"Invalid student ID"}`, http.StatusBadRequest)
+			respondError(w, http.StatusBadRequest, "Invalid student ID")
 			return
 		}
 
 		result, err := app.DB.ExecContext(r.Context(), `UPDATE students SET is_active = false WHERE id = $1`, id)
 		if err != nil {
 			slog.Error("Failed to delete student", "error", err)
-			http.Error(w, `{"status":"error","message":"Cannot delete student. Check related records."}`, http.StatusConflict)
+			respondError(w, http.StatusConflict, "Cannot delete student. Check related records.")
 			return
 		}
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
 			slog.Error("Failed to inspect student deletion", "error", err)
-			http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Internal server error")
 			return
 		}
 		if rowsAffected == 0 {
-			http.Error(w, `{"status":"error","message":"Student not found"}`, http.StatusNotFound)
+			respondError(w, http.StatusNotFound, "Student not found")
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Student deleted"})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Student deleted"})
 
 	default:
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 }
 
@@ -321,18 +324,18 @@ type LeavePayload struct {
 
 func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	var req LeavePayload
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"status":"error","message":"Invalid request payload"}`, http.StatusBadRequest)
+		respondError(w, http.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
 	if req.StudentID == 0 || req.LeaveDate == "" {
-		http.Error(w, `{"status":"error","message":"student_id and leave_date are required"}`, http.StatusBadRequest)
+		respondError(w, http.StatusBadRequest, "student_id and leave_date are required")
 		return
 	}
 
@@ -350,12 +353,11 @@ func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Reques
 
 	if err != nil {
 		slog.Error("Failed to create leave record", "error", err)
-		http.Error(w, `{"status":"error","message":"Failed to create leave record"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Failed to create leave record")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "success",
 		"message": "Leave recorded successfully",
 		"data":    map[string]int{"leave_id": leaveID},
@@ -371,19 +373,13 @@ type DailyAttendanceRecord struct {
 
 func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
-	// استلام التاريخ من الرابط، وإذا كان فارغاً نستخدم تاريخ اليوم (توقيت بغداد)
-	dateParam := r.URL.Query().Get("date")
-	if dateParam == "" {
-		loc, _ := time.LoadLocation("Asia/Baghdad")
-		dateParam = time.Now().In(loc).Format("2006-01-02")
-	}
+	dateParam := getRequestedDateOrDefault(r)
 
 	// استعلام مركب يجلب كل الطلاب ويحدد حالتهم بناءً على الجداول المرتبطة
-	// نستخدم subquery لتجميع سجلات الحضور أولاً لتجنب تكرار الصفوف عند وجود أكثر من بصمة
 	query := `
 		SELECT 
 			s.id, 
@@ -399,7 +395,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
 	if err != nil {
 		slog.Error("Failed to fetch daily attendance", "error", err)
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -418,8 +414,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		records = []DailyAttendanceRecord{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"date":   dateParam,
 		"data":   records,
@@ -428,18 +423,12 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 
 func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
-	dateParam := r.URL.Query().Get("date")
-	if dateParam == "" {
-		loc, _ := time.LoadLocation("Asia/Baghdad")
-		dateParam = time.Now().In(loc).Format("2006-01-02")
-	}
+	dateParam := getRequestedDateOrDefault(r)
 
-	// Fix 1: Use LATERAL subquery to prevent duplicate rows if a student has
-	// multiple attendance_logs for the same day (bypassed ON CONFLICT via bad migration etc.)
 	query := `
 		SELECT 
 			s.id, 
@@ -463,13 +452,13 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 
 	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
 
 	f := excelize.NewFile()
-	defer f.Close() // Fix 3: Always close excelize file to release internal zip/memory resources
+	defer f.Close()
 
 	sheet := "Sheet1"
 
@@ -514,7 +503,6 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 	for rows.Next() {
 		var id int
 		var studentName, grade, section, parentName, phone, status, checkTime string
-		// Fix 4: Log scan errors instead of silently skipping
 		if err := rows.Scan(&id, &studentName, &grade, &section, &parentName, &phone, &status, &checkTime); err != nil {
 			slog.Error("Failed to scan attendance row for excel export", "row", rowIndex, "error", err)
 			continue
@@ -530,12 +518,10 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		rowIndex++
 	}
 
-	// Fix 5: Write to buffer first so we can return a clean HTTP error if generation fails.
-	// Once we start writing bytes to the ResponseWriter, the 200 header is already committed
-	// and http.Error() becomes dead code — this pattern prevents that.
+	// Write to buffer first so we can return a clean HTTP error if generation fails.
 	var buf bytes.Buffer
 	if err := f.Write(&buf); err != nil {
-		http.Error(w, `{"status":"error","message":"Failed to generate excel file"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Failed to generate excel file")
 		return
 	}
 
@@ -550,14 +536,12 @@ type SettingPayload struct {
 }
 
 func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
 	switch r.Method {
 	case http.MethodGet:
 		query := `SELECT setting_key, setting_value FROM settings`
 		rows, err := app.DB.QueryContext(r.Context(), query)
 		if err != nil {
-			http.Error(w, `{"status":"error"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Database error")
 			return
 		}
 		defer rows.Close()
@@ -569,12 +553,12 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 				settings[k] = v
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": settings})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": settings})
 
 	case http.MethodPut:
 		var req SettingPayload
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
-			http.Error(w, `{"status":"error","message":"Invalid payload"}`, http.StatusBadRequest)
+			respondError(w, http.StatusBadRequest, "Invalid payload")
 			return
 		}
 
@@ -586,13 +570,13 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 		`
 		_, err := app.DB.ExecContext(r.Context(), query, req.Key, req.Value)
 		if err != nil {
-			http.Error(w, `{"status":"error","message":"Failed to update setting"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Failed to update setting")
 			return
 		}
 
-		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Setting saved"})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Setting saved"})
 	default:
-		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 }
 
@@ -604,14 +588,12 @@ type DevicePayload struct {
 }
 
 func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
 	switch r.Method {
 	case http.MethodGet:
 		query := `SELECT serial_number, location_name, is_active, COALESCE(TO_CHAR(last_sync, 'YYYY-MM-DD HH24:MI:SS'), '') FROM devices ORDER BY location_name ASC`
 		rows, err := app.DB.QueryContext(r.Context(), query)
 		if err != nil {
-			http.Error(w, `{"status":"error","message":"Database error"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Database error")
 			return
 		}
 		defer rows.Close()
@@ -626,48 +608,48 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		if devices == nil {
 			devices = []DevicePayload{}
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": devices})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": devices})
 
 	case http.MethodPost:
 		var req DevicePayload
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SerialNumber == "" {
-			http.Error(w, `{"status":"error","message":"Invalid payload or missing SN"}`, http.StatusBadRequest)
+			respondError(w, http.StatusBadRequest, "Invalid payload or missing SN")
 			return
 		}
 
 		query := `INSERT INTO devices (serial_number, location_name, is_active) VALUES ($1, $2, $3)`
 		_, err := app.DB.ExecContext(r.Context(), query, req.SerialNumber, req.LocationName, req.IsActive)
 		if err != nil {
-			http.Error(w, `{"status":"error","message":"Device SN already exists or invalid data"}`, http.StatusConflict)
+			respondError(w, http.StatusConflict, "Device SN already exists or invalid data")
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Device added successfully"})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Device added successfully"})
 
 	case http.MethodPut:
 		var req DevicePayload
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SerialNumber == "" {
-			http.Error(w, `{"status":"error","message":"Invalid payload"}`, http.StatusBadRequest)
+			respondError(w, http.StatusBadRequest, "Invalid payload")
 			return
 		}
 
 		query := `UPDATE devices SET location_name = $1, is_active = $2 WHERE serial_number = $3`
 		res, err := app.DB.ExecContext(r.Context(), query, req.LocationName, req.IsActive, req.SerialNumber)
 		if err != nil {
-			http.Error(w, `{"status":"error","message":"Failed to update device"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Failed to update device")
 			return
 		}
 
 		rowsAffected, _ := res.RowsAffected()
 		if rowsAffected == 0 {
-			http.Error(w, `{"status":"error","message":"Device not found"}`, http.StatusNotFound)
+			respondError(w, http.StatusNotFound, "Device not found")
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Device updated successfully"})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Device updated successfully"})
 
 	case http.MethodDelete:
 		sn := r.URL.Query().Get("sn")
 		if sn == "" {
-			http.Error(w, `{"status":"error","message":"Missing device SN"}`, http.StatusBadRequest)
+			respondError(w, http.StatusBadRequest, "Missing device SN")
 			return
 		}
 
@@ -675,12 +657,12 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		query := `UPDATE devices SET is_active = false WHERE serial_number = $1`
 		_, err := app.DB.ExecContext(r.Context(), query, sn)
 		if err != nil {
-			http.Error(w, `{"status":"error","message":"Failed to disable device"}`, http.StatusInternalServerError)
+			respondError(w, http.StatusInternalServerError, "Failed to disable device")
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Device disabled logically"})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Device disabled logically"})
 
 	default:
-		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 }

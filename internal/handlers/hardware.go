@@ -328,7 +328,7 @@ type HardwarePushPayload struct {
 
 func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"status":"error"}`, http.StatusMethodNotAllowed)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -337,7 +337,7 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 
 	var req HardwarePushPayload
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"status":"error","message":"Invalid payload"}`, http.StatusBadRequest)
+		respondError(w, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 
@@ -355,7 +355,7 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 	res, err := app.DB.ExecContext(r.Context(), query, req.RFIDTag, req.DeviceSN, req.PushTime)
 	if err != nil {
 		// في حال فشل قاعدة البيانات، نرد بخطأ 500 ليحتفظ الجهاز بالبصمة ويعيد إرسالها لاحقاً
-		http.Error(w, `{"status":"error"}`, http.StatusInternalServerError)
+		respondError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 
@@ -363,14 +363,11 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 	rowsAffected, _ := res.RowsAffected()
 	if rowsAffected == 0 {
 		// البصمة مكررة أو الـ RFID غير مسجل. في كلتا الحالتين نرد بنجاح للجهاز لكي لا يعلق
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"success","message":"Ignored or Duplicate"}`))
+		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Ignored or Duplicate"})
 		return
 	}
 
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"success","message":"Punched successfully"}`))
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Punched successfully"})
 }
 
 // func to connect with PostegreSQL
