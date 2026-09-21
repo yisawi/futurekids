@@ -25,8 +25,6 @@ type MobileLoginRequest struct {
 	FCMToken string `json:"fcm_token"`
 }
 
-// LoginRequest kept for backwards-compatibility.
-type LoginRequest = MobileLoginRequest
 
 type MobileStudentPayload struct {
 	ID        int    `json:"id"`

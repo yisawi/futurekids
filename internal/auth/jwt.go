@@ -17,17 +17,6 @@ func InitAuth(secret string) {
 	jwtSecret = []byte(secret)
 }
 
-// GenerateToken creates a 30-day valid JWT token for the guardian (legacy – phone-based)
-func GenerateToken(phone string) (string, error) {
-	claims := jwt.MapClaims{
-		"phone": phone,
-		"exp":   time.Now().Add(time.Hour * 24 * 30).Unix(),
-		"iat":   time.Now().Unix(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtSecret)
-}
 
 // GenerateParentToken creates a 30-day JWT embedding the parent's unique DB id.
 func GenerateParentToken(parentID int, phone string) (string, error) {
