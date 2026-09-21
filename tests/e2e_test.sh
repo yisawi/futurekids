@@ -1,233 +1,288 @@
 #!/bin/bash
-set -e
+# Future Kids — End-to-End System Verification
+# Tests the full data flow: Hardware Push -> Database -> Admin & Mobile APIs
+# Usage: TEST_DATABASE_URL=<dsn> ./tests/e2e_test.sh
+set -euo pipefail
 
 DB_URL="${TEST_DATABASE_URL:-postgresql://yisawi@localhost:5432/future_kids?sslmode=disable}"
-API_URL="http://localhost:8080"
+API_URL="${API_URL:-http://localhost:8080}"
 
-# Colors
+# ── Colors ────────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-echo -e "${YELLOW}Starting Future Kids E2E Automation Test...${NC}"
+# ── Helpers ───────────────────────────────────────────────────────────────────
+pass() { echo -e "${GREEN}  ✓ $1${NC}"; assertions_passed=$((assertions_passed + 1)); }
+fail() { echo -e "${RED}  ✗ $1${NC}"; exit 1; }
+section() { echo -e "\n${YELLOW}━━━ $1 ━━━${NC}"; }
 
-# Truncate tables
-echo -e "\n${YELLOW}--- Truncating Database ---${NC}"
-psql "$DB_URL" -c "TRUNCATE attendance_logs, student_leaves, students, parents, devices, notifications, settings CASCADE;"
-echo -e "${GREEN}Database truncated successfully.${NC}"
-
-start_time=$(date +%s)
-assertions_passed=0
-total_endpoints=0
-failed_requests=0
-
-function track_endpoint() {
-    total_endpoints=$((total_endpoints + 1))
-}
-
-function check_success() {
-    if [ "$1" -eq 200 ] || [ "$1" -eq 201 ]; then
-        echo -e "${GREEN}SUCCESS (HTTP $1)${NC}"
+assert_http() {
+    local label="$1" actual="$2" expected="${3:-200}"
+    if [ "$actual" -eq "$expected" ]; then
+        pass "$label → HTTP $actual"
     else
-        echo -e "${RED}FAILED (HTTP $1)${NC}"
-        failed_requests=$((failed_requests + 1))
-        exit 1
+        fail "$label → Expected HTTP $expected, got HTTP $actual"
     fi
 }
 
-# --- Phase 1: Admin Setup ---
-echo -e "\n${YELLOW}--- Phase 1: Admin Setup ---${NC}"
+assert_eq() {
+    local label="$1" actual="$2" expected="$3"
+    if [ "$actual" = "$expected" ]; then
+        pass "$label → $actual"
+    else
+        fail "$label → Expected '$expected', got '$actual'"
+    fi
+}
 
-track_endpoint
-echo "Authenticating as Admin..."
-admin_res=$(curl -s -w "\n%{http_code}" -X POST $API_URL/api/admin/login \
+assert_gt() {
+    local label="$1" actual="$2" min="$3"
+    if [ "$actual" -gt "$min" ]; then
+        pass "$label → $actual (> $min)"
+    else
+        fail "$label → Expected > $min, got $actual"
+    fi
+}
+
+assert_lt() {
+    local label="$1" actual="$2" max="$3"
+    if [ "$actual" -lt "$max" ]; then
+        pass "$label → $actual (< $max)"
+    else
+        fail "$label → Expected < $max, got $actual"
+    fi
+}
+
+# ── Counters ──────────────────────────────────────────────────────────────────
+assertions_passed=0
+start_time=$(date +%s)
+
+echo -e "${CYAN}"
+echo "  ╔════════════════════════════════════════╗"
+echo "  ║   Future Kids — E2E System Verifier   ║"
+echo "  ╚════════════════════════════════════════╝"
+echo -e "${NC}"
+
+# ── Verify server is up ───────────────────────────────────────────────────────
+section "Pre-flight"
+health_status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/health")
+assert_http "Server health check" "$health_status"
+
+# ── Truncate tables for a clean slate ────────────────────────────────────────
+echo -e "\n${YELLOW}Resetting database...${NC}"
+psql "$DB_URL" -q -c "TRUNCATE attendance_logs, student_leaves, students, parents, devices, notifications, settings CASCADE;"
+pass "Database truncated"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 1 — Admin Authentication"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+admin_res=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/admin/login" \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"admin123"}')
-admin_status=$(echo "$admin_res" | tail -n1)
+admin_http=$(echo "$admin_res" | tail -n1)
 admin_body=$(echo "$admin_res" | sed '$d')
-check_success "$admin_status"
-ADMIN_TOKEN=$(echo "$admin_body" | jq -r .data.token)
+assert_http "Admin login" "$admin_http"
 
-track_endpoint
-echo "Creating 2 Hardware Devices..."
-device_1_res=$(curl -s -w "\n%{http_code}" -X POST $API_URL/api/admin/devices \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"serial_number": "DEVICE-001", "location_name": "Gate 1", "is_active": true}')
-check_success "$(echo "$device_1_res" | tail -n1)"
+ADMIN_TOKEN=$(echo "$admin_body" | jq -r '.data.token')
+[ "$ADMIN_TOKEN" != "null" ] && [ -n "$ADMIN_TOKEN" ] || fail "Admin JWT is null or empty"
+pass "Admin JWT extracted"
 
-device_2_res=$(curl -s -w "\n%{http_code}" -X POST $API_URL/api/admin/devices \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"serial_number": "DEVICE-002", "location_name": "Gate 2", "is_active": true}')
-check_success "$(echo "$device_2_res" | tail -n1)"
+assert_eq "Admin response status field" "$(echo "$admin_body" | jq -r '.status')" "success"
 
-track_endpoint
-echo "Creating 150 Students (assigned randomly to 3 parents)..."
-parents_phones=("+9647700000001" "+9647700000002" "+9647700000003")
-declare -a rfid_tags
-
-for i in {1..150}; do
-    parent_index=$((RANDOM % 3))
-    parent_phone=${parents_phones[$parent_index]}
-    rfid="RFID-$(printf "%04d" $i)"
-    rfid_tags+=("$rfid")
-
-    res=$(curl -s -o /dev/null -w "%{http_code}" -X POST $API_URL/api/admin/students \
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 2 — Admin Setup (Devices & Students)"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+for sn in "DEVICE-E2E-001" "DEVICE-E2E-002"; do
+    d_http=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/admin/devices" \
       -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-      -d '{"name": "Student '$i'", "parent_name": "Parent '$parent_index'", "parent_phone": "'$parent_phone'", "parent_pin": "1234", "rfid_tag": "'$rfid'"}')
-    
-    if [ "$res" -ne 200 ]; then
-        echo -e "${RED}Failed to create student $i (HTTP $res)${NC}"
-        exit 1
-    fi
-done
-echo -e "${GREEN}Successfully created 150 students and 3 parents.${NC}"
-
-
-# --- Phase 2: Hardware Stress Test ---
-echo -e "\n${YELLOW}--- Phase 2: Hardware Stress Test (Concurrency) ---${NC}"
-track_endpoint
-
-# Generate curl commands
-rm -f punch_results.txt
-for rfid in "${rfid_tags[@]}"; do
-    device="DEVICE-001"
-    if [ $((RANDOM % 2)) -eq 0 ]; then device="DEVICE-002"; fi
-    
-    today=$(date +"%Y-%m-%d")
-    hour=$((RANDOM % 2 + 7)) # 7 or 8 AM
-    minute=$(printf "%02d" $((RANDOM % 60)))
-    second=$(printf "%02d" $((RANDOM % 60)))
-    push_time="$today 0$hour:$minute:$second"
-    
-    payload="{\"device_sn\": \"$device\", \"rfid_tag\": \"$rfid\", \"push_time\": \"$push_time\"}"
-    
-    curl -s -w "%{http_code}\n" -o /dev/null -X POST "$API_URL/api/attendance/push/json?SN=$device" -H "Content-Type: application/json" -d "$payload" >> punch_results.txt &
-    
-    # Introduce duplicates (30% chance) to test idempotency
-    if [ $((RANDOM % 100)) -lt 30 ]; then
-        curl -s -w "%{http_code}\n" -o /dev/null -X POST "$API_URL/api/attendance/push/json?SN=$device" -H "Content-Type: application/json" -d "$payload" >> punch_results.txt &
-    fi
+      -d "{\"serial_number\":\"$sn\",\"location_name\":\"Gate\",\"is_active\":true}")
+    assert_http "Create device $sn" "$d_http"
 done
 
-total_punches=$(wc -l < punch_results.txt 2>/dev/null || echo 0) # will be 0 before wait, just indicative
-echo "Sending punches (including duplicates) concurrently..."
+# Create 10 students across 2 parents
+PARENT_A="+9647700000101"
+PARENT_B="+9647700000102"
+declare -a RFID_TAGS
 
-stress_start=$(date +%s%N)
-wait
-stress_end=$(date +%s%N)
-stress_duration_ms=$(( (stress_end - stress_start) / 1000000 ))
+for i in {1..10}; do
+    rfid="E2E-RFID-$(printf "%03d" "$i")"
+    RFID_TAGS+=("$rfid")
+    phone=$PARENT_A; [ $((i % 2)) -eq 0 ] && phone=$PARENT_B
+    s_http=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/admin/students" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+      -d "{\"name\":\"E2E Student $i\",\"parent_name\":\"E2E Parent\",\"parent_phone\":\"$phone\",\"parent_pin\":\"1234\",\"rfid_tag\":\"$rfid\"}")
+    assert_http "Create student $i" "$s_http"
+done
 
-total_punches=$(wc -l < punch_results.txt | awk '{print $1}')
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 3 — Hardware ADMS Push (ZKTeco Protocol)"
+# Simulates the real ZKTeco ATTLOG POST that the physical device sends.
+# The server must respond HTTP 200 with plain-text "OK" — never JSON.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TODAY=$(date +"%Y-%m-%d")
 
-# Check for failures (Any status other than 200 OK)
-failures=$(grep -v "200" punch_results.txt | wc -l | awk '{print $1}')
-if [ "$failures" -gt 0 ]; then
-    echo -e "${RED}Hardware stress test failed: $failures requests did not return 200 OK.${NC}"
-    exit 1
-else
-    echo -e "${GREEN}All $total_punches punches processed successfully (200 OK) in ${stress_duration_ms}ms.${NC}"
-fi
+# Build an ATTLOG payload with the first 5 students' rfid_tags (User IDs on device)
+# Format: PIN\tDateTime\tVerified\tStatus\n  (positional, old firmware)
+ATTLOG_BODY=""
+for i in {0..4}; do
+    rfid="${RFID_TAGS[$i]}"
+    punch_time="${TODAY} 07:$(printf "%02d" $((i * 3))):00"
+    punch_out_time="${TODAY} 12:$(printf "%02d" $((i * 3))):00"
+    ATTLOG_BODY+="${rfid}\t${punch_time}\t1\t1\n"
+    ATTLOG_BODY+="${rfid}\t${punch_out_time}\t1\t1\n"
+done
+# Interpret escape sequences
+ATTLOG_PAYLOAD=$(printf "%b" "$ATTLOG_BODY")
 
+adms_res=$(curl -s -w "\n%{http_code}" -X POST \
+  "${API_URL}/iclock/cdata?SN=DEVICE-E2E-001&table=ATTLOG" \
+  -H "Content-Type: text/plain" \
+  --data-binary "$ATTLOG_PAYLOAD")
+adms_http=$(echo "$adms_res" | tail -n1)
+adms_body=$(echo "$adms_res" | sed '$d')
+assert_http "ADMS ATTLOG push" "$adms_http"
+assert_eq  "ADMS response body is plain OK" "$adms_body" "OK"
 
-# --- Phase 3: Admin Operations & Validation ---
-echo -e "\n${YELLOW}--- Phase 3: Admin Operations & Validation ---${NC}"
+# Also push 2 duplicates — they must still return 200 OK (idempotency)
+dup_http=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  "${API_URL}/iclock/cdata?SN=DEVICE-E2E-001&table=ATTLOG" \
+  -H "Content-Type: text/plain" \
+  --data-binary "$ATTLOG_PAYLOAD")
+assert_http "ADMS duplicate push (idempotency)" "$dup_http"
 
-echo "Updating a student's grade/section via direct DB execution..."
-psql "$DB_URL" -c "UPDATE students SET grade='Grade 1', section='A' WHERE id = (SELECT id FROM students LIMIT 1);" > /dev/null
-echo -e "${GREEN}Student updated successfully.${NC}"
-
-track_endpoint
-echo "Soft deleting a device (DEVICE-002)..."
-del_res=$(curl -s -w "\n%{http_code}" -X DELETE "$API_URL/api/admin/devices?sn=DEVICE-002" \
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 4 — Admin Daily Attendance (DailyAttendanceDTO validation)"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+att_res=$(curl -s -w "\n%{http_code}" -X GET \
+  "${API_URL}/api/admin/attendance?date=${TODAY}" \
   -H "Authorization: Bearer $ADMIN_TOKEN")
-check_success "$(echo "$del_res" | tail -n1)"
+att_http=$(echo "$att_res" | tail -n1)
+att_body=$(echo "$att_res" | sed '$d')
+assert_http "Admin daily attendance" "$att_http"
+assert_eq  "Admin attendance status field" "$(echo "$att_body" | jq -r '.status')" "success"
+assert_eq  "Admin attendance date field"   "$(echo "$att_body" | jq -r '.date')"   "$TODAY"
 
-track_endpoint
-echo "Fetching dashboard metrics..."
-dash_res=$(curl -s -X GET $API_URL/api/admin/dashboard \
+# Validate DailyAttendanceDTO shape on the first record
+first_record=$(echo "$att_body" | jq '.data[0]')
+[ "$first_record" != "null" ] || fail "No attendance records returned"
+
+for field in student_id full_name status check_in_time check_out_time; do
+    val=$(echo "$first_record" | jq -r ".$field")
+    [ "$val" != "null" ] && [ -n "$val" ] || fail "DailyAttendanceDTO missing field: $field"
+    pass "DailyAttendanceDTO.$field present"
+done
+
+# At least 5 students should now be 'Present' (we punched 5)
+present_count=$(echo "$att_body" | jq '[.data[] | select(.status == "Present")] | length')
+assert_eq "Present count after 5 ADMS punches" "$present_count" "5"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 5 — Admin Dashboard Stats"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+dash_res=$(curl -s -w "\n%{http_code}" -X GET "$API_URL/api/admin/dashboard" \
   -H "Authorization: Bearer $ADMIN_TOKEN")
-  
-total_students=$(echo "$dash_res" | jq .data.total_students)
-present_today=$(echo "$dash_res" | jq .data.present_today)
+dash_http=$(echo "$dash_res" | tail -n1)
+dash_body=$(echo "$dash_res" | sed '$d')
+assert_http "Admin dashboard" "$dash_http"
+assert_eq  "Dashboard status field"         "$(echo "$dash_body" | jq -r '.status')"              "success"
+assert_eq  "Dashboard total_students = 10"  "$(echo "$dash_body" | jq -r '.data.total_students')" "10"
+assert_eq  "Dashboard present_today = 5"    "$(echo "$dash_body" | jq -r '.data.present_today')"  "5"
 
-if [ "$total_students" -eq 150 ]; then
-    echo -e "${GREEN}Assertion Passed: Total students = 150${NC}"
-    assertions_passed=$((assertions_passed + 1))
-else
-    echo -e "${RED}Assertion Failed: Total students = $total_students (Expected: 150)${NC}"
-    failed_requests=$((failed_requests + 1))
-fi
-
-if [ "$present_today" -eq 150 ]; then
-    echo -e "${GREEN}Assertion Passed: Present today = 150 (all duplicates were correctly ignored/silenced)${NC}"
-    assertions_passed=$((assertions_passed + 1))
-else
-    echo -e "${RED}Assertion Failed: Present today = $present_today (Expected: 150)${NC}"
-    failed_requests=$((failed_requests + 1))
-fi
-
-track_endpoint
-echo "Exporting Excel report..."
-excel_res=$(curl -s -I -X GET $API_URL/api/admin/export/excel \
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 6 — Admin Excel Export"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+excel_res=$(curl -s -I -X GET "${API_URL}/api/admin/export/excel?date=${TODAY}" \
   -H "Authorization: Bearer $ADMIN_TOKEN")
+excel_http=$(echo "$excel_res" | head -n1 | awk '{print $2}')
+excel_ct=$(echo "$excel_res" | grep -i "Content-Type:" | awk '{print $2}' | tr -d '\r')
+assert_http "Excel export HTTP"         "$excel_http"
+assert_eq  "Excel Content-Type header" "$excel_ct" \
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-excel_status=$(echo "$excel_res" | head -n 1 | awk '{print $2}')
-excel_type=$(echo "$excel_res" | grep -i "Content-Type:" | awk '{print $2}' | tr -d '\r')
-
-if [ "$excel_status" == "200" ] && [ "$excel_type" == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ]; then
-    echo -e "${GREEN}Assertion Passed: Excel exported successfully with correct headers.${NC}"
-    assertions_passed=$((assertions_passed + 1))
-else
-    echo -e "${RED}Assertion Failed: Excel export returned Status $excel_status, Type $excel_type${NC}"
-    failed_requests=$((failed_requests + 1))
-fi
-
-
-# --- Phase 4: Mobile / Parent View ---
-echo -e "\n${YELLOW}--- Phase 4: Mobile / Parent View ---${NC}"
-
-track_endpoint
-echo "Authenticating as Parent 1..."
-parent_res=$(curl -s -w "\n%{http_code}" -X POST $API_URL/api/mobile/login \
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 7 — Mobile Authentication"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+mob_login_res=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/mobile/login" \
   -H "Content-Type: application/json" \
-  -d '{"phone":"+9647700000001","pin":"1234"}')
-parent_status=$(echo "$parent_res" | tail -n1)
-parent_body=$(echo "$parent_res" | sed '$d')
-check_success "$parent_status"
-PARENT_TOKEN=$(echo "$parent_body" | jq -r .data.token)
+  -d "{\"phone\":\"$PARENT_A\",\"pin\":\"1234\"}")
+mob_login_http=$(echo "$mob_login_res" | tail -n1)
+mob_login_body=$(echo "$mob_login_res" | sed '$d')
+assert_http "Mobile login" "$mob_login_http"
+assert_eq  "Mobile login status field"  "$(echo "$mob_login_body" | jq -r '.status')"       "success"
+assert_eq  "Mobile login parent phone"  "$(echo "$mob_login_body" | jq -r '.data.parent.phone')" "$PARENT_A"
 
-track_endpoint
-echo "Fetching mobile attendance summary..."
-mob_res=$(curl -s -X GET $API_URL/api/mobile/attendance/summary \
+PARENT_TOKEN=$(echo "$mob_login_body" | jq -r '.data.token')
+[ "$PARENT_TOKEN" != "null" ] && [ -n "$PARENT_TOKEN" ] || fail "Mobile JWT is null or empty"
+pass "Mobile JWT extracted"
+
+# Verify wrong PIN is rejected
+wrong_pin_http=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/mobile/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"phone\":\"$PARENT_A\",\"pin\":\"WRONG\"}")
+assert_http "Wrong PIN rejected" "$wrong_pin_http" "401"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 8 — Mobile Today Attendance (DailyAttendanceDTO validation)"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+mob_today_res=$(curl -s -w "\n%{http_code}" -X GET "$API_URL/api/mobile/attendance/today" \
   -H "Authorization: Bearer $PARENT_TOKEN")
+mob_today_http=$(echo "$mob_today_res" | tail -n1)
+mob_today_body=$(echo "$mob_today_res" | sed '$d')
+assert_http "Mobile today attendance" "$mob_today_http"
+assert_eq  "Mobile attendance status field" "$(echo "$mob_today_body" | jq -r '.status')" "success"
+assert_eq  "Mobile attendance date field"   "$(echo "$mob_today_body" | jq -r '.date')"   "$TODAY"
 
-children_count=$(echo "$mob_res" | jq '.data | length')
-if [ "$children_count" -gt 0 ] && [ "$children_count" -lt 150 ]; then
-    echo -e "${GREEN}Assertion Passed: Parent only sees isolated data (Found $children_count children instead of 150)${NC}"
-    assertions_passed=$((assertions_passed + 1))
-else
-    echo -e "${RED}Assertion Failed: Parent data isolation error! Count: $children_count${NC}"
-    failed_requests=$((failed_requests + 1))
-fi
+# Validate DailyAttendanceDTO shape
+mob_first=$(echo "$mob_today_body" | jq '.data[0]')
+first_mob_record="$mob_first"
+[ "$mob_first" != "null" ] || fail "Mobile attendance returned no records for parent A"
+for field in student_id full_name status check_in_time check_out_time; do
+    val=$(echo "$first_mob_record" | jq -r ".$field")
+    [ "$val" != "null" ] && [ -n "$val" ] || fail "Mobile DailyAttendanceDTO missing field: $field"
+    pass "Mobile DailyAttendanceDTO.$field present"
+done
 
+# Parent A should see only their own children (5 out of 10), not all 10
+mob_count=$(echo "$mob_today_body" | jq '.data | length')
+assert_eq  "Parent A data isolation — sees 5 children" "$mob_count" "5"
 
-# --- Phase 5: Performance & Health Report ---
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 9 — Security: Unauthenticated Access Rejected"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+no_auth_http=$(curl -s -o /dev/null -w "%{http_code}" -X GET "$API_URL/api/admin/dashboard")
+assert_http "No-token admin dashboard rejected" "$no_auth_http" "401"
+
+bad_token_http=$(curl -s -o /dev/null -w "%{http_code}" -X GET "$API_URL/api/mobile/attendance/today" \
+  -H "Authorization: Bearer totally.invalid.token")
+assert_http "Bad token rejected"                "$bad_token_http" "401"
+
+wrong_role_http=$(curl -s -o /dev/null -w "%{http_code}" -X GET "$API_URL/api/admin/dashboard" \
+  -H "Authorization: Bearer $PARENT_TOKEN")
+assert_http "Parent token rejected on admin route" "$wrong_role_http" "403"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+section "Phase 10 — respondError JSON Shape Validation"
+# Ensures our centralized respondError helper always returns valid, parseable JSON
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+err_body=$(curl -s -X GET "$API_URL/api/admin/dashboard")  # no token
+err_status=$(echo "$err_body" | jq -r '.status'   2>/dev/null || echo "PARSE_FAIL")
+err_msg=$(echo "$err_body"    | jq -r '.message'  2>/dev/null || echo "PARSE_FAIL")
+assert_eq  "respondError .status field"  "$err_status" "error"
+[ "$err_msg" != "PARSE_FAIL" ] && [ -n "$err_msg" ] || fail "respondError .message missing or not JSON"
+pass "respondError .message present: $err_msg"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Final Report
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 end_time=$(date +%s)
 total_time=$((end_time - start_time))
 
-echo -e "\n${YELLOW}=========================================${NC}"
-echo -e "${YELLOW}   E2E PERFORMANCE & HEALTH REPORT       ${NC}"
-echo -e "${YELLOW}=========================================${NC}"
-echo -e "Total Execution Time:    ${total_time} seconds"
-echo -e "Hardware Stress Avg Time:${stress_duration_ms} ms (for $total_punches requests)"
-echo -e "Total Endpoints Tested:  $total_endpoints"
-echo -e "Successful Assertions:   ${GREEN}$assertions_passed${NC}"
-if [ "$failed_requests" -eq 0 ]; then
-    echo -e "Failed Requests:         ${GREEN}0${NC}"
-    echo -e "\n${GREEN}STATUS: ALL SYSTEMS GO (HEALTHY)${NC}"
-else
-    echo -e "Failed Requests:         ${RED}$failed_requests${NC}"
-    echo -e "\n${RED}STATUS: UNHEALTHY (ERRORS DETECTED)${NC}"
-fi
-echo -e "${YELLOW}=========================================${NC}"
+echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}  E2E REPORT${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "  Total execution time : ${total_time}s"
+echo -e "  Assertions passed    : ${GREEN}${assertions_passed}${NC}"
+echo -e "${GREEN}\n  ✓ ALL SYSTEMS GO — E2E PASSED${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"

@@ -5,6 +5,7 @@ package handlers
 type DailyAttendanceDTO struct {
 	StudentID int    `json:"student_id"`
 	FullName  string `json:"full_name"`
-	Status    string `json:"status"` // Present, Absent, Excused
-	CheckTime string `json:"check_time,omitempty"`
+	Status       string `json:"status"` // Present, Absent, Excused
+	CheckInTime  string `json:"check_in_time,omitempty"`
+	CheckOutTime string `json:"check_out_time,omitempty"`
 }

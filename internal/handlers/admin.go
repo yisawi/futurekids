@@ -378,7 +378,8 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 			s.id, 
 			s.full_name,
 			st.status,
-			COALESCE(CAST(st.first_check AS TEXT), '') as check_time
+			COALESCE(CAST(st.first_check AS TEXT), '') as check_in_time,
+			COALESCE(CAST(st.last_check AS TEXT), '') as check_out_time
 		FROM students s
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
 		WHERE s.is_active = true
@@ -396,7 +397,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	var records []DailyAttendanceDTO
 	for rows.Next() {
 		var rec DailyAttendanceDTO
-		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckTime); err != nil {
+		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckInTime, &rec.CheckOutTime); err != nil {
 			slog.Error("Failed to scan attendance record", "error", err)
 			continue
 		}
@@ -435,7 +436,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 				WHEN 'Excused' THEN 'مجاز'
 				ELSE 'غائب'
 			END as status,
-			COALESCE(TO_CHAR(st.first_check, 'HH24:MI'), '') as check_time
+			COALESCE(st.first_check, '') as check_time
 		FROM students s
 		JOIN parents p ON s.parent_id = p.id
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st

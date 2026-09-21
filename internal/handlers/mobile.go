@@ -81,7 +81,8 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 			s.id, 
 			s.full_name,
 			st.status,
-			COALESCE(CAST(st.first_check AS TEXT), '') as check_time
+			COALESCE(CAST(st.first_check AS TEXT), '') as check_in_time,
+			COALESCE(CAST(st.last_check AS TEXT), '') as check_out_time
 		FROM students s
 		CROSS JOIN LATERAL get_student_status(s.id, $2::DATE) st
 		WHERE s.parent_id = $1 AND s.is_active = true
@@ -97,7 +98,7 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 	var records []DailyAttendanceDTO
 	for rows.Next() {
 		var rec DailyAttendanceDTO
-		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckTime); err != nil {
+		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckInTime, &rec.CheckOutTime); err != nil {
 			continue
 		}
 		records = append(records, rec)
