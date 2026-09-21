@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"future_kids/internal/auth" // تأكد من أن اسم المشروع هنا يطابق اسم مشروعك الفعلي
+	"future_kids/internal/auth"
 )
 
 // HardwareLoggerMiddleware logs the details of requests coming from the hardware devices
@@ -43,7 +43,7 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 	return func(w http.ResponseWriter, r *http.Request) {
 		deviceSN := r.URL.Query().Get("SN")
 		if deviceSN == "" {
-			http.Error(w, "Device SN is required", http.StatusUnauthorized)
+			respondError(w, http.StatusUnauthorized, "Device SN is required")
 			return
 		}
 
@@ -56,17 +56,17 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 		if err != nil {
 			if err == sql.ErrNoRows {
 				slog.Warn("Unauthorized device attempted connection", "device_sn", deviceSN, "ip", r.RemoteAddr)
-				http.Error(w, "Unauthorized Device", http.StatusUnauthorized)
+				respondError(w, http.StatusUnauthorized, "Unauthorized Device")
 			} else {
 				slog.Error("Database error during device validation", "error", err)
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				respondError(w, http.StatusInternalServerError, "Internal Server Error")
 			}
 			return
 		}
 
 		if !isActive {
 			slog.Warn("Disabled device attempted connection", "device_sn", deviceSN)
-			http.Error(w, "Device is disabled", http.StatusForbidden)
+			respondError(w, http.StatusForbidden, "Device is disabled")
 			return
 		}
 
@@ -98,27 +98,36 @@ type contextKey string
 
 const ParentIDKey contextKey = "parent_id"
 
+// extractBearerToken pulls the token string from an "Authorization: Bearer <token>" header.
+// Returns the token and true on success, empty string and false if the header is missing or malformed.
+func extractBearerToken(r *http.Request) (string, bool) {
+	parts := strings.Fields(r.Header.Get("Authorization"))
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		return "", false
+	}
+	return parts[1], true
+}
+
 // AuthMiddleware protects mobile routes by validating the JWT token and injecting parent_id into context.
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// 1. Extract Authorization header
-		authHeader := r.Header.Get("Authorization")
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+		token, ok := extractBearerToken(r)
+		if !ok {
+			respondError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
 		// 2. Validate token via auth package
-		claims, err := auth.ValidateToken(parts[1])
+		claims, err := auth.ValidateToken(token)
 		if err != nil {
-			http.Error(w, `{"status":"error","message":"Invalid or expired token"}`, http.StatusUnauthorized)
+			respondError(w, http.StatusUnauthorized, "Invalid or expired token")
 			return
 		}
 
 		// 3. Enforce parent role
 		if role, ok := claims["role"].(string); !ok || role != "parent" {
-			http.Error(w, `{"status":"error","message":"Access denied"}`, http.StatusForbidden)
+			respondError(w, http.StatusForbidden, "Access denied")
 			return
 		}
 
@@ -133,20 +142,19 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 // AdminMiddleware permits only valid JWTs carrying the admin role.
 func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		parts := strings.Fields(authHeader)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+		token, ok := extractBearerToken(r)
+		if !ok {
+			respondError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
-		claims, err := auth.ValidateToken(parts[1])
+		claims, err := auth.ValidateToken(token)
 		if err != nil {
-			http.Error(w, `{"status":"error","message":"Unauthorized"}`, http.StatusUnauthorized)
+			respondError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 		if role, ok := claims["role"].(string); !ok || role != "admin" {
-			http.Error(w, `{"status":"error","message":"Forbidden"}`, http.StatusForbidden)
+			respondError(w, http.StatusForbidden, "Forbidden")
 			return
 		}
 
