@@ -364,13 +364,6 @@ func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-type DailyAttendanceRecord struct {
-	StudentID int    `json:"student_id"`
-	FullName  string `json:"full_name"`
-	Status    string `json:"status"` // Present, Absent, Excused
-	CheckTime string `json:"check_time,omitempty"`
-}
-
 func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -400,9 +393,9 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	}
 	defer rows.Close()
 
-	var records []DailyAttendanceRecord
+	var records []DailyAttendanceDTO
 	for rows.Next() {
-		var rec DailyAttendanceRecord
+		var rec DailyAttendanceDTO
 		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckTime); err != nil {
 			slog.Error("Failed to scan attendance record", "error", err)
 			continue
@@ -411,7 +404,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	if records == nil {
-		records = []DailyAttendanceRecord{}
+		records = []DailyAttendanceDTO{}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{

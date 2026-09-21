@@ -11,12 +11,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-type MobileAttendanceRecord struct {
-	StudentID int    `json:"student_id"`
-	FullName  string `json:"full_name"`
-	Status    string `json:"status"` // Present, Absent, Excused
-	CheckTime string `json:"check_time,omitempty"`
-}
 
 // MobileLoginRequest is the expected JSON payload from the Flutter app for login.
 type MobileLoginRequest struct {
@@ -100,9 +94,9 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 	}
 	defer rows.Close()
 
-	var records []MobileAttendanceRecord
+	var records []DailyAttendanceDTO
 	for rows.Next() {
-		var rec MobileAttendanceRecord
+		var rec DailyAttendanceDTO
 		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckTime); err != nil {
 			continue
 		}
@@ -110,7 +104,7 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 	}
 
 	if records == nil {
-		records = []MobileAttendanceRecord{}
+		records = []DailyAttendanceDTO{}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "date": today, "data": records})
