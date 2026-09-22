@@ -91,12 +91,13 @@ func ADMSCdataHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Any other method is unexpected ───────────────────────────────────────
-	slog.Warn("ZKTeco ADMS: unexpected HTTP method",
+	// Defensive programming: Always return OK to ADMS hardware to prevent retry loops.
+	slog.Warn("ZKTeco ADMS: unexpected HTTP method — returning OK to prevent device retry loop",
 		"method", r.Method,
 		"device_sn", sn,
 		"remote_addr", r.RemoteAddr,
 	)
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	writeADMSOK(w)
 }
 
 // ADMSGetRequestHandler handles GET /iclock/getrequest.

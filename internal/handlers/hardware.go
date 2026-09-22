@@ -131,7 +131,12 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	// The ADMS protocol only POSTs data; reject anything else.
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		// Defensive programming: Always return OK to ADMS hardware to prevent retry loops.
+		slog.Warn("ADMSHandler: unexpected HTTP method — returning OK to prevent device retry loop",
+			"method", r.Method,
+			"remote_addr", r.RemoteAddr,
+		)
+		writeADMSOK(w)
 		return
 	}
 
@@ -328,7 +333,12 @@ type HardwarePushPayload struct {
 
 func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		// Defensive programming: Always return OK to ADMS hardware to prevent retry loops.
+		slog.Warn("HardwareAttendancePushHandler: unexpected HTTP method — returning OK to prevent device retry loop",
+			"method", r.Method,
+			"remote_addr", r.RemoteAddr,
+		)
+		writeADMSOK(w)
 		return
 	}
 
