@@ -117,23 +117,37 @@ for i in {1..10}; do
 done
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-section "Phase 3 — Hardware ADMS Push (ZKTeco Protocol)"
-# Simulates the real ZKTeco ATTLOG POST that the physical device sends.
-# The server must respond HTTP 200 with plain-text "OK" — never JSON.
+section "Phase 3 — Hardware ADMS Push (ZKTeco Behavioral Time-Window Test)"
+# Simulates the full real-world multi-punch sequence for student[0] to validate
+# time-window logic, dead-zone filtering, and idempotency per RULES.md Section 5.
+#
+# Punches sent for student 0 (RFID_TAGS[0]):
+#   07:15 → valid check-in  (Morning window: 06:30–09:30) ← MUST be recorded
+#   07:18 → spam  check-in  (still in Morning window)     ← MUST be ignored
+#   10:30 → dead-zone punch (09:31–11:29)                 ← MUST be ignored
+#   12:05 → valid check-out (Afternoon window: 11:30–13:30) ← MUST be recorded
+#   12:15 → spam check-out  (still in Afternoon window)   ← MUST be ignored
+#
+# Students 1–4 get a simple valid check-in + check-out.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TODAY=$(date +"%Y-%m-%d")
 
-# Build an ATTLOG payload with the first 5 students' rfid_tags (User IDs on device)
-# Format: PIN\tDateTime\tVerified\tStatus\n  (positional, old firmware)
+# Student 0: Full behavioral sequence (time-window + dead-zone + spam proof)
+BEHAVIORAL_RFID="${RFID_TAGS[0]}"
 ATTLOG_BODY=""
-for i in {0..4}; do
+ATTLOG_BODY+="${BEHAVIORAL_RFID}\t${TODAY} 07:15:00\t1\t1\n"  # valid check-in
+ATTLOG_BODY+="${BEHAVIORAL_RFID}\t${TODAY} 07:18:00\t1\t1\n"  # spam — must be ignored
+ATTLOG_BODY+="${BEHAVIORAL_RFID}\t${TODAY} 10:30:00\t1\t1\n"  # dead-zone — must be ignored
+ATTLOG_BODY+="${BEHAVIORAL_RFID}\t${TODAY} 12:05:00\t1\t1\n"  # valid check-out
+ATTLOG_BODY+="${BEHAVIORAL_RFID}\t${TODAY} 12:15:00\t1\t1\n"  # spam — must be ignored
+
+# Students 1–4: simple valid check-in + check-out
+for i in {1..4}; do
     rfid="${RFID_TAGS[$i]}"
-    punch_time="${TODAY} 07:$(printf "%02d" $((i * 3))):00"
-    punch_out_time="${TODAY} 12:$(printf "%02d" $((i * 3))):00"
-    ATTLOG_BODY+="${rfid}\t${punch_time}\t1\t1\n"
-    ATTLOG_BODY+="${rfid}\t${punch_out_time}\t1\t1\n"
+    ATTLOG_BODY+="${rfid}\t${TODAY} 07:$(printf "%02d" $((i * 3))):00\t1\t1\n"
+    ATTLOG_BODY+="${rfid}\t${TODAY} 12:$(printf "%02d" $((i * 3))):00\t1\t1\n"
 done
-# Interpret escape sequences
+
 ATTLOG_PAYLOAD=$(printf "%b" "$ATTLOG_BODY")
 
 adms_res=$(curl -s -w "\n%{http_code}" -X POST \
@@ -145,7 +159,7 @@ adms_body=$(echo "$adms_res" | sed '$d')
 assert_http "ADMS ATTLOG push" "$adms_http"
 assert_eq  "ADMS response body is plain OK" "$adms_body" "OK"
 
-# Also push 2 duplicates — they must still return 200 OK (idempotency)
+# Idempotency check: re-push the SAME payload — device must still get HTTP 200 OK
 dup_http=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
   "${API_URL}/iclock/cdata?SN=DEVICE-E2E-001&table=ATTLOG" \
   -H "Content-Type: text/plain" \
@@ -153,7 +167,9 @@ dup_http=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
 assert_http "ADMS duplicate push (idempotency)" "$dup_http"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-section "Phase 4 — Admin Daily Attendance (DailyAttendanceDTO validation)"
+section "Phase 4 — Admin Daily Attendance (Strict Time-Window Behavioral Validation)"
+# Asserts that the API returns EXACT times for student[0], not the spam/dead-zone
+# punches. This is the behavioral proof of RULES.md Section 5.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 att_res=$(curl -s -w "\n%{http_code}" -X GET \
   "${API_URL}/api/admin/attendance?date=${TODAY}" \
@@ -164,15 +180,24 @@ assert_http "Admin daily attendance" "$att_http"
 assert_eq  "Admin attendance status field" "$(echo "$att_body" | jq -r '.status')" "success"
 assert_eq  "Admin attendance date field"   "$(echo "$att_body" | jq -r '.date')"   "$TODAY"
 
-# Validate DailyAttendanceDTO shape on the first record
-first_record=$(echo "$att_body" | jq '.data[0]')
-[ "$first_record" != "null" ] || fail "No attendance records returned"
+# Find the behavioral student (student[0] = RFID_TAGS[0]) by rfid in the name match
+# The API returns students ordered by status desc, name asc — find student[0]'s record.
+behavioral_record=$(echo "$att_body" | jq --arg name "E2E Student 1" '.data[] | select(.full_name == $name)')
+[ -n "$behavioral_record" ] && [ "$behavioral_record" != "null" ] || fail "Behavioral student record not found in Admin attendance"
 
-for field in student_id full_name status check_in_time check_out_time; do
-    val=$(echo "$first_record" | jq -r ".$field")
-    [ "$val" != "null" ] && [ -n "$val" ] || fail "DailyAttendanceDTO missing field: $field"
-    pass "DailyAttendanceDTO.$field present"
-done
+# Assert status is Present (had a valid morning punch)
+assert_eq "Admin: behavioral student is Present" \
+    "$(echo "$behavioral_record" | jq -r '.status')" "Present"
+
+# STRICT: check_in_time must be exactly 07:15 AM — the FIRST valid punch.
+# If the system returned 07:18 AM (spam) the time-window logic is broken.
+assert_eq "Admin: check_in_time is 07:15 AM (not spam 07:18 AM)" \
+    "$(echo "$behavioral_record" | jq -r '.check_in_time')" "07:15 AM"
+
+# STRICT: check_out_time must be exactly 12:05 PM — the FIRST valid afternoon punch.
+# If the system returned 12:15 PM (spam) or 10:30 AM (dead-zone) the logic is broken.
+assert_eq "Admin: check_out_time is 12:05 PM (not spam 12:15 PM or dead-zone 10:30 AM)" \
+    "$(echo "$behavioral_record" | jq -r '.check_out_time')" "12:05 PM"
 
 # At least 5 students should now be 'Present' (we punched 5)
 present_count=$(echo "$att_body" | jq '[.data[] | select(.status == "Present")] | length')
@@ -224,7 +249,9 @@ wrong_pin_http=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/mo
 assert_http "Wrong PIN rejected" "$wrong_pin_http" "401"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-section "Phase 8 — Mobile Today Attendance (DailyAttendanceDTO validation)"
+section "Phase 8 — Mobile Today Attendance (Strict Time-Window Behavioral Validation)"
+# Mirrors Phase 4 from the parent's perspective — asserting exact time values
+# from the same behavioral student[0] punch sequence.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 mob_today_res=$(curl -s -w "\n%{http_code}" -X GET "$API_URL/api/mobile/attendance/today" \
   -H "Authorization: Bearer $PARENT_TOKEN")
@@ -234,15 +261,22 @@ assert_http "Mobile today attendance" "$mob_today_http"
 assert_eq  "Mobile attendance status field" "$(echo "$mob_today_body" | jq -r '.status')" "success"
 assert_eq  "Mobile attendance date field"   "$(echo "$mob_today_body" | jq -r '.date')"   "$TODAY"
 
-# Validate DailyAttendanceDTO shape
-mob_first=$(echo "$mob_today_body" | jq '.data[0]')
-first_mob_record="$mob_first"
-[ "$mob_first" != "null" ] || fail "Mobile attendance returned no records for parent A"
-for field in student_id full_name status check_in_time check_out_time; do
-    val=$(echo "$first_mob_record" | jq -r ".$field")
-    [ "$val" != "null" ] && [ -n "$val" ] || fail "Mobile DailyAttendanceDTO missing field: $field"
-    pass "Mobile DailyAttendanceDTO.$field present"
-done
+# Parent A is the parent of students 1,3,5,7,9 (odd-indexed in setup loop)
+# Find the behavioral student[0] record ("E2E Student 1") in the parent's view
+mob_behavioral=$(echo "$mob_today_body" | jq --arg name "E2E Student 1" '.data[] | select(.full_name == $name)')
+[ -n "$mob_behavioral" ] && [ "$mob_behavioral" != "null" ] || fail "Behavioral student not found in Mobile attendance"
+
+# Assert status is Present
+assert_eq "Mobile: behavioral student is Present" \
+    "$(echo "$mob_behavioral" | jq -r '.status')" "Present"
+
+# STRICT: check_in_time must be exactly 07:15 AM — spam 07:18 AM must NOT appear
+assert_eq "Mobile: check_in_time is 07:15 AM (not spam 07:18 AM)" \
+    "$(echo "$mob_behavioral" | jq -r '.check_in_time')" "07:15 AM"
+
+# STRICT: check_out_time must be exactly 12:05 PM — spam 12:15 PM must NOT appear
+assert_eq "Mobile: check_out_time is 12:05 PM (not spam 12:15 PM or dead-zone 10:30 AM)" \
+    "$(echo "$mob_behavioral" | jq -r '.check_out_time')" "12:05 PM"
 
 # Parent A should see only their own children (5 out of 10), not all 10
 mob_count=$(echo "$mob_today_body" | jq '.data | length')
