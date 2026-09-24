@@ -274,7 +274,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 			s.full_name,
 			TO_CHAR(md.m_date, 'YYYY-MM-DD') as record_date,
 			st.status,
-			COALESCE(TO_CHAR(st.first_check, 'HH24:MI'), '') as check_time
+			COALESCE(st.first_check, '') as check_time
 		FROM students s
 		CROSS JOIN month_dates md
 		CROSS JOIN LATERAL get_student_status(s.id, md.m_date) st
