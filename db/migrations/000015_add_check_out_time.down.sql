@@ -1,3 +1,15 @@
+-- ⚠ APP-COMPATIBILITY WARNING
+-- Running this down-migration against the current main branch will break:
+--   internal/handlers/admin.go — AdminDailyAttendanceHandler and
+--   AdminExportExcelHandler call get_student_status() and expect a 3-column
+--   result (status TEXT, first_check TEXT, last_check TEXT). This down-migration
+--   reverts the function to a 2-column signature (status TEXT, first_check TIMESTAMP),
+--   which will cause a runtime scan error on every attendance query.
+--   internal/handlers/mobile.go — MobileTodayAttendanceHandler and
+--   MobileMonthlyAttendanceHandler have the same 3-column dependency.
+-- Do not run this migrate-down without first reverting or updating those
+-- files to match the pre-migration schema.
+
 CREATE OR REPLACE FUNCTION get_student_status(p_student_id INT, p_date DATE)
 RETURNS TABLE (
     status TEXT,

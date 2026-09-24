@@ -19,6 +19,7 @@ This document establishes the strict architectural guidelines for the Future Kid
 - **Raw SQL Migrations:** All database schema changes must be written as raw SQL files in the `db/migrations/` directory using the `golang-migrate/migrate` tool conventions (up/down files).
 - **NO Heavy ORMs:** The use of GORM, Ent, or other heavy ORMs is strictly prohibited. Database interactions must use the standard `database/sql` package with raw SQL queries.
 - **Database-Level Logic:** Where appropriate, complex business logic (e.g., attendance status calculation) is encapsulated in robust PostgreSQL functions (like `get_student_status`) to guarantee consistency across all endpoints.
+- **App-Compatibility Warnings on Down-Migrations:** Any down-migration that drops a column, table, or changes a function signature that the current Go codebase actively reads or writes MUST include a `-- ⚠ APP-COMPATIBILITY WARNING` comment block at the top of the file, naming the specific Go files/handlers that depend on it. This does not make the migration reversible at the application layer — it only ensures nobody runs `migrate down` past that point without knowing it will break the running server.
 
 ## 4. API & JSON Contracts
 - **OpenAPI 3.0 Strictness:** The API must strictly adhere to the `future_kids_api.yaml` specification. Every endpoint, method, request payload, and response format must perfectly match this document.
