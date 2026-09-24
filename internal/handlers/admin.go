@@ -36,6 +36,8 @@ type StudentPayload struct {
 	ParentPhone string `json:"parent_phone"`
 	ParentPin   string `json:"parent_pin,omitempty"`
 	RfidTag     string `json:"rfid_tag"` // IMPORTANT: this must equal the PIN the student is enrolled under on the ZKTeco device, not a physical RFID card value
+	Grade       string `json:"grade"`
+	Section     string `json:"section"`
 }
 
 // getRequestedDateOrDefault returns the ?date= query param, defaulting to today in Asia/Baghdad.
@@ -219,11 +221,11 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				SET full_name = EXCLUDED.full_name, pin_code = EXCLUDED.pin_code
 				RETURNING id
 			)
-			INSERT INTO students (full_name, rfid_tag, parent_id) 
-			VALUES ($4, $5, (SELECT id FROM upsert_parent)) 
+			INSERT INTO students (full_name, rfid_tag, parent_id, grade, section) 
+			VALUES ($4, $5, (SELECT id FROM upsert_parent), $6, $7) 
 			RETURNING id
 		`
-		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag).Scan(&req.ID); err != nil {
+		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section).Scan(&req.ID); err != nil {
 			slog.Error("Failed to create student and parent", "error", err)
 			respondError(w, http.StatusInternalServerError, "Failed to create student and parent")
 			return
@@ -264,10 +266,10 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				RETURNING id
 			)
 			UPDATE students 
-			SET full_name = $4, rfid_tag = $5, parent_id = (SELECT id FROM upsert_parent)
-			WHERE id = $6
+			SET full_name = $4, rfid_tag = $5, parent_id = (SELECT id FROM upsert_parent), grade = $6, section = $7
+			WHERE id = $8
 		`
-		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.ID)
+		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section, req.ID)
 		if err != nil {
 			slog.Error("Failed to update student", "error", err)
 			respondError(w, http.StatusInternalServerError, "Failed to update student")
