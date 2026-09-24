@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS weekly_schedules;
+ALTER TABLE students DROP COLUMN IF EXISTS grade;
+ALTER TABLE students DROP COLUMN IF EXISTS section;
