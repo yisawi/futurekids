@@ -333,12 +333,7 @@ type HardwarePushPayload struct {
 
 func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		// Defensive programming: Always return OK to ADMS hardware to prevent retry loops.
-		slog.Warn("HardwareAttendancePushHandler: unexpected HTTP method — returning OK to prevent device retry loop",
-			"method", r.Method,
-			"remote_addr", r.RemoteAddr,
-		)
-		writeADMSOK(w)
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
