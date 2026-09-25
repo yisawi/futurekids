@@ -10,6 +10,8 @@
 -- Do not run this migrate-down without first reverting or updating those
 -- files to match the pre-migration schema.
 
+DROP FUNCTION IF EXISTS get_student_status(INT, DATE);
+
 CREATE OR REPLACE FUNCTION get_student_status(p_student_id INT, p_date DATE)
 RETURNS TABLE (
     status TEXT,
