@@ -129,7 +129,7 @@ func main() {
 		os.Exit(1)
 	}
 	c := cron.New(cron.WithLocation(loc))
-	if _, err := c.AddFunc("0 12 * * *", func() {
+	if _, err := c.AddFunc("0 12 * * 0-4", func() {
 		cronpkg.ProcessDailyAbsences(appEnv.DB, appEnv.FCMClient)
 	}); err != nil {
 		slog.Error("Failed to schedule cron job", "error", err)
