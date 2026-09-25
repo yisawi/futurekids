@@ -271,6 +271,33 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Notify only if this punch is the one get_student_status selected for its window
+		// (first check-in or first check-out). Spam, dead-zone, and same-minute duplicate
+		// punches are stored but never notified (RULES.md §5). first_check/last_check are
+		// minute-precision text, so an earlier punch in the same minute also counts as a duplicate.
+		var isCheckIn, isCheckOut bool
+		statusErr := app.DB.QueryRowContext(
+			r.Context(),
+			`SELECT
+				COALESCE(st.first_check = TO_CHAR($2::timestamp, 'HH12:MI AM'), false),
+				COALESCE(st.last_check = TO_CHAR($2::timestamp, 'HH12:MI AM'), false)
+			 FROM get_student_status($1, $2::timestamp::date) st
+			 WHERE NOT EXISTS (
+				SELECT 1 FROM attendance_logs
+				WHERE student_id = $1 AND check_time < $2::timestamp
+				AND date_trunc('minute', check_time) = date_trunc('minute', $2::timestamp)
+			 )`,
+			studentIDInt, ev.CheckTime,
+		).Scan(&isCheckIn, &isCheckOut)
+		if statusErr != nil && statusErr != sql.ErrNoRows {
+			slog.Error("ADMSHandler: error checking punch window status",
+				"student_id", studentIDInt, "error", statusErr)
+			continue
+		}
+		if !isCheckIn && !isCheckOut {
+			continue
+		}
+
 		var studentName string
 		var fcmToken sql.NullString
 		var parentPhone sql.NullString
@@ -294,9 +321,14 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		title := "إشعار حضور"
-		body := fmt.Sprintf("تم تسجيل حضور الطالب %s بنجاح الساعة %s",
+		title := "إشعار دخول"
+		body := fmt.Sprintf("تم تسجيل دخول الطالب %s الساعة %s",
 			studentName, ev.CheckTime.Format("15:04"))
+		if isCheckOut {
+			title = "إشعار خروج"
+			body = fmt.Sprintf("تم تسجيل خروج الطالب %s الساعة %s",
+				studentName, ev.CheckTime.Format("15:04"))
+		}
 
 		slog.Info("[DEBUG] ADMSHandler: sending notifications",
 			"student_name", studentName,
