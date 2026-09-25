@@ -184,16 +184,13 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 	// CTE ذكي يحسب الأيام الفعلية للدوام حتى تاريخ اليوم (يستبعد الجمعة، السبت، والأيام المستقبلية)
 	query := `
 		WITH valid_days AS (
-			SELECT generate_series(
-				DATE($1 || '-01'), 
-				LEAST((DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, CURRENT_DATE), 
+			SELECT d::DATE AS m_date
+			FROM generate_series(
+				DATE($1 || '-01'),
+				LEAST((DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, CURRENT_DATE),
 				'1 day'::interval
-			)::DATE AS m_date
-			WHERE EXTRACT(DOW FROM generate_series(
-				DATE($1 || '-01'), 
-				LEAST((DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, CURRENT_DATE), 
-				'1 day'::interval
-			)) NOT IN (5, 6)
+			) AS d
+			WHERE EXTRACT(DOW FROM d) NOT IN (5, 6)
 		)
 		SELECT 
 			s.id, 
