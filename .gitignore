@@ -18,3 +18,5 @@ firebase-credentials.json
 
 
 REPORT.md
+# Admin password rotation copies containing real passwords (see db/scripts/README.md)
+db/scripts/rotate_admin_password*.with_password.sql
