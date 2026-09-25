@@ -196,6 +196,8 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, "Invalid request body")
 			return
 		}
+		// Captured before defaults are applied: on parent conflict, only overwrite what the admin actually sent.
+		pinProvided, nameProvided := req.ParentPin != "", req.ParentName != ""
 		if req.ParentPin == "" {
 			req.ParentPin = "1234"
 		}
@@ -218,14 +220,15 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				INSERT INTO parents (full_name, phone_number, pin_code)
 				VALUES ($1, $2, $3)
 				ON CONFLICT (phone_number) DO UPDATE 
-				SET full_name = EXCLUDED.full_name, pin_code = EXCLUDED.pin_code
+				SET full_name = CASE WHEN $9::boolean THEN EXCLUDED.full_name ELSE parents.full_name END,
+				    pin_code = CASE WHEN $8::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END
 				RETURNING id
 			)
-			INSERT INTO students (full_name, rfid_tag, parent_id, grade, section) 
-			VALUES ($4, $5, (SELECT id FROM upsert_parent), $6, $7) 
+			INSERT INTO students (full_name, rfid_tag, parent_id, grade, section)
+			VALUES ($4, $5, (SELECT id FROM upsert_parent), $6, $7)
 			RETURNING id
 		`
-		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section).Scan(&req.ID); err != nil {
+		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section, pinProvided, nameProvided).Scan(&req.ID); err != nil {
 			slog.Error("Failed to create student and parent", "error", err)
 			respondError(w, http.StatusInternalServerError, "Failed to create student and parent")
 			return
@@ -240,6 +243,8 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, "Invalid request body or missing ID")
 			return
 		}
+		// Captured before defaults are applied: on parent conflict, only overwrite what the admin actually sent.
+		pinProvided, nameProvided := req.ParentPin != "", req.ParentName != ""
 		if req.ParentPin == "" {
 			req.ParentPin = "1234"
 		}
@@ -262,14 +267,15 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				INSERT INTO parents (full_name, phone_number, pin_code)
 				VALUES ($1, $2, $3)
 				ON CONFLICT (phone_number) DO UPDATE 
-				SET full_name = EXCLUDED.full_name, pin_code = EXCLUDED.pin_code
+				SET full_name = CASE WHEN $10::boolean THEN EXCLUDED.full_name ELSE parents.full_name END,
+				    pin_code = CASE WHEN $9::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END
 				RETURNING id
 			)
-			UPDATE students 
+			UPDATE students
 			SET full_name = $4, rfid_tag = $5, parent_id = (SELECT id FROM upsert_parent), grade = $6, section = $7
 			WHERE id = $8
 		`
-		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section, req.ID)
+		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section, req.ID, pinProvided, nameProvided)
 		if err != nil {
 			slog.Error("Failed to update student", "error", err)
 			respondError(w, http.StatusInternalServerError, "Failed to update student")
