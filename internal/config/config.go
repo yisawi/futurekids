@@ -2,7 +2,9 @@ package config
 
 import (
 	"log/slog"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -23,9 +25,29 @@ func LoadConfig() *Config {
 	return &Config{
 		Port: getEnv("PORT", "8080"),
 		// Railway injects DATABASE_URL; DB_URL is kept as a local-dev fallback.
-		DBUrl:     getEnvFirstMatch("DATABASE_URL", "DB_URL"),
+		DBUrl:     withBaghdadTimeZone(getEnvFirstMatch("DATABASE_URL", "DB_URL")),
 		JWTSecret: getEnv("JWT_SECRET", ""),
 	}
+}
+
+// withBaghdadTimeZone pins the Postgres session TimeZone to Asia/Baghdad so
+// CURRENT_DATE, CURRENT_TIMESTAMP and DEFAULT timestamps do not depend on the
+// server default (Railway is UTC). A timezone already set in the DSN is kept.
+// Only URL-form DSNs (postgres:// or postgresql://) are modified.
+func withBaghdadTimeZone(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		return dsn
+	}
+	q := u.Query()
+	for key := range q {
+		if strings.EqualFold(key, "timezone") {
+			return dsn
+		}
+	}
+	q.Set("timezone", "Asia/Baghdad")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func getEnv(key, fallback string) string {

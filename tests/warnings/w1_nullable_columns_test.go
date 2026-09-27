@@ -2,22 +2,12 @@ package warnings
 
 import (
 	"database/sql"
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"testing"
 	"time"
 
 	"future_kids/internal/auth"
 	"future_kids/internal/handlers"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const (
@@ -28,7 +18,7 @@ const (
 // TestW1NullableColumnsHandling verifies that NULLs in nullable columns are
 // scanned safely by every handler that reads them (audit warning W1).
 func TestW1NullableColumnsHandling(t *testing.T) {
-	db := setupThrowawayDB(t)
+	db, _ := setupThrowawayDB(t, "fk_w1_test")
 	auth.InitAuth("w1-test-secret")
 	app := &handlers.AppEnv{DB: db}
 
@@ -129,98 +119,6 @@ func TestW1NullableColumnsHandling(t *testing.T) {
 	} else {
 		t.Log("PASS: NULL values handled correctly")
 	}
-}
-
-// setupThrowawayDB creates a uniquely named database, applies every up-migration,
-// and registers cleanup that drops it. Override the server with TEST_PG_ADMIN_URL.
-func setupThrowawayDB(t *testing.T) *sql.DB {
-	t.Helper()
-
-	adminURL := os.Getenv("TEST_PG_ADMIN_URL")
-	if adminURL == "" {
-		adminURL = "postgres://localhost:5432/postgres?sslmode=disable"
-	}
-	admin, err := sql.Open("pgx", adminURL)
-	if err != nil {
-		t.Fatalf("open admin connection: %v", err)
-	}
-	if err := admin.Ping(); err != nil {
-		admin.Close()
-		t.Fatalf("Postgres unreachable at %s (set TEST_PG_ADMIN_URL): %v", adminURL, err)
-	}
-
-	name := fmt.Sprintf("fk_w1_test_%d", time.Now().UnixNano())
-	if _, err := admin.Exec("CREATE DATABASE " + name); err != nil {
-		admin.Close()
-		t.Fatalf("create throwaway database: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := admin.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)"); err != nil {
-			t.Errorf("drop throwaway database %s: %v", name, err)
-		}
-		admin.Close()
-	})
-
-	u, err := url.Parse(adminURL)
-	if err != nil {
-		t.Fatalf("parse TEST_PG_ADMIN_URL: %v", err)
-	}
-	u.Path = "/" + name
-	db, err := sql.Open("pgx", u.String())
-	if err != nil {
-		t.Fatalf("open throwaway database: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	files, err := filepath.Glob(filepath.Join("..", "..", "db", "migrations", "*.up.sql"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("no up-migrations found: %v", err)
-	}
-	sort.Strings(files)
-	for _, f := range files {
-		sqlText, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatalf("read %s: %v", f, err)
-		}
-		if _, err := db.Exec(string(sqlText)); err != nil {
-			t.Fatalf("apply %s: %v", filepath.Base(f), err)
-		}
-	}
-	return db
-}
-
-func serve(t *testing.T, h http.HandlerFunc, method, target, token, body string) (rec *httptest.ResponseRecorder) {
-	t.Helper()
-	req := httptest.NewRequest(method, target, strings.NewReader(body))
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	rec = httptest.NewRecorder()
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("handler panicked on %s %s: %v", method, target, r)
-		}
-	}()
-	h(rec, req)
-	return rec
-}
-
-func decodeData(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int) []map[string]any {
-	t.Helper()
-	if rec.Code != wantStatus {
-		t.Fatalf("expected HTTP %d, got %d: %s", wantStatus, rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Status string           `json:"status"`
-		Data   []map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v\nbody: %s", err, rec.Body.String())
-	}
-	if resp.Status != "success" {
-		t.Fatalf("expected status success, got %q", resp.Status)
-	}
-	return resp.Data
 }
 
 func countPunches(t *testing.T, db *sql.DB, studentID int) int {

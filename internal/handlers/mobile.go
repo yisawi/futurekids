@@ -12,6 +12,20 @@ import (
 )
 
 
+// baghdadLoc is loaded once. Iraq has used a fixed UTC+3 with no DST since 2008, so the fallback is exact.
+var baghdadLoc = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Baghdad")
+	if err != nil {
+		return time.FixedZone("Asia/Baghdad", 3*60*60)
+	}
+	return loc
+}()
+
+// baghdadToday returns the current time in Asia/Baghdad, independent of the DB session timezone.
+func baghdadToday() time.Time {
+	return time.Now().In(baghdadLoc)
+}
+
 // MobileLoginRequest is the expected JSON payload from the Flutter app for login.
 type MobileLoginRequest struct {
 	Phone    string `json:"phone"`
@@ -175,10 +189,11 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 		return
 	}
 
+	now := baghdadToday()
+	today := now.Format("2006-01-02")
 	monthParam := r.URL.Query().Get("month")
 	if monthParam == "" {
-		loc, _ := time.LoadLocation("Asia/Baghdad")
-		monthParam = time.Now().In(loc).Format("2006-01")
+		monthParam = now.Format("2006-01")
 	}
 
 	// CTE ذكي يحسب الأيام الفعلية للدوام حتى تاريخ اليوم (يستبعد الجمعة، السبت، والأيام المستقبلية)
@@ -187,7 +202,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 			SELECT d::DATE AS m_date
 			FROM generate_series(
 				DATE($1 || '-01'),
-				LEAST((DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, CURRENT_DATE),
+				LEAST((DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, $3::DATE),
 				'1 day'::interval
 			) AS d
 			WHERE EXTRACT(DOW FROM d) NOT IN (5, 6)
@@ -206,7 +221,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 		ORDER BY s.id ASC
 	`
 
-	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID)
+	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID, today)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Database error")
 		return
@@ -251,10 +266,11 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		return
 	}
 
+	now := baghdadToday()
+	today := now.Format("2006-01-02")
 	monthParam := r.URL.Query().Get("month")
 	if monthParam == "" {
-		loc, _ := time.LoadLocation("Asia/Baghdad")
-		monthParam = time.Now().In(loc).Format("2006-01")
+		monthParam = now.Format("2006-01")
 	}
 
 	// استعلام CTE يولد أيام الشهر، يستبعد المستقبل وعطلة نهاية الأسبوع (5=الجمعة، 6=السبت)
@@ -276,12 +292,12 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		CROSS JOIN month_dates md
 		CROSS JOIN LATERAL get_student_status(s.id, md.m_date) st
 		WHERE s.parent_id = $2 AND s.is_active = true
-		  AND md.m_date <= CURRENT_DATE
+		  AND md.m_date <= $3::DATE
 		  AND EXTRACT(DOW FROM md.m_date) NOT IN (5, 6)
 		ORDER BY s.id, md.m_date DESC
 	`
 
-	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID)
+	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID, today)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Database error")
 		return
@@ -448,7 +464,7 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 
 	// 2. استعلام JOIN لجلب الإشعارات عبر مطابقة رقم الهاتف المرتبط بـ parent_id
 	query := `
-		SELECT n.id, n.title, n.body, COALESCE(n.is_read, false) AS is_read, COALESCE(n.created_at, LOCALTIMESTAMP) AS created_at
+		SELECT n.id, n.title, n.body, COALESCE(n.is_read, false) AS is_read, COALESCE(n.created_at AT TIME ZONE 'Asia/Baghdad', CURRENT_TIMESTAMP) AS created_at
 		FROM notifications n
 		JOIN parents p ON n.parent_phone = p.phone_number
 		WHERE p.id = $1
@@ -472,7 +488,7 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 			return
 		}
 		// تنسيق الوقت ليقبله تطبيق فلاتر بسلاسة
-		n.CreatedAt = createdAt.Format(time.RFC3339)
+		n.CreatedAt = createdAt.In(baghdadLoc).Format(time.RFC3339)
 		notifications = append(notifications, n)
 	}
 	if err := rows.Err(); err != nil {
