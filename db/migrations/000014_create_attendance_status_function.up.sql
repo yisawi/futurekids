@@ -1,4 +1,6 @@
-CREATE OR REPLACE FUNCTION get_student_status(p_student_id INT, p_date DATE)
+DROP FUNCTION IF EXISTS get_student_status(INT, DATE) CASCADE;
+
+CREATE FUNCTION get_student_status(p_student_id INT, p_date DATE)
 RETURNS TABLE (
     status TEXT,
     first_check TIMESTAMP

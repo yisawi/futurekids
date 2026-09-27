@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"future_kids/internal/auth"
@@ -146,6 +147,23 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// validateStudentPayload trims the required fields in place and returns an error
+// message for the first one that is empty, or "" when the payload is valid.
+func validateStudentPayload(req *StudentPayload) string {
+	req.Name = strings.TrimSpace(req.Name)
+	req.ParentName = strings.TrimSpace(req.ParentName)
+	req.ParentPhone = strings.TrimSpace(req.ParentPhone)
+	switch {
+	case req.ParentPhone == "":
+		return "parent_phone is required"
+	case req.ParentName == "":
+		return "parent_name is required"
+	case req.Name == "":
+		return "name is required"
+	}
+	return ""
+}
+
 func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 
@@ -199,6 +217,10 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, "Invalid request body")
 			return
 		}
+		if msg := validateStudentPayload(&req); msg != "" {
+			respondError(w, http.StatusBadRequest, msg)
+			return
+		}
 		// Captured before defaults are applied: on parent conflict, only overwrite what the admin actually sent.
 		pinProvided, nameProvided := req.ParentPin != "", req.ParentName != ""
 		if req.ParentPin == "" {
@@ -211,9 +233,6 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		if req.ParentName == "" {
-			req.ParentName = "غير مدخل"
-		}
 		if req.RfidTag == "" {
 			req.RfidTag = fmt.Sprintf("admin-%d", time.Now().UnixNano())
 		}
@@ -246,6 +265,10 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, "Invalid request body or missing ID")
 			return
 		}
+		if msg := validateStudentPayload(&req); msg != "" {
+			respondError(w, http.StatusBadRequest, msg)
+			return
+		}
 		// Captured before defaults are applied: on parent conflict, only overwrite what the admin actually sent.
 		pinProvided, nameProvided := req.ParentPin != "", req.ParentName != ""
 		if req.ParentPin == "" {
@@ -256,10 +279,6 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			slog.Error("Failed to hash PIN", "error", err)
 			respondError(w, http.StatusInternalServerError, "Internal server error")
 			return
-		}
-
-		if req.ParentName == "" {
-			req.ParentName = "غير مدخل"
 		}
 
 		query := `

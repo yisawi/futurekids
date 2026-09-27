@@ -1,1 +1,1 @@
-DROP FUNCTION IF EXISTS get_student_status(INT, DATE);
+DROP FUNCTION IF EXISTS get_student_status(INT, DATE) CASCADE;

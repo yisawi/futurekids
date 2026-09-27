@@ -538,7 +538,7 @@ paths:
     post:
       tags: [Admin Dashboard]
       summary: Create a new student
-      description: Creates a student and upserts their parent record atomically. If `rfid_tag` is empty, a placeholder is generated. If `parent_pin` is empty, defaults to `1234`.
+      description: Creates a student and upserts their parent record atomically. `name`, `parent_name` and `parent_phone` are required (400 if empty or whitespace). If `rfid_tag` is empty, a placeholder is generated. If `parent_pin` is empty, a new parent gets `1234` and an existing parent keeps their PIN.
       security:
         - BearerAuth: []
       requestBody:
@@ -573,7 +573,7 @@ paths:
     put:
       tags: [Admin Dashboard]
       summary: Update an existing student
-      description: Updates student fields and upserts the linked parent. `id` is required in the body. An empty `rfid_tag`, or an omitted/null `grade` or `section`, keeps the stored value; an empty `parent_pin` or `parent_name` keeps the existing parent's PIN and name.
+      description: Updates student fields and upserts the linked parent. `id` is required in the body. `name`, `parent_name` and `parent_phone` are required (400 if empty or whitespace). An empty `rfid_tag`, or an omitted/null `grade` or `section`, keeps the stored value; an empty `parent_pin` keeps the existing parent's PIN.
       security:
         - BearerAuth: []
       requestBody:
