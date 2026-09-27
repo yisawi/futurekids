@@ -161,8 +161,18 @@ components:
           example: "1234"
         rfid_tag:
           type: string
-          description: Must match the User ID enrolled on the ZKTeco device.
+          description: Must match the User ID enrolled on the ZKTeco device. On update, an empty value keeps the stored tag.
           example: "1001"
+        grade:
+          type: string
+          nullable: true
+          description: On update, omitted or null keeps the stored value.
+          example: "G1"
+        section:
+          type: string
+          nullable: true
+          description: On update, omitted or null keeps the stored value.
+          example: "A"
       required: [name, parent_name, parent_phone, rfid_tag]
 
     StudentListResponse:
@@ -193,13 +203,15 @@ components:
           example: Present
         check_in_time:
           type: string
-          description: First punch timestamp within morning window as text.
+          nullable: true
+          description: First punch within the morning window as text; null when there is none.
           example: "07:15 AM"
         check_out_time:
           type: string
           nullable: true
-          description: First punch timestamp within afternoon window as text.
+          description: First punch within the afternoon window as text; null when there is none.
           example: "12:30 PM"
+      required: [student_id, full_name, status, check_in_time, check_out_time]
 
     DailyAttendanceResponse:
       type: object
@@ -344,6 +356,10 @@ components:
           enum: [Present, Excused, Absent]
         check_time:
           type: string
+          nullable: true
+          description: First punch within the morning window as text; null when there is none.
+          example: "07:15 AM"
+      required: [date, status, check_time]
 
     StudentMonthlyReport:
       type: object
@@ -557,7 +573,7 @@ paths:
     put:
       tags: [Admin Dashboard]
       summary: Update an existing student
-      description: Updates student fields and upserts the linked parent. `id` is required in the body.
+      description: Updates student fields and upserts the linked parent. `id` is required in the body. An empty `rfid_tag`, or an omitted/null `grade` or `section`, keeps the stored value; an empty `parent_pin` or `parent_name` keeps the existing parent's PIN and name.
       security:
         - BearerAuth: []
       requestBody:

@@ -36,8 +36,9 @@ type StudentPayload struct {
 	ParentPhone string `json:"parent_phone"`
 	ParentPin   string `json:"parent_pin,omitempty"`
 	RfidTag     string `json:"rfid_tag"` // IMPORTANT: this must equal the PIN the student is enrolled under on the ZKTeco device, not a physical RFID card value
-	Grade       string `json:"grade"`
-	Section     string `json:"section"`
+	// Nullable. On PUT, an omitted or null grade/section (and an empty rfid_tag) keeps the stored value.
+	Grade   *string `json:"grade"`
+	Section *string `json:"section"`
 }
 
 // getRequestedDateOrDefault returns the ?date= query param, defaulting to today in Asia/Baghdad.
@@ -155,8 +156,10 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				s.id, 
 				s.full_name, 
 				p.full_name as parent_name, 
-				p.phone_number, 
-				COALESCE(s.rfid_tag, '') 
+				p.phone_number,
+				COALESCE(s.rfid_tag, ''),
+				s.grade,
+				s.section
 			FROM students s
 			JOIN parents p ON s.parent_id = p.id
 			WHERE s.is_active = true
@@ -173,7 +176,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		var students []StudentPayload
 		for rows.Next() {
 			var s StudentPayload
-			if err := rows.Scan(&s.ID, &s.Name, &s.ParentName, &s.ParentPhone, &s.RfidTag); err != nil {
+			if err := rows.Scan(&s.ID, &s.Name, &s.ParentName, &s.ParentPhone, &s.RfidTag, &s.Grade, &s.Section); err != nil {
 				slog.Error("Failed to scan student", "error", err)
 				continue
 			}
@@ -258,21 +261,22 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		if req.ParentName == "" {
 			req.ParentName = "غير مدخل"
 		}
-		if req.RfidTag == "" {
-			req.RfidTag = fmt.Sprintf("admin-%d", time.Now().UnixNano())
-		}
 
 		query := `
 			WITH upsert_parent AS (
 				INSERT INTO parents (full_name, phone_number, pin_code)
 				VALUES ($1, $2, $3)
-				ON CONFLICT (phone_number) DO UPDATE 
+				ON CONFLICT (phone_number) DO UPDATE
 				SET full_name = CASE WHEN $10::boolean THEN EXCLUDED.full_name ELSE parents.full_name END,
 				    pin_code = CASE WHEN $9::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END
 				RETURNING id
 			)
 			UPDATE students
-			SET full_name = $4, rfid_tag = $5, parent_id = (SELECT id FROM upsert_parent), grade = $6, section = $7
+			SET full_name = $4,
+			    rfid_tag = COALESCE(NULLIF($5::text, ''), rfid_tag),
+			    parent_id = (SELECT id FROM upsert_parent),
+			    grade = COALESCE($6, grade),
+			    section = COALESCE($7, section)
 			WHERE id = $8
 		`
 		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section, req.ID, pinProvided, nameProvided)
@@ -386,8 +390,8 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 			s.id, 
 			s.full_name,
 			st.status,
-			COALESCE(CAST(st.first_check AS TEXT), '') as check_in_time,
-			COALESCE(CAST(st.last_check AS TEXT), '') as check_out_time
+			st.first_check AS check_in_time,
+			st.last_check AS check_out_time
 		FROM students s
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
 		WHERE s.is_active = true

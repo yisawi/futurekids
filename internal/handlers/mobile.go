@@ -95,8 +95,8 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 			s.id, 
 			s.full_name,
 			st.status,
-			COALESCE(CAST(st.first_check AS TEXT), '') as check_in_time,
-			COALESCE(CAST(st.last_check AS TEXT), '') as check_out_time
+			st.first_check AS check_in_time,
+			st.last_check AS check_out_time
 		FROM students s
 		CROSS JOIN LATERAL get_student_status(s.id, $2::DATE) st
 		WHERE s.parent_id = $1 AND s.is_active = true
@@ -168,7 +168,7 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 type MonthlyRecord struct {
 	Date      string `json:"date"`
 	Status    string `json:"status"` // Present, Absent, Excused
-	CheckTime string `json:"check_time,omitempty"`
+	CheckTime *string `json:"check_time"`
 }
 
 type StudentMonthlyReport struct {
@@ -287,7 +287,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 			s.full_name,
 			TO_CHAR(md.m_date, 'YYYY-MM-DD') as record_date,
 			st.status,
-			COALESCE(st.first_check, '') as check_time
+			st.first_check AS check_time
 		FROM students s
 		CROSS JOIN month_dates md
 		CROSS JOIN LATERAL get_student_status(s.id, md.m_date) st
@@ -310,7 +310,8 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 
 	for rows.Next() {
 		var studentID int
-		var fullName, recordDate, status, checkTime string
+		var fullName, recordDate, status string
+		var checkTime *string
 
 		if err := rows.Scan(&studentID, &fullName, &recordDate, &status, &checkTime); err != nil {
 			continue
