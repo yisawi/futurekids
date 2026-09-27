@@ -154,7 +154,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ── Device authorization (Protocol-Safe) ──────────────────────────────────
 	var isActive bool
-	err := app.DB.QueryRowContext(r.Context(), "SELECT is_active FROM devices WHERE serial_number = $1", deviceSN).Scan(&isActive)
+	err := app.DB.QueryRowContext(r.Context(), "SELECT COALESCE(is_active, true) FROM devices WHERE serial_number = $1", deviceSN).Scan(&isActive)
 
 	if err == sql.ErrNoRows {
 		slog.Warn("ADMSHandler: unregistered device attempted ADMS push", "device_sn", deviceSN, "remote_addr", r.RemoteAddr)

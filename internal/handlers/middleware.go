@@ -50,7 +50,7 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 		var isActive bool
 		err := app.DB.QueryRowContext(
 			r.Context(),
-			"SELECT is_active FROM devices WHERE serial_number = $1",
+			"SELECT COALESCE(is_active, true) FROM devices WHERE serial_number = $1",
 			deviceSN,
 		).Scan(&isActive)
 		if err != nil {

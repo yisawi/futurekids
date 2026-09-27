@@ -352,8 +352,8 @@ func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request)
 			s.section,
 			ws.day_of_week, 
 			ws.period_number, 
-			ws.subject_name, 
-			ws.teacher_name
+			ws.subject_name,
+			COALESCE(ws.teacher_name, '') AS teacher_name
 		FROM students s
 		JOIN weekly_schedules ws ON s.grade = ws.grade AND s.section = ws.section
 		WHERE s.parent_id = $1 AND s.is_active = true
@@ -371,9 +371,16 @@ func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var sp MobileSchedulePayload
 		if err := rows.Scan(&sp.StudentID, &sp.StudentName, &sp.Grade, &sp.Section, &sp.DayOfWeek, &sp.PeriodNumber, &sp.SubjectName, &sp.TeacherName); err != nil {
-			continue
+			slog.Error("Failed to scan schedule row", "error", err)
+			respondError(w, http.StatusInternalServerError, "Database error")
+			return
 		}
 		schedules = append(schedules, sp)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("Error during schedule rows iteration", "error", err)
+		respondError(w, http.StatusInternalServerError, "Database error")
+		return
 	}
 
 	if schedules == nil {
@@ -441,7 +448,7 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 
 	// 2. استعلام JOIN لجلب الإشعارات عبر مطابقة رقم الهاتف المرتبط بـ parent_id
 	query := `
-		SELECT n.id, n.title, n.body, n.is_read, n.created_at
+		SELECT n.id, n.title, n.body, COALESCE(n.is_read, false) AS is_read, COALESCE(n.created_at, LOCALTIMESTAMP) AS created_at
 		FROM notifications n
 		JOIN parents p ON n.parent_phone = p.phone_number
 		WHERE p.id = $1
@@ -460,11 +467,18 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 		var n MobileNotificationPayload
 		var createdAt time.Time
 		if err := rows.Scan(&n.ID, &n.Title, &n.Body, &n.IsRead, &createdAt); err != nil {
-			continue
+			slog.Error("Failed to scan notification row", "error", err)
+			respondError(w, http.StatusInternalServerError, "Database error")
+			return
 		}
 		// تنسيق الوقت ليقبله تطبيق فلاتر بسلاسة
 		n.CreatedAt = createdAt.Format(time.RFC3339)
 		notifications = append(notifications, n)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("Error during notification rows iteration", "error", err)
+		respondError(w, http.StatusInternalServerError, "Database error")
+		return
 	}
 
 	if notifications == nil {

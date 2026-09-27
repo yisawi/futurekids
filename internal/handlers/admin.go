@@ -592,7 +592,7 @@ type DevicePayload struct {
 func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		query := `SELECT serial_number, location_name, is_active, COALESCE(TO_CHAR(last_sync, 'YYYY-MM-DD HH24:MI:SS'), '') FROM devices ORDER BY location_name ASC`
+		query := `SELECT serial_number, COALESCE(location_name, '') AS location_name, COALESCE(is_active, true) AS is_active, COALESCE(TO_CHAR(last_sync, 'YYYY-MM-DD HH24:MI:SS'), '') FROM devices ORDER BY location_name ASC`
 		rows, err := app.DB.QueryContext(r.Context(), query)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "Database error")
@@ -603,9 +603,17 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		var devices []DevicePayload
 		for rows.Next() {
 			var d DevicePayload
-			if err := rows.Scan(&d.SerialNumber, &d.LocationName, &d.IsActive, &d.LastSync); err == nil {
-				devices = append(devices, d)
+			if err := rows.Scan(&d.SerialNumber, &d.LocationName, &d.IsActive, &d.LastSync); err != nil {
+				slog.Error("Failed to scan device row", "error", err)
+				respondError(w, http.StatusInternalServerError, "Database error")
+				return
 			}
+			devices = append(devices, d)
+		}
+		if err := rows.Err(); err != nil {
+			slog.Error("Error during device rows iteration", "error", err)
+			respondError(w, http.StatusInternalServerError, "Database error")
+			return
 		}
 		if devices == nil {
 			devices = []DevicePayload{}
