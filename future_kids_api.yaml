@@ -928,6 +928,9 @@ paths:
         Authenticates a parent by phone number and PIN (bcrypt hashed).
         Optionally stores an FCM device token for push notifications.
         Returns a JWT with `role=parent` and `parent_id`.
+        After 5 failed attempts for a phone number within 15 minutes, every attempt for that
+        number (including a correct PIN, and including unregistered numbers) returns 429 until
+        the window ends. A successful login resets the counter.
       requestBody:
         required: true
         content:
@@ -945,6 +948,21 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '429':
+          description: Too many failed login attempts for this phone number
+          headers:
+            Retry-After:
+              description: Seconds until attempts are allowed again.
+              schema:
+                type: integer
+                example: 900
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Too many failed login attempts. Try again later.
         '500':
           $ref: '#/components/responses/InternalError'
 

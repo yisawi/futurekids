@@ -16,6 +16,7 @@ import (
 	cronpkg "future_kids/internal/cron"
 	"future_kids/internal/database"
 	"future_kids/internal/handlers"
+	"future_kids/internal/ratelimit"
 )
 
 func main() {
@@ -69,8 +70,9 @@ func main() {
 
 	// Passing the database connection and the notification client together
 	appEnv := &handlers.AppEnv{
-		DB:        db,
-		FCMClient: fcmClient,
+		DB:           db,
+		FCMClient:    fcmClient,
+		LoginLimiter: ratelimit.NewLoginLimiter(5, 15*time.Minute),
 	}
 
 	// 3. Setup the HTTP Server

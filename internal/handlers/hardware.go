@@ -14,13 +14,15 @@ import (
 	"time"
 
 	"future_kids/internal/notify"
+	"future_kids/internal/ratelimit"
 
 	"firebase.google.com/go/v4/messaging"
 )
 
 type AppEnv struct {
-	DB        *sql.DB
-	FCMClient *messaging.Client // added to control notifications.
+	DB           *sql.DB
+	FCMClient    *messaging.Client       // added to control notifications.
+	LoginLimiter *ratelimit.LoginLimiter // failed parent-login attempts per phone number
 }
 
 type AttendanceEvent struct {

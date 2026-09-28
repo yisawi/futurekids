@@ -2,10 +2,15 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"future_kids/internal/auth"
+	"future_kids/internal/ratelimit"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -518,10 +523,26 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.Phone = strings.TrimSpace(req.Phone)
 	if req.Phone == "" || req.Pin == "" {
 		respondError(w, http.StatusBadRequest, "Phone and PIN are required")
 		return
 	}
+
+	if app.LoginLimiter == nil {
+		slog.Error("MobileLoginHandler: LoginLimiter is not configured")
+		respondError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+	// Unknown phone numbers are limited too, so a 429 never reveals which numbers are registered.
+	allowed, retryAfter := app.LoginLimiter.Allow(req.Phone)
+	if !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retryAfter.Seconds()))))
+		respondError(w, http.StatusTooManyRequests, "Too many failed login attempts. Try again later.")
+		return
+	}
+	outcome := ratelimit.Released
+	defer func() { app.LoginLimiter.Finish(req.Phone, outcome) }()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -533,16 +554,23 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	query := `SELECT id, full_name, pin_code FROM parents WHERE phone_number = $1`
 	err := app.DB.QueryRowContext(ctx, query, req.Phone).Scan(&parentID, &parentName, &dbPin)
 
-	if err != nil {
+	if err == sql.ErrNoRows {
+		outcome = ratelimit.Failed
 		respondError(w, http.StatusUnauthorized, "Invalid phone number or PIN")
+		return
+	} else if err != nil {
+		slog.Error("MobileLoginHandler: failed to look up parent", "error", err)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(dbPin), []byte(req.Pin)); err != nil {
 		// توحيد رسالة الخطأ أمنياً لمنع هجمات التخمين
+		outcome = ratelimit.Failed
 		respondError(w, http.StatusUnauthorized, "Invalid phone number or PIN")
 		return
 	}
+	outcome = ratelimit.Succeeded
 
 	tokenString, err := auth.GenerateParentToken(parentID, req.Phone)
 	if err != nil {
