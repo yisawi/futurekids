@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 )
 
@@ -19,4 +20,11 @@ func respondError(w http.ResponseWriter, status int, message string) {
 		"status":  "error",
 		"message": message,
 	})
+}
+
+// respondInternalError logs the failed operation with its error and context attributes,
+// then writes a 500 with clientMsg. Internal details stay in the log, never in the response.
+func respondInternalError(w http.ResponseWriter, clientMsg, op string, err error, attrs ...any) {
+	slog.Error(op, append(attrs, "error", err)...)
+	respondError(w, http.StatusInternalServerError, clientMsg)
 }

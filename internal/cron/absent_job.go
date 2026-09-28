@@ -3,7 +3,7 @@ package cron
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"future_kids/internal/notify"
@@ -16,12 +16,12 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 	// الاعتماد الصارم على توقيت بغداد
 	loc, err := time.LoadLocation("Asia/Baghdad")
 	if err != nil {
-		log.Printf("Error loading timezone: %v", err)
+		slog.Error("ProcessDailyAbsences: failed to load timezone", "error", err)
 		return
 	}
 	today := time.Now().In(loc).Format("2006-01-02")
 
-	log.Printf("Starting daily absence processing for date: %s", today)
+	slog.Info("ProcessDailyAbsences: starting", "date", today)
 
 	// استعلام يستثني الحاضرين والمجازين معاً
 	query := `
@@ -34,7 +34,7 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 
 	rows, err := db.Query(query, today)
 	if err != nil {
-		log.Printf("Failed to fetch absent students: %v", err)
+		slog.Error("ProcessDailyAbsences: query failed", "date", today, "error", err)
 		return
 	}
 	defer rows.Close()
@@ -46,7 +46,7 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 		var fcmToken sql.NullString // استخدام NullString لتجنب أعطال فلاتر إذا كان التوكن فارغاً
 
 		if err := rows.Scan(&id, &fullName, &parentPhone, &fcmToken); err != nil {
-			log.Printf("Row scan error: %v", err)
+			slog.Error("ProcessDailyAbsences: scan failed", "date", today, "error", err)
 			continue
 		}
 
@@ -60,12 +60,12 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 			notify.SendPushNotification(fcmClient, fcmToken.String, title, body)
 		}
 
-		log.Printf("Processed absence for student ID: %d, Name: %s", id, fullName)
+		slog.Info("ProcessDailyAbsences: processed absence", "student_id", id)
 	}
 
 	if err = rows.Err(); err != nil {
-		log.Printf("Rows iteration error: %v", err)
+		slog.Error("ProcessDailyAbsences: rows iteration failed", "date", today, "error", err)
 	}
 
-	log.Println("Finished processing daily absences.")
+	slog.Info("ProcessDailyAbsences: finished", "date", today)
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -193,7 +192,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	// Only ATTLOG contains attendance data. All other tables (OPERLOG, USER,
 	// BLACKLIST, …) are ACKed immediately without parsing.
 	if table != "ATTLOG" {
-		slog.Info("[DEBUG] ADMSHandler: non-ATTLOG table — ACKing without parse",
+		slog.Debug("ADMSHandler: non-ATTLOG table — ACKing without parse",
 			"device_sn", deviceSN,
 			"table", table,
 		)
@@ -332,7 +331,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 				studentName, ev.CheckTime.Format("15:04"))
 		}
 
-		slog.Info("[DEBUG] ADMSHandler: sending notifications",
+		slog.Debug("ADMSHandler: sending notifications",
 			"student_name", studentName,
 			"has_fcm_token", fcmToken.Valid && fcmToken.String != "",
 			"has_parent_phone", parentPhone.Valid && parentPhone.String != "",
@@ -342,7 +341,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Printf("Recovered panic in async goroutine: %v", r)
+						slog.Error("ADMSHandler: recovered panic in notification history goroutine", "panic", r)
 					}
 				}()
 				notify.SaveNotificationHistory(app.DB, parentPhone.String, title, body)
@@ -353,7 +352,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("ADMS [Device: %s]: Successfully processed %d attendance records", deviceSN, insertedCount)
+	slog.Info("ADMSHandler: processed attendance records", "device_sn", deviceSN, "inserted", insertedCount)
 
 	// Always ACK with plain-text OK — the device clears its buffer on receipt.
 	writeADMSOK(w)
@@ -394,7 +393,7 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 	res, err := app.DB.ExecContext(r.Context(), query, req.RFIDTag, req.DeviceSN, req.PushTime)
 	if err != nil {
 		// في حال فشل قاعدة البيانات، نرد بخطأ 500 ليحتفظ الجهاز بالبصمة ويعيد إرسالها لاحقاً
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "HardwareAttendancePushHandler: exec failed", err, "device_sn", req.DeviceSN, "rfid_tag", req.RFIDTag)
 		return
 	}
 

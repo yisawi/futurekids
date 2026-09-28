@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"database/sql"
-	"log"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -43,6 +42,7 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 	return func(w http.ResponseWriter, r *http.Request) {
 		deviceSN := r.URL.Query().Get("SN")
 		if deviceSN == "" {
+			slog.Warn("DeviceAuthMiddleware: missing device SN", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 			respondError(w, http.StatusUnauthorized, "Device SN is required")
 			return
 		}
@@ -58,8 +58,7 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 				slog.Warn("Unauthorized device attempted connection", "device_sn", deviceSN, "ip", r.RemoteAddr)
 				respondError(w, http.StatusUnauthorized, "Unauthorized Device")
 			} else {
-				slog.Error("Database error during device validation", "error", err)
-				respondError(w, http.StatusInternalServerError, "Internal Server Error")
+				respondInternalError(w, "Internal Server Error", "DeviceAuthMiddleware: query failed", err, "device_sn", deviceSN)
 			}
 			return
 		}
@@ -73,7 +72,7 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 		go func(sn string) {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("Recovered panic in async goroutine: %v", r)
+					slog.Error("DeviceAuthMiddleware: recovered panic in last_sync goroutine", "device_sn", sn, "panic", r)
 				}
 			}()
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -114,6 +113,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// 1. Extract Authorization header
 		token, ok := extractBearerToken(r)
 		if !ok {
+			slog.Warn("AuthMiddleware: missing bearer token", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 			respondError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
@@ -121,12 +121,14 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// 2. Validate token via auth package
 		claims, err := auth.ValidateToken(token)
 		if err != nil {
+			slog.Warn("AuthMiddleware: invalid token", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "error", err)
 			respondError(w, http.StatusUnauthorized, "Invalid or expired token")
 			return
 		}
 
 		// 3. Enforce parent role
 		if role, ok := claims["role"].(string); !ok || role != "parent" {
+			slog.Warn("AuthMiddleware: token without parent role", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 			respondError(w, http.StatusForbidden, "Access denied")
 			return
 		}
@@ -144,16 +146,19 @@ func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, ok := extractBearerToken(r)
 		if !ok {
+			slog.Warn("AdminMiddleware: missing bearer token", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 			respondError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
 		claims, err := auth.ValidateToken(token)
 		if err != nil {
+			slog.Warn("AdminMiddleware: invalid token", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "error", err)
 			respondError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 		if role, ok := claims["role"].(string); !ok || role != "admin" {
+			slog.Warn("AdminMiddleware: token without admin role", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 			respondError(w, http.StatusForbidden, "Forbidden")
 			return
 		}

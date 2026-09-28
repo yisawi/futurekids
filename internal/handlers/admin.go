@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +13,7 @@ import (
 
 	"future_kids/internal/auth"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	excelize "github.com/xuri/excelize/v2"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -73,7 +74,7 @@ func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusUnauthorized, "بيانات الدخول غير صحيحة")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+		respondInternalError(w, "Internal server error", "AdminLoginHandler: query failed", err, "username", req.Username)
 		return
 	}
 
@@ -87,7 +88,7 @@ func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 	// إصدار توكن الإدارة
 	tokenString, err := auth.GenerateAdminToken(req.Username)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Could not generate token")
+		respondInternalError(w, "Could not generate token", "AdminLoginHandler: token generation failed", err, "username", req.Username)
 		return
 	}
 
@@ -136,7 +137,7 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 	)
 
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "AdminDashboardHandler: query failed", err, "date", today)
 		return
 	}
 
@@ -185,8 +186,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		`
 		rows, err := app.DB.QueryContext(r.Context(), query)
 		if err != nil {
-			slog.Error("Failed to fetch students", "error", err)
-			respondError(w, http.StatusInternalServerError, "Database error")
+			respondInternalError(w, "Database error", "AdminStudentsHandler: query failed", err)
 			return
 		}
 		defer rows.Close()
@@ -195,14 +195,13 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		for rows.Next() {
 			var s StudentPayload
 			if err := rows.Scan(&s.ID, &s.Name, &s.ParentName, &s.ParentPhone, &s.RfidTag, &s.Grade, &s.Section); err != nil {
-				slog.Error("Failed to scan student", "error", err)
-				continue
+				respondInternalError(w, "Database error", "AdminStudentsHandler: scan failed", err)
+				return
 			}
 			students = append(students, s)
 		}
 		if err := rows.Err(); err != nil {
-			slog.Error("Failed while reading students", "error", err)
-			respondError(w, http.StatusInternalServerError, "Database error")
+			respondInternalError(w, "Database error", "AdminStudentsHandler: rows iteration failed", err)
 			return
 		}
 		if students == nil {
@@ -228,8 +227,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		hashedPin, err := bcrypt.GenerateFromPassword([]byte(req.ParentPin), bcrypt.DefaultCost)
 		if err != nil {
-			slog.Error("Failed to hash PIN", "error", err)
-			respondError(w, http.StatusInternalServerError, "Internal server error")
+			respondInternalError(w, "Internal server error", "AdminStudentsHandler: PIN hashing failed", err, "parent_phone", req.ParentPhone)
 			return
 		}
 
@@ -251,8 +249,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			RETURNING id
 		`
 		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section, pinProvided, nameProvided).Scan(&req.ID); err != nil {
-			slog.Error("Failed to create student and parent", "error", err)
-			respondError(w, http.StatusInternalServerError, "Failed to create student and parent")
+			respondInternalError(w, "Failed to create student and parent", "AdminStudentsHandler: create failed", err, "parent_phone", req.ParentPhone, "rfid_tag", req.RfidTag)
 			return
 		}
 		req.ParentPin = "" // Don't echo it back
@@ -276,8 +273,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		hashedPin, err := bcrypt.GenerateFromPassword([]byte(req.ParentPin), bcrypt.DefaultCost)
 		if err != nil {
-			slog.Error("Failed to hash PIN", "error", err)
-			respondError(w, http.StatusInternalServerError, "Internal server error")
+			respondInternalError(w, "Internal server error", "AdminStudentsHandler: PIN hashing failed", err, "parent_phone", req.ParentPhone)
 			return
 		}
 
@@ -300,14 +296,12 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		`
 		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section, req.ID, pinProvided, nameProvided)
 		if err != nil {
-			slog.Error("Failed to update student", "error", err)
-			respondError(w, http.StatusInternalServerError, "Failed to update student")
+			respondInternalError(w, "Failed to update student", "AdminStudentsHandler: update failed", err, "student_id", req.ID)
 			return
 		}
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
-			slog.Error("Failed to inspect student update", "error", err)
-			respondError(w, http.StatusInternalServerError, "Internal server error")
+			respondInternalError(w, "Internal server error", "AdminStudentsHandler: rows affected failed", err, "student_id", req.ID)
 			return
 		}
 		if rowsAffected == 0 {
@@ -326,14 +320,12 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 
 		result, err := app.DB.ExecContext(r.Context(), `UPDATE students SET is_active = false WHERE id = $1`, id)
 		if err != nil {
-			slog.Error("Failed to delete student", "error", err)
-			respondError(w, http.StatusConflict, "Cannot delete student. Check related records.")
+			respondInternalError(w, "Internal server error", "AdminStudentsHandler: delete failed", err, "student_id", id)
 			return
 		}
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
-			slog.Error("Failed to inspect student deletion", "error", err)
-			respondError(w, http.StatusInternalServerError, "Internal server error")
+			respondInternalError(w, "Internal server error", "AdminStudentsHandler: rows affected failed", err, "student_id", id)
 			return
 		}
 		if rowsAffected == 0 {
@@ -383,8 +375,7 @@ func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Reques
 	err := app.DB.QueryRowContext(r.Context(), query, req.StudentID, req.LeaveDate, req.Notes).Scan(&leaveID)
 
 	if err != nil {
-		slog.Error("Failed to create leave record", "error", err)
-		respondError(w, http.StatusInternalServerError, "Failed to create leave record")
+		respondInternalError(w, "Failed to create leave record", "AdminCreateLeaveHandler: insert failed", err, "student_id", req.StudentID, "leave_date", req.LeaveDate)
 		return
 	}
 
@@ -419,8 +410,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 
 	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
 	if err != nil {
-		slog.Error("Failed to fetch daily attendance", "error", err)
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "AdminDailyAttendanceHandler: query failed", err, "date", dateParam)
 		return
 	}
 	defer rows.Close()
@@ -429,10 +419,14 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	for rows.Next() {
 		var rec DailyAttendanceDTO
 		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckInTime, &rec.CheckOutTime); err != nil {
-			slog.Error("Failed to scan attendance record", "error", err)
-			continue
+			respondInternalError(w, "Database error", "AdminDailyAttendanceHandler: scan failed", err, "date", dateParam)
+			return
 		}
 		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		respondInternalError(w, "Database error", "AdminDailyAttendanceHandler: rows iteration failed", err, "date", dateParam)
+		return
 	}
 
 	if records == nil {
@@ -477,7 +471,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 
 	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "AdminExportExcelHandler: query failed", err, "date", dateParam)
 		return
 	}
 	defer rows.Close()
@@ -529,8 +523,8 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		var id int
 		var studentName, grade, section, parentName, phone, status, checkTime string
 		if err := rows.Scan(&id, &studentName, &grade, &section, &parentName, &phone, &status, &checkTime); err != nil {
-			slog.Error("Failed to scan attendance row for excel export", "row", rowIndex, "error", err)
-			continue
+			respondInternalError(w, "Database error", "AdminExportExcelHandler: scan failed", err, "date", dateParam, "row", rowIndex)
+			return
 		}
 		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowIndex), id)
 		f.SetCellValue(sheet, fmt.Sprintf("B%d", rowIndex), studentName)
@@ -542,11 +536,15 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		f.SetCellValue(sheet, fmt.Sprintf("H%d", rowIndex), checkTime)
 		rowIndex++
 	}
+	if err := rows.Err(); err != nil {
+		respondInternalError(w, "Database error", "AdminExportExcelHandler: rows iteration failed", err, "date", dateParam)
+		return
+	}
 
 	// Write to buffer first so we can return a clean HTTP error if generation fails.
 	var buf bytes.Buffer
 	if err := f.Write(&buf); err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to generate excel file")
+		respondInternalError(w, "Failed to generate excel file", "AdminExportExcelHandler: excel write failed", err, "date", dateParam)
 		return
 	}
 
@@ -566,7 +564,7 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 		query := `SELECT setting_key, setting_value FROM settings`
 		rows, err := app.DB.QueryContext(r.Context(), query)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "Database error")
+			respondInternalError(w, "Database error", "AdminSettingsHandler: query failed", err)
 			return
 		}
 		defer rows.Close()
@@ -574,9 +572,15 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 		settings := make(map[string]string)
 		for rows.Next() {
 			var k, v string
-			if err := rows.Scan(&k, &v); err == nil {
-				settings[k] = v
+			if err := rows.Scan(&k, &v); err != nil {
+				respondInternalError(w, "Database error", "AdminSettingsHandler: scan failed", err)
+				return
 			}
+			settings[k] = v
+		}
+		if err := rows.Err(); err != nil {
+			respondInternalError(w, "Database error", "AdminSettingsHandler: rows iteration failed", err)
+			return
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": settings})
 
@@ -595,7 +599,7 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 		`
 		_, err := app.DB.ExecContext(r.Context(), query, req.Key, req.Value)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "Failed to update setting")
+			respondInternalError(w, "Failed to update setting", "AdminSettingsHandler: exec failed", err, "key", req.Key)
 			return
 		}
 
@@ -618,7 +622,7 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		query := `SELECT serial_number, COALESCE(location_name, '') AS location_name, COALESCE(is_active, true) AS is_active, COALESCE(TO_CHAR(last_sync, 'YYYY-MM-DD HH24:MI:SS'), '') FROM devices ORDER BY location_name ASC`
 		rows, err := app.DB.QueryContext(r.Context(), query)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "Database error")
+			respondInternalError(w, "Database error", "AdminDevicesHandler: query failed", err)
 			return
 		}
 		defer rows.Close()
@@ -627,15 +631,13 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var d DevicePayload
 			if err := rows.Scan(&d.SerialNumber, &d.LocationName, &d.IsActive, &d.LastSync); err != nil {
-				slog.Error("Failed to scan device row", "error", err)
-				respondError(w, http.StatusInternalServerError, "Database error")
+				respondInternalError(w, "Database error", "AdminDevicesHandler: scan failed", err)
 				return
 			}
 			devices = append(devices, d)
 		}
 		if err := rows.Err(); err != nil {
-			slog.Error("Error during device rows iteration", "error", err)
-			respondError(w, http.StatusInternalServerError, "Database error")
+			respondInternalError(w, "Database error", "AdminDevicesHandler: rows iteration failed", err)
 			return
 		}
 		if devices == nil {
@@ -652,8 +654,12 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 
 		query := `INSERT INTO devices (serial_number, location_name, is_active) VALUES ($1, $2, $3)`
 		_, err := app.DB.ExecContext(r.Context(), query, req.SerialNumber, req.LocationName, req.IsActive)
-		if err != nil {
-			respondError(w, http.StatusConflict, "Device SN already exists or invalid data")
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			respondError(w, http.StatusConflict, "Device SN already exists")
+			return
+		} else if err != nil {
+			respondInternalError(w, "Internal server error", "AdminDevicesHandler: insert failed", err, "device_sn", req.SerialNumber)
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Device added successfully"})
@@ -668,7 +674,7 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		query := `UPDATE devices SET location_name = $1, is_active = $2 WHERE serial_number = $3`
 		res, err := app.DB.ExecContext(r.Context(), query, req.LocationName, req.IsActive, req.SerialNumber)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "Failed to update device")
+			respondInternalError(w, "Failed to update device", "AdminDevicesHandler: update failed", err, "device_sn", req.SerialNumber)
 			return
 		}
 
@@ -690,7 +696,7 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		query := `UPDATE devices SET is_active = false WHERE serial_number = $1`
 		_, err := app.DB.ExecContext(r.Context(), query, sn)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "Failed to disable device")
+			respondInternalError(w, "Failed to disable device", "AdminDevicesHandler: disable failed", err, "device_sn", sn)
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Device disabled logically"})

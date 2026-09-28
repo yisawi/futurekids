@@ -109,7 +109,7 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID, today)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "MobileTodayAttendanceHandler: query failed", err, "parent_id", parentID)
 		return
 	}
 	defer rows.Close()
@@ -118,9 +118,14 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 	for rows.Next() {
 		var rec DailyAttendanceDTO
 		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckInTime, &rec.CheckOutTime); err != nil {
-			continue
+			respondInternalError(w, "Database error", "MobileTodayAttendanceHandler: scan failed", err, "parent_id", parentID)
+			return
 		}
 		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		respondInternalError(w, "Database error", "MobileTodayAttendanceHandler: rows iteration failed", err, "parent_id", parentID)
+		return
 	}
 
 	if records == nil {
@@ -144,8 +149,7 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 		ORDER BY created_at DESC;
 	`)
 	if err != nil {
-		slog.Error("Failed to fetch banners", "error", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+		respondInternalError(w, "Internal server error", "GetActiveBannersHandler: query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -154,16 +158,14 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 	for rows.Next() {
 		var banner Banner
 		if err := rows.Scan(&banner.ID, &banner.Title, &banner.ImageURL, &banner.ActionLink); err != nil {
-			slog.Error("Failed to scan banner row", "error", err)
-			respondError(w, http.StatusInternalServerError, "Internal server error")
+			respondInternalError(w, "Internal server error", "GetActiveBannersHandler: scan failed", err)
 			return
 		}
 		banners = append(banners, banner)
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Error during banner rows iteration", "error", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+		respondInternalError(w, "Internal server error", "GetActiveBannersHandler: rows iteration failed", err)
 		return
 	}
 
@@ -228,7 +230,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 
 	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID, today)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "MobileAttendanceSummaryHandler: query failed", err, "parent_id", parentID, "month", monthParam)
 		return
 	}
 	defer rows.Close()
@@ -237,7 +239,8 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 	for rows.Next() {
 		var s StudentSummary
 		if err := rows.Scan(&s.StudentID, &s.FullName, &s.TotalPresent, &s.TotalExcused, &s.TotalAbsent); err != nil {
-			continue
+			respondInternalError(w, "Database error", "MobileAttendanceSummaryHandler: scan failed", err, "parent_id", parentID, "month", monthParam)
+			return
 		}
 
 		// منع ظهور قيم سالبة في حال وجود خطأ في إدخالات الإجازات/الحضور في أيام العطل
@@ -246,6 +249,10 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 		}
 
 		summaries = append(summaries, s)
+	}
+	if err := rows.Err(); err != nil {
+		respondInternalError(w, "Database error", "MobileAttendanceSummaryHandler: rows iteration failed", err, "parent_id", parentID, "month", monthParam)
+		return
 	}
 
 	if summaries == nil {
@@ -304,7 +311,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 
 	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID, today)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "MobileMonthlyAttendanceHandler: query failed", err, "parent_id", parentID, "month", monthParam)
 		return
 	}
 	defer rows.Close()
@@ -319,7 +326,8 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		var checkTime *string
 
 		if err := rows.Scan(&studentID, &fullName, &recordDate, &status, &checkTime); err != nil {
-			continue
+			respondInternalError(w, "Database error", "MobileMonthlyAttendanceHandler: scan failed", err, "parent_id", parentID, "month", monthParam)
+			return
 		}
 
 		if _, exists := reportMap[studentID]; !exists {
@@ -336,6 +344,10 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 			Status:    status,
 			CheckTime: checkTime,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		respondInternalError(w, "Database error", "MobileMonthlyAttendanceHandler: rows iteration failed", err, "parent_id", parentID, "month", monthParam)
+		return
 	}
 
 	var data []StudentMonthlyReport
@@ -384,7 +396,7 @@ func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request)
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "MobileScheduleHandler: query failed", err, "parent_id", parentID)
 		return
 	}
 	defer rows.Close()
@@ -393,15 +405,13 @@ func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var sp MobileSchedulePayload
 		if err := rows.Scan(&sp.StudentID, &sp.StudentName, &sp.Grade, &sp.Section, &sp.DayOfWeek, &sp.PeriodNumber, &sp.SubjectName, &sp.TeacherName); err != nil {
-			slog.Error("Failed to scan schedule row", "error", err)
-			respondError(w, http.StatusInternalServerError, "Database error")
+			respondInternalError(w, "Database error", "MobileScheduleHandler: scan failed", err, "parent_id", parentID)
 			return
 		}
 		schedules = append(schedules, sp)
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("Error during schedule rows iteration", "error", err)
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "MobileScheduleHandler: rows iteration failed", err, "parent_id", parentID)
 		return
 	}
 
@@ -434,7 +444,7 @@ func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request)
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "MobileStudentsHandler: query failed", err, "parent_id", parentID)
 		return
 	}
 	defer rows.Close()
@@ -443,9 +453,14 @@ func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var s MobileStudentPayload
 		if err := rows.Scan(&s.ID, &s.FullName, &s.Grade, &s.Section, &s.AvatarURL); err != nil {
-			continue
+			respondInternalError(w, "Database error", "MobileStudentsHandler: scan failed", err, "parent_id", parentID)
+			return
 		}
 		students = append(students, s)
+	}
+	if err := rows.Err(); err != nil {
+		respondInternalError(w, "Database error", "MobileStudentsHandler: rows iteration failed", err, "parent_id", parentID)
+		return
 	}
 
 	if students == nil {
@@ -479,7 +494,7 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "MobileNotificationsHandler: query failed", err, "parent_id", parentID)
 		return
 	}
 	defer rows.Close()
@@ -489,8 +504,7 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 		var n MobileNotificationPayload
 		var createdAt time.Time
 		if err := rows.Scan(&n.ID, &n.Title, &n.Body, &n.IsRead, &createdAt); err != nil {
-			slog.Error("Failed to scan notification row", "error", err)
-			respondError(w, http.StatusInternalServerError, "Database error")
+			respondInternalError(w, "Database error", "MobileNotificationsHandler: scan failed", err, "parent_id", parentID)
 			return
 		}
 		// تنسيق الوقت ليقبله تطبيق فلاتر بسلاسة
@@ -498,8 +512,7 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 		notifications = append(notifications, n)
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("Error during notification rows iteration", "error", err)
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "MobileNotificationsHandler: rows iteration failed", err, "parent_id", parentID)
 		return
 	}
 
@@ -559,8 +572,7 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusUnauthorized, "Invalid phone number or PIN")
 		return
 	} else if err != nil {
-		slog.Error("MobileLoginHandler: failed to look up parent", "error", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+		respondInternalError(w, "Internal server error", "MobileLoginHandler: query failed", err, "phone", req.Phone)
 		return
 	}
 
@@ -574,8 +586,7 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	tokenString, err := auth.GenerateParentToken(parentID, req.Phone)
 	if err != nil {
-		slog.Error("Failed to generate JWT", "error", err)
-		respondError(w, http.StatusInternalServerError, "Internal server error")
+		respondInternalError(w, "Internal server error", "MobileLoginHandler: token generation failed", err, "parent_id", parentID)
 		return
 	}
 
@@ -608,7 +619,7 @@ func (app *AppEnv) MobileSettingsHandler(w http.ResponseWriter, r *http.Request)
 	query := `SELECT setting_key, setting_value FROM settings`
 	rows, err := app.DB.QueryContext(r.Context(), query)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Database error")
+		respondInternalError(w, "Database error", "MobileSettingsHandler: query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -618,9 +629,14 @@ func (app *AppEnv) MobileSettingsHandler(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var key, value string
 		if err := rows.Scan(&key, &value); err != nil {
-			continue
+			respondInternalError(w, "Database error", "MobileSettingsHandler: scan failed", err)
+			return
 		}
 		settings[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		respondInternalError(w, "Database error", "MobileSettingsHandler: rows iteration failed", err)
+		return
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
