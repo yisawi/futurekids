@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -59,8 +58,7 @@ func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req AdminLoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request")
+	if !decodeJSONBody(w, r, &req, "Invalid request") {
 		return
 	}
 
@@ -212,8 +210,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 	// 2. الإضافة (CTE ذكي لإنشاء/تحديث ولي الأمر وربطه بالطالب فوراً)
 	case http.MethodPost:
 		var req StudentPayload
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			respondError(w, http.StatusBadRequest, "Invalid request body")
+		if !decodeJSONBody(w, r, &req, "Invalid request body") {
 			return
 		}
 		if msg := validateStudentPayload(&req); msg != "" {
@@ -258,7 +255,10 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 	// 3. التعديل
 	case http.MethodPut:
 		var req StudentPayload
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
+		if !decodeJSONBody(w, r, &req, "Invalid request body or missing ID") {
+			return
+		}
+		if req.ID == 0 {
 			respondError(w, http.StatusBadRequest, "Invalid request body or missing ID")
 			return
 		}
@@ -352,8 +352,7 @@ func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req LeavePayload
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request payload")
+	if !decodeJSONBody(w, r, &req, "Invalid request payload") {
 		return
 	}
 
@@ -586,7 +585,10 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 
 	case http.MethodPut:
 		var req SettingPayload
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
+		if !decodeJSONBody(w, r, &req, "Invalid payload") {
+			return
+		}
+		if req.Key == "" {
 			respondError(w, http.StatusBadRequest, "Invalid payload")
 			return
 		}
@@ -647,7 +649,10 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req DevicePayload
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SerialNumber == "" {
+		if !decodeJSONBody(w, r, &req, "Invalid payload or missing SN") {
+			return
+		}
+		if req.SerialNumber == "" {
 			respondError(w, http.StatusBadRequest, "Invalid payload or missing SN")
 			return
 		}
@@ -666,7 +671,10 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPut:
 		var req DevicePayload
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SerialNumber == "" {
+		if !decodeJSONBody(w, r, &req, "Invalid payload") {
+			return
+		}
+		if req.SerialNumber == "" {
 			respondError(w, http.StatusBadRequest, "Invalid payload")
 			return
 		}

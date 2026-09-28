@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"future_kids/internal/auth"
 	"future_kids/internal/ratelimit"
 	"log/slog"
@@ -531,8 +530,7 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req MobileLoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request")
+	if !decodeJSONBody(w, r, &req, "Invalid request") {
 		return
 	}
 

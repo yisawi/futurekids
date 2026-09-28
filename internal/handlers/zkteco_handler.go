@@ -49,7 +49,7 @@ func ADMSCdataHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ── POST: device is pushing data ─────────────────────────────────────────
 	if r.Method == http.MethodPost {
-		rawBody, err := io.ReadAll(r.Body)
+		rawBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxADMSBodyBytes))
 		if err != nil {
 			slog.Error("ZKTeco ADMS: failed to read POST body",
 				"device_sn", sn,

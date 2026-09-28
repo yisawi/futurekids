@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -202,10 +202,17 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ── Read raw body ──────────────────────────────────────────────────────────
 	defer r.Body.Close()
-	bodyBytes, err := io.ReadAll(r.Body)
+	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxADMSBodyBytes))
 	if err != nil {
-		slog.Error("ADMSHandler: io.ReadAll failed",
-			"device_sn", deviceSN, "error", err)
+		// Always ACK (RULES.md §5): an error status would make the device resend the same batch forever.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			slog.Warn("ADMSHandler: body exceeds limit — dropping batch and ACKing",
+				"device_sn", deviceSN, "remote_addr", r.RemoteAddr, "limit_bytes", tooLarge.Limit)
+		} else {
+			slog.Error("ADMSHandler: io.ReadAll failed",
+				"device_sn", deviceSN, "error", err)
+		}
 		writeADMSOK(w)
 		return
 	}
@@ -370,12 +377,8 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// حماية الذاكرة: رفض أي حمولة أكبر من 1 ميجابايت (يمنع هجمات DDoS من أجهزة مخترقة)
-	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
-
 	var req HardwarePushPayload
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid payload")
+	if !decodeJSONBody(w, r, &req, "Invalid payload") {
 		return
 	}
 

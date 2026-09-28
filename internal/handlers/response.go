@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 )
@@ -27,4 +28,30 @@ func respondError(w http.ResponseWriter, status int, message string) {
 func respondInternalError(w http.ResponseWriter, clientMsg, op string, err error, attrs ...any) {
 	slog.Error(op, append(attrs, "error", err)...)
 	respondError(w, http.StatusInternalServerError, clientMsg)
+}
+
+// Request body limits. JSON payloads here are a few hundred bytes. ADMS batches are about
+// 60 bytes per punch, so 10 MB (~150k punches) is far beyond any real device buffer.
+const (
+	MaxJSONBodyBytes int64 = 64 << 10
+	MaxADMSBodyBytes int64 = 10 << 20
+)
+
+// decodeJSONBody decodes a JSON body of at most MaxJSONBodyBytes into dst. It writes 413
+// (logged as WARN) for an oversized body or 400 with badRequestMsg for malformed JSON,
+// and reports whether decoding succeeded.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, badRequestMsg string) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxJSONBodyBytes)
+	err := json.NewDecoder(r.Body).Decode(dst)
+	var tooLarge *http.MaxBytesError
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &tooLarge):
+		slog.Warn("Request body too large", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "limit_bytes", tooLarge.Limit)
+		respondError(w, http.StatusRequestEntityTooLarge, "Request body too large")
+	default:
+		respondError(w, http.StatusBadRequest, badRequestMsg)
+	}
+	return false
 }

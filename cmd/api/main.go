@@ -17,6 +17,7 @@ import (
 	"future_kids/internal/database"
 	"future_kids/internal/handlers"
 	"future_kids/internal/ratelimit"
+	"future_kids/internal/server"
 )
 
 func main() {
@@ -144,7 +145,7 @@ func main() {
 	slog.Info("Starting server", "port", cfg.Port)
 
 	// Start the Server
-	err = http.ListenAndServe(":"+cfg.Port, mux)
+	err = server.New(":"+cfg.Port, mux, server.DefaultTimeouts).ListenAndServe()
 	if err != nil {
 		slog.Error("Server failed to start", "error", err)
 		os.Exit(1)
