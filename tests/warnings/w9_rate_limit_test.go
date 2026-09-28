@@ -197,7 +197,7 @@ func TestW9RateLimit(t *testing.T) {
 		wg.Wait()
 	})
 
-	db, _ := setupThrowawayDB(t, "fk_w9_test")
+	db, _ := setupThrowawayDB(t, "w9")
 	auth.InitAuth("w9-test-secret")
 	hash, err := bcrypt.GenerateFromPassword([]byte("4321"), bcrypt.MinCost)
 	if err != nil {

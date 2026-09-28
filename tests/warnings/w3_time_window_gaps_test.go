@@ -22,7 +22,7 @@ type w3Case struct {
 // dead zones ignored, and a check-out-only day reported as Present.
 // Each case runs on its own date so get_student_status sees only that case's punches.
 func TestW3TimeWindowGaps(t *testing.T) {
-	db, _ := setupThrowawayDB(t, "fk_w3_test")
+	db, _ := setupThrowawayDB(t, "w3")
 
 	seed := []string{
 		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W3 Parent', '+9647700000303', 'unused')`,

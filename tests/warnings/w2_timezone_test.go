@@ -23,7 +23,7 @@ const w2ParentPhone = "+9647700000302"
 // before 15:00 Baghdad time, UTC+14 from 13:00), so a handler that still relied
 // on CURRENT_DATE fails deterministically whenever the test runs.
 func TestW2TimezoneConsistency(t *testing.T) {
-	baseDB, dsn := setupThrowawayDB(t, "fk_w2_test")
+	baseDB, dsn := setupThrowawayDB(t, "w2")
 	baghdad, err := time.LoadLocation("Asia/Baghdad")
 	if err != nil {
 		t.Fatalf("load Asia/Baghdad: %v", err)
@@ -81,8 +81,9 @@ func TestW2TimezoneConsistency(t *testing.T) {
 			t.Errorf("CURRENT_DATE behavior: pinned CURRENT_DATE = %s, want Baghdad today %s", pinnedToday, want)
 		}
 
-		t.Setenv("DATABASE_URL", dsn+"&timezone=UTC")
-		if got := config.LoadConfig().DBUrl; got != dsn+"&timezone=UTC" {
+		explicit := withSessionZone(t, dsn, "UTC")
+		t.Setenv("DATABASE_URL", explicit)
+		if got := config.LoadConfig().DBUrl; got != explicit {
 			t.Errorf("explicit DSN timezone must be kept, got %q", got)
 		}
 	})

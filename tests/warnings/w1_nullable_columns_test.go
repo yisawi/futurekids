@@ -18,7 +18,7 @@ const (
 // TestW1NullableColumnsHandling verifies that NULLs in nullable columns are
 // scanned safely by every handler that reads them (audit warning W1).
 func TestW1NullableColumnsHandling(t *testing.T) {
-	db, _ := setupThrowawayDB(t, "fk_w1_test")
+	db, _ := setupThrowawayDB(t, "w1")
 	auth.InitAuth("w1-test-secret")
 	app := &handlers.AppEnv{DB: db}
 

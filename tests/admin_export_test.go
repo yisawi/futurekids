@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"future_kids/internal/handlers"
+	"future_kids/internal/testdb"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	excelize "github.com/xuri/excelize/v2"
@@ -31,18 +31,8 @@ func newTestApp(db *sql.DB) *handlers.AppEnv {
 //   - Row 5 contains the exact 8 column headers
 func TestAdminExportExcelHandler_Structure(t *testing.T) {
 	// ── Arrange ──────────────────────────────────────────────────────────────
-	// Open a real test DB. Adjust DSN to your local test database.
-	// If you want a fully mocked test (no DB), you can stub AppEnv.DB
-	// with a sqlmock library instead.
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://yisawi@localhost:5432/future_kids?sslmode=disable"
-	}
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer db.Close()
+	// Isolated, freshly migrated throwaway database (see internal/testdb).
+	db, _ := testdb.New(t, "excel")
 
 	app := newTestApp(db)
 

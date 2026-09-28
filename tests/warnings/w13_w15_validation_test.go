@@ -18,7 +18,7 @@ import (
 // parents.pin_code has no plaintext default, so a parent inserted without a PIN
 // fails loudly instead of receiving an unusable '1234'.
 func TestW13W15ValidationAndPIN(t *testing.T) {
-	db, _ := setupThrowawayDB(t, "fk_w13_test")
+	db, _ := setupThrowawayDB(t, "w13")
 	auth.InitAuth("w13-test-secret")
 	app := &handlers.AppEnv{DB: db}
 	adminToken, err := auth.GenerateAdminToken("admin")

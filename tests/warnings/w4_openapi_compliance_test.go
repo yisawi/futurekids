@@ -17,7 +17,7 @@ const w4ParentPhone = "+9647700000304"
 // nullable time fields are always present (null when empty), students expose
 // grade/section, and a PUT that omits rfid_tag/grade/section preserves them.
 func TestW4OpenAPICompliance(t *testing.T) {
-	db, _ := setupThrowawayDB(t, "fk_w4_test")
+	db, _ := setupThrowawayDB(t, "w4")
 	baghdad, err := time.LoadLocation("Asia/Baghdad")
 	if err != nil {
 		t.Fatalf("load Asia/Baghdad: %v", err)

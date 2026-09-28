@@ -1,39 +1,25 @@
 package tests
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
 	"future_kids/internal/handlers"
+	"future_kids/internal/testdb"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func TestAttendanceTimeWindows(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://yisawi@localhost:5432/future_kids?sslmode=disable"
-	}
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer db.Close()
-
-	// 1. Truncate tables for a clean slate
-	_, err = db.Exec("TRUNCATE attendance_logs, student_leaves, students, parents, devices CASCADE")
-	if err != nil {
-		t.Fatalf("Failed to truncate tables: %v", err)
-	}
+	// 1. Isolated, freshly migrated database (dropped when the test ends)
+	db, _ := testdb.New(t, "attn")
 
 	// 2. Setup mock data
 	var studentID int
-	err = db.QueryRow(`
+	err := db.QueryRow(`
 		INSERT INTO students (full_name, rfid_tag, is_active)
 		VALUES ('Time Window Kid', 'RFID-TIME', true)
 		RETURNING id

@@ -52,7 +52,7 @@ func TestW6RequestLimits(t *testing.T) {
 	slog.SetDefault(slog.New(capture))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	db, _ := setupThrowawayDB(t, "fk_w6_test")
+	db, _ := setupThrowawayDB(t, "w6")
 	pinHash, _ := bcrypt.GenerateFromPassword([]byte("4321"), bcrypt.MinCost)
 	seed := []string{
 		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W6 Parent', '+9647700000601', '` + string(pinHash) + `')`,

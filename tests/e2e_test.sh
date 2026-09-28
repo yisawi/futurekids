@@ -1,11 +1,67 @@
 #!/bin/bash
 # Future Kids — End-to-End System Verification
 # Tests the full data flow: Hardware Push -> Database -> Admin & Mobile APIs
-# Usage: TEST_DATABASE_URL=<dsn> ./tests/e2e_test.sh
+#
+# Fully isolated: creates a throwaway database, applies every migration, builds and
+# starts its own server on a free port, runs, then stops the server and drops the
+# database on any exit. It never touches an existing database or a running server.
+#
+# Usage: TEST_DATABASE_URL=postgres://localhost:5432/postgres ./tests/e2e_test.sh
+#   TEST_DATABASE_URL must point at a LOCAL PostgreSQL server; it is only used to
+#   create and drop the throwaway database.
 set -euo pipefail
 
-DB_URL="${TEST_DATABASE_URL:-postgresql://yisawi@localhost:5432/future_kids?sslmode=disable}"
-API_URL="${API_URL:-http://localhost:8080}"
+cd "$(dirname "$0")/.."
+
+ADMIN_DB_URL="${TEST_DATABASE_URL:-}"
+if [ -z "$ADMIN_DB_URL" ]; then
+    echo "TEST_DATABASE_URL is not set; point it at a LOCAL PostgreSQL server, e.g. export TEST_DATABASE_URL=postgres://localhost:5432/postgres" >&2
+    exit 1
+fi
+case "$ADMIN_DB_URL" in
+    postgres://*|postgresql://*) ;;
+    *) echo "refusing TEST_DATABASE_URL: must be a postgres:// URL" >&2; exit 1 ;;
+esac
+_after_scheme="${ADMIN_DB_URL#*://}"
+_authority="${_after_scheme%%/*}"
+_authority="${_authority%%\?*}"
+_hostport="${_authority##*@}"
+case "$_hostport" in
+    \[*) DB_HOST="${_hostport%%]*}"; DB_HOST="${DB_HOST#\[}" ;;
+    *) DB_HOST="${_hostport%%:*}" ;;
+esac
+DB_HOST="$(printf '%s' "$DB_HOST" | tr '[:upper:]' '[:lower:]')"
+case "$DB_HOST" in
+    *railway*) echo "refusing TEST_DATABASE_URL: host '$DB_HOST' is a Railway database" >&2; exit 1 ;;
+    localhost|127.0.0.1|::1) ;;
+    *) echo "refusing TEST_DATABASE_URL: host '$DB_HOST' is not local (localhost, 127.0.0.1 or ::1 only)" >&2; exit 1 ;;
+esac
+
+DB_NAME="fk_test_e2e_$(date +%s)000000000_$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+_query=""
+case "$_after_scheme" in *\?*) _query="?${_after_scheme#*\?}" ;; esac
+DB_URL="${ADMIN_DB_URL%%://*}://${_authority}/${DB_NAME}${_query}"
+
+WORK_DIR="$(mktemp -d)"
+SERVER_PID=""
+cleanup() {
+    status=$?
+    if [ -n "$SERVER_PID" ]; then
+        kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    psql "$ADMIN_DB_URL" -q -c "DROP DATABASE IF EXISTS $DB_NAME WITH (FORCE)" >/dev/null 2>&1 \
+        && echo "  Dropped throwaway database $DB_NAME" \
+        || echo "  WARNING: could not drop throwaway database $DB_NAME" >&2
+    if [ "$status" -ne 0 ] && [ -f "$WORK_DIR/server.log" ]; then
+        echo "  Server log (last 20 lines):" >&2
+        tail -n 20 "$WORK_DIR/server.log" >&2
+    fi
+    rm -rf "$WORK_DIR"
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -65,15 +121,31 @@ echo "  ║   Future Kids — E2E System Verifier   ║"
 echo "  ╚════════════════════════════════════════╝"
 echo -e "${NC}"
 
-# ── Verify server is up ───────────────────────────────────────────────────────
+# ── Isolated database and server ─────────────────────────────────────────────
 section "Pre-flight"
-health_status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/health")
-assert_http "Server health check" "$health_status"
+echo -e "  Throwaway database: ${CYAN}${DB_NAME}${NC} on ${DB_HOST}"
+psql "$ADMIN_DB_URL" -q -v ON_ERROR_STOP=1 -c "CREATE DATABASE $DB_NAME"
+pass "Throwaway database created"
 
-# ── Truncate tables for a clean slate ────────────────────────────────────────
-echo -e "\n${YELLOW}Resetting database...${NC}"
-psql "$DB_URL" -q -c "TRUNCATE attendance_logs, student_leaves, students, parents, devices, notifications, settings CASCADE;"
-pass "Database truncated"
+for f in $(ls db/migrations/*.up.sql | sort); do
+    PGOPTIONS="-c client_min_messages=warning" psql "$DB_URL" -q -v ON_ERROR_STOP=1 -f "$f" >/dev/null || fail "Migration $(basename "$f") failed"
+done
+pass "All migrations applied ($(ls db/migrations/*.up.sql | wc -l | tr -d ' ') files)"
+
+PORT=18080
+while lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; do PORT=$((PORT + 1)); done
+API_URL="http://localhost:${PORT}"
+go build -o "$WORK_DIR/api" ./cmd/api || fail "Server build failed"
+DATABASE_URL="$DB_URL" PORT="$PORT" JWT_SECRET="${JWT_SECRET:-e2e-test-secret}" \
+    "$WORK_DIR/api" >"$WORK_DIR/server.log" 2>&1 &
+SERVER_PID=$!
+for _ in $(seq 1 60); do
+    curl -s -o /dev/null "$API_URL/health" && break
+    kill -0 "$SERVER_PID" 2>/dev/null || fail "Server exited during startup"
+    sleep 0.25
+done
+health_status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/health")
+assert_http "Dedicated server health check on port ${PORT}" "$health_status"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 section "Phase 1 — Admin Authentication"
