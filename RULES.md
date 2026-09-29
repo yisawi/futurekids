@@ -31,6 +31,7 @@ This document establishes the strict architectural guidelines for the Future Kid
 
 ## 5. Business & Hardware Logic
 - **ZKTeco ADMS Integration:** Hardware endpoints (`/iclock/cdata`) must ALWAYS respond with HTTP 200 plain-text `OK`. Any other status code (or JSON error) causes physical ZKTeco devices to enter an infinite retry loop.
+  - **Single exception — transient database failure:** if the database is unavailable (connection loss, timeout, shutdown, deadlock) while storing an `ATTLOG` batch, the batch is rolled back in full and the device receives HTTP `503`, so it keeps the punches and resends them once the database recovers. Bad data never gets `503`: unknown PINs, malformed lines, records the database rejects, oversized bodies, and unknown or disabled devices are always ACKed with `200 OK` (and logged), because resending them can never succeed.
 - **Strict Time-Window Attendance Logic:** The backend aggressively filters hardware punches to infer check-in/out and prevent hardware spam:
   - **Morning Check-In Window:** `06:30 AM` to `09:30 AM`. (Captures the EARLIEST punch).
   - **Afternoon Check-Out Window:** `11:30 AM` to `01:30 PM`. (Captures the EARLIEST punch).

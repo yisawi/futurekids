@@ -131,3 +131,13 @@ func writeADMSOK(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
+
+// writeADMSRetry answers 503 so the device keeps the batch and resends it later. It is used
+// only for transient server-side failures (database unavailable), never for bad data, which
+// is always ACKed with writeADMSOK (RULES.md §5).
+func writeADMSRetry(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Retry-After", "30")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	w.Write([]byte("RETRY"))
+}

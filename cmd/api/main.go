@@ -101,7 +101,7 @@ func main() {
 	mux.HandleFunc("GET /iclock/getrequest", handlers.ADMSGetRequestHandler)
 
 	// Hardware routes: ADMS (ZKTeco text format) and JSON push
-	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.ADMSHandler)))
+	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.ADMSHandler)) // ADMS alias: ADMSHandler authenticates the device itself and never returns JSON errors
 	mux.HandleFunc("/api/attendance/push/json", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.HardwareAttendancePushHandler)))
 	// The path for Flutter App without the middleware
 	mux.HandleFunc("/api/mobile/attendance/today", handlers.AuthMiddleware(appEnv.MobileTodayAttendanceHandler))

@@ -183,7 +183,7 @@ func TestW6RequestLimits(t *testing.T) {
 	for _, route := range []struct {
 		name string
 		h    http.HandlerFunc
-	}{{"/iclock/cdata", app.ADMSHandler}, {"/api/attendance/push alias", app.DeviceAuthMiddleware(app.ADMSHandler)}} {
+	}{{"/iclock/cdata", app.ADMSHandler}, {"/api/attendance/push alias", handlers.HardwareLoggerMiddleware(app.ADMSHandler)}} {
 		t.Run("ADMS/oversized batch is dropped but ACKed with 200 OK/"+route.name, func(t *testing.T) {
 			before := punches(t)
 			rec, logs := adms(route.h, padTo("W6-RFID-2\t2026-09-24 12:10:00\t1\t1\n", handlers.MaxADMSBodyBytes+1))

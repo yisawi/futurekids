@@ -1237,12 +1237,14 @@ paths:
         - Key=Value: `PIN=x\tDateTime=y\tVerified=1\tStatus=0`
 
         The server:
-        1. Parses all valid lines
-        2. Resolves the device User ID to an internal `students.id` via `rfid_tag`
-        3. Inserts into `attendance_logs` with `ON CONFLICT DO NOTHING` (idempotent)
-        4. Fires async FCM push + notification history per new unique punch
+        1. Parses all valid lines (malformed lines are skipped and logged)
+        2. Resolves the device User ID to an internal `students.id` via `rfid_tag` (unknown PINs are skipped and logged)
+        3. Inserts the batch into `attendance_logs` in one transaction with `ON CONFLICT DO NOTHING` (idempotent);
+           a record the database rejects is skipped and logged, the rest are kept
+        4. After commit, sends the check-in/check-out notification for each punch that is first in its window
 
-        **Always responds HTTP 200 `OK`** — any other response causes the device to retry indefinitely.
+        Responds HTTP 200 `OK` in every case except a transient database failure, where the whole batch
+        is rolled back and the response is 503 so the device resends it (RULES.md §5).
       parameters:
         - name: SN
           in: query
@@ -1272,6 +1274,18 @@ paths:
               schema:
                 type: string
                 example: "OK"
+        '503':
+          description: Database temporarily unavailable — nothing from this batch was stored; the device keeps the batch and resends it
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                example: 30
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "RETRY"
 
   /iclock/getrequest:
     get:
@@ -1303,7 +1317,7 @@ paths:
       tags: [ZKTeco Hardware]
       summary: Device pushes ATTLOG attendance data (Alias for /iclock/cdata)
       description: |
-        An alternative endpoint to /iclock/cdata POST. It wraps the same ADMS protocol handler but includes DeviceAuthMiddleware logging.
+        An alternative endpoint to /iclock/cdata POST, served by the same ADMS protocol handler with the same responses. The handler authenticates the device itself and never returns JSON errors.
       parameters:
         - name: SN
           in: query
@@ -1333,18 +1347,18 @@ paths:
               schema:
                 type: string
                 example: "OK"
-        '401':
-          description: Unauthorized device
-          content:
-            application/json:
+        '503':
+          description: Database temporarily unavailable — nothing from this batch was stored; the device keeps the batch and resends it
+          headers:
+            Retry-After:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '403':
-          description: Disabled device
+                type: integer
+                example: 30
           content:
-            application/json:
+            text/plain:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                type: string
+                example: "RETRY"
 
   /api/attendance/push/json:
     post:
