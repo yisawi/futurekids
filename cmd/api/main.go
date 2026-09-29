@@ -18,6 +18,7 @@ import (
 	"future_kids/internal/handlers"
 	"future_kids/internal/ratelimit"
 	"future_kids/internal/server"
+	"future_kids/internal/tz"
 )
 
 func main() {
@@ -77,10 +78,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	// A test path to verfiy if the server is working or not
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Server is healthy and running!"))
-	})
+	mux.HandleFunc("GET /health", handlers.HealthHandler)
 
 	// -------------------------------------------------------------------------
 	// ZKTeco ADMS device routes — PUBLIC, no auth middleware.
@@ -123,12 +121,12 @@ func main() {
 	// مسار الموبايل العام (بدون AuthMiddleware)
 	mux.HandleFunc("/api/mobile/settings", appEnv.MobileSettingsHandler)
 
-	loc, err := time.LoadLocation("Asia/Baghdad")
-	if err != nil {
-		slog.Error("Failed to load Baghdad timezone", "error", err)
-		os.Exit(1)
+	if tz.FromTZDatabase {
+		slog.Info("Timezone loaded", "location", tz.Baghdad.String())
+	} else {
+		slog.Warn("No tz database on this system; using fixed UTC+3 for Asia/Baghdad (identical: Iraq has no DST)")
 	}
-	c := cron.New(cron.WithLocation(loc))
+	c := cron.New(cron.WithLocation(tz.Baghdad))
 	if _, err := c.AddFunc("0 12 * * 0-4", func() {
 		cronpkg.ProcessDailyAbsences(appEnv.DB, appEnv.FCMClient)
 	}); err != nil {

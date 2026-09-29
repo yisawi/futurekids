@@ -4,9 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"future_kids/internal/notify"
+	"future_kids/internal/tz"
 
 	"firebase.google.com/go/v4/messaging"
 )
@@ -14,12 +14,7 @@ import (
 // ProcessDailyAbsences تُنفذ عند الساعة 12:00 ظهراً بتوقيت العراق
 func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 	// الاعتماد الصارم على توقيت بغداد
-	loc, err := time.LoadLocation("Asia/Baghdad")
-	if err != nil {
-		slog.Error("ProcessDailyAbsences: failed to load timezone", "error", err)
-		return
-	}
-	today := time.Now().In(loc).Format("2006-01-02")
+	today := tz.Today()
 
 	slog.Info("ProcessDailyAbsences: starting", "date", today)
 

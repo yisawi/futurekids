@@ -26,7 +26,7 @@ type AppEnv struct {
 
 type AttendanceEvent struct {
 	DeviceSN  string    // device Serial Number
-	StudentID string    // student ID
+	PIN       string    // device user ID; matches students.rfid_tag
 	CheckTime time.Time // time
 }
 
@@ -113,7 +113,7 @@ func parseATTLOG(deviceSN, rawBody string) []AttendanceEvent {
 
 		events = append(events, AttendanceEvent{
 			DeviceSN:  deviceSN,
-			StudentID: pin,
+			PIN:       pin,
 			CheckTime: checkTime,
 		})
 	}
@@ -266,9 +266,7 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		append(summary, "inserted", len(res.inserted), "duplicates", res.duplicates)...)
 
 	// ── Notify (only for committed punches; failures never change the response) ──
-	for _, p := range res.inserted {
-		app.notifyPunch(r.Context(), p.studentID, p.checkTime)
-	}
+	app.notifyPunches(r.Context(), res.inserted)
 
 	// Always ACK with plain-text OK — the device clears its buffer on receipt.
 	writeADMSOK(w)
@@ -311,9 +309,9 @@ func (app *AppEnv) persistATTLOG(ctx context.Context, deviceSN string, events []
 	pins := make([]string, 0, len(events))
 	seen := make(map[string]bool, len(events))
 	for _, ev := range events {
-		if !seen[ev.StudentID] {
-			seen[ev.StudentID] = true
-			pins = append(pins, ev.StudentID)
+		if !seen[ev.PIN] {
+			seen[ev.PIN] = true
+			pins = append(pins, ev.PIN)
 		}
 	}
 	ids := make(map[string]int, len(pins))
@@ -340,15 +338,15 @@ func (app *AppEnv) persistATTLOG(ctx context.Context, deviceSN string, events []
 
 	var batch []admsPunch
 	for _, ev := range events {
-		id, ok := ids[ev.StudentID]
+		id, ok := ids[ev.PIN]
 		if !ok {
-			if seen[ev.StudentID] {
-				seen[ev.StudentID] = false
-				res.unknownPINs = append(res.unknownPINs, ev.StudentID)
+			if seen[ev.PIN] {
+				seen[ev.PIN] = false
+				res.unknownPINs = append(res.unknownPINs, ev.PIN)
 			}
 			continue
 		}
-		batch = append(batch, admsPunch{pin: ev.StudentID, studentID: id, checkTime: ev.CheckTime})
+		batch = append(batch, admsPunch{pin: ev.PIN, studentID: id, checkTime: ev.CheckTime})
 	}
 
 	inserted, err := insertPunchesBulk(ctx, tx, deviceSN, batch)
@@ -480,53 +478,60 @@ func isTransientDBError(err error) bool {
 	return false
 }
 
-// notifyPunch sends the check-in or check-out notification for a committed punch when it is
-// the first punch of its window. Failures are logged and never affect the device response.
-func (app *AppEnv) notifyPunch(ctx context.Context, studentID int, checkTime time.Time) {
-	// Notify only if this punch is the one get_student_status selected for its window
-	// (first check-in or first check-out). Spam, dead-zone, and same-minute duplicate
-	// punches are stored but never notified (RULES.md §5). first_check/last_check are
-	// minute-precision text, so an earlier punch in the same minute also counts as a duplicate.
-	var isCheckIn, isCheckOut bool
-	statusErr := app.DB.QueryRowContext(
-		ctx,
-		`SELECT
-			COALESCE(st.first_check = TO_CHAR($2::timestamp, 'HH12:MI AM'), false),
-			COALESCE(st.last_check = TO_CHAR($2::timestamp, 'HH12:MI AM'), false)
-		 FROM get_student_status($1, $2::timestamp::date) st
-		 WHERE NOT EXISTS (
-			SELECT 1 FROM attendance_logs
-			WHERE student_id = $1 AND check_time < $2::timestamp
-			AND date_trunc('minute', check_time) = date_trunc('minute', $2::timestamp)
-		 )`,
-		studentID, checkTime,
-	).Scan(&isCheckIn, &isCheckOut)
-	if statusErr != nil && statusErr != sql.ErrNoRows {
-		slog.Error("ADMSHandler: notification skipped — window status query failed",
-			"student_id", studentID, "error", statusErr)
+// notifyPunches sends the check-in or check-out notification for each committed punch that is
+// the first punch of its window, using one query for the whole batch. Spam, dead-zone and
+// same-minute duplicate punches are stored but never notified (RULES.md §5); first_check and
+// last_check are minute-precision text, so an earlier punch in the same minute counts as a
+// duplicate. Failures are logged and never affect the device response.
+func (app *AppEnv) notifyPunches(ctx context.Context, punches []storedPunch) {
+	if len(punches) == 0 {
 		return
 	}
-	if !isCheckIn && !isCheckOut {
+	ids := make([]int, len(punches))
+	times := make([]time.Time, len(punches))
+	for i, p := range punches {
+		ids[i], times[i] = p.studentID, p.checkTime
+	}
+	rows, err := app.DB.QueryContext(ctx, notifyPunchesSQL, ids, times)
+	if err != nil {
+		slog.Error("ADMSHandler: notifications skipped — query failed", "punches", len(punches), "error", err)
 		return
 	}
+	defer rows.Close()
+	for rows.Next() {
+		var studentID int
+		var checkTime time.Time
+		var studentName string
+		var fcmToken, parentPhone sql.NullString
+		var isCheckOut bool
+		if err := rows.Scan(&studentID, &checkTime, &studentName, &fcmToken, &parentPhone, &isCheckOut); err != nil {
+			slog.Error("ADMSHandler: notifications skipped — scan failed", "punches", len(punches), "error", err)
+			return
+		}
+		app.sendPunchNotification(studentID, checkTime, studentName, fcmToken, parentPhone, isCheckOut)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("ADMSHandler: notifications incomplete — rows iteration failed", "punches", len(punches), "error", err)
+	}
+}
 
-	var studentName string
-	var fcmToken sql.NullString
-	var parentPhone sql.NullString
-	notifyErr := app.DB.QueryRowContext(
-		ctx,
-		`SELECT s.full_name, s.fcm_token, p.phone_number
-		 FROM students s
-		 LEFT JOIN parents p ON s.parent_id = p.id
-		 WHERE s.id = $1`,
-		studentID,
-	).Scan(&studentName, &fcmToken, &parentPhone)
-	if notifyErr != nil {
-		slog.Error("ADMSHandler: notification skipped — student query failed",
-			"student_id", studentID, "error", notifyErr)
-		return
-	}
+// notifyPunchesSQL returns, for the given (student_id, check_time) punches, only those that
+// are the first punch of their check-in or check-out window, with what the notification needs.
+const notifyPunchesSQL = `
+	SELECT p.student_id, p.check_time, s.full_name, s.fcm_token, par.phone_number,
+	       COALESCE(st.last_check = TO_CHAR(p.check_time, 'HH12:MI AM'), false) AS is_check_out
+	FROM unnest($1::int[], $2::timestamp[]) AS p(student_id, check_time)
+	JOIN students s ON s.id = p.student_id
+	LEFT JOIN parents par ON par.id = s.parent_id
+	CROSS JOIN LATERAL get_student_status(p.student_id, p.check_time::date) st
+	WHERE (st.first_check = TO_CHAR(p.check_time, 'HH12:MI AM') OR st.last_check = TO_CHAR(p.check_time, 'HH12:MI AM'))
+	  AND NOT EXISTS (
+		SELECT 1 FROM attendance_logs a
+		WHERE a.student_id = p.student_id AND a.check_time < p.check_time
+		  AND date_trunc('minute', a.check_time) = date_trunc('minute', p.check_time)
+	  )`
 
+func (app *AppEnv) sendPunchNotification(studentID int, checkTime time.Time, studentName string, fcmToken, parentPhone sql.NullString, isCheckOut bool) {
 	title := "إشعار دخول"
 	body := fmt.Sprintf("تم تسجيل دخول الطالب %s الساعة %s",
 		studentName, checkTime.Format("15:04"))

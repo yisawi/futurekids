@@ -462,14 +462,21 @@ paths:
     get:
       tags: [Public]
       summary: Server health check
+      description: Liveness only — it does not check the database.
       responses:
         '200':
           description: Server is running
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-                example: Server is healthy and running!
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                    example: Server is healthy and running!
 
   # ── Admin Auth ───────────────────────────────────────────────────────────────
   /api/admin/login:
@@ -1129,12 +1136,22 @@ paths:
     get:
       tags: [Mobile App]
       summary: Get parent's notification history
-      description: Returns all stored push notifications sent to this parent, ordered newest first.
+      description: |
+        Returns this parent's notifications newest first, at most 100 per request.
+        When `has_more` is true, request the next (older) page with `?before=<next_before>`.
       security:
         - BearerAuth: []
+      parameters:
+        - name: before
+          in: query
+          required: false
+          description: Return only notifications with an id lower than this (the `next_before` of the previous page).
+          schema:
+            type: integer
+            minimum: 1
       responses:
         '200':
-          description: Notification list
+          description: One page of notifications
           content:
             application/json:
               schema:
@@ -1145,8 +1162,19 @@ paths:
                     example: success
                   data:
                     type: array
+                    maxItems: 100
                     items:
                       $ref: '#/components/schemas/Notification'
+                  has_more:
+                    type: boolean
+                    description: True when older notifications exist.
+                  next_before:
+                    type: integer
+                    nullable: true
+                    description: Pass as `before` to fetch the next page; null when has_more is false.
+                required: [status, data, has_more, next_before]
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':

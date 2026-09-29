@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"future_kids/internal/auth"
+	"future_kids/internal/tz"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	excelize "github.com/xuri/excelize/v2"
@@ -47,8 +48,7 @@ func getRequestedDateOrDefault(r *http.Request) string {
 	if d := r.URL.Query().Get("date"); d != "" {
 		return d
 	}
-	loc, _ := time.LoadLocation("Asia/Baghdad")
-	return time.Now().In(loc).Format("2006-01-02")
+	return tz.Today()
 }
 
 func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -102,8 +102,7 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	loc, _ := time.LoadLocation("Asia/Baghdad")
-	today := time.Now().In(loc).Format("2006-01-02")
+	today := tz.Today()
 
 	// استعلام CTE ذكي يحسب جميع الإحصائيات دفعة واحدة وبأداء عالٍ جداً
 	query := `

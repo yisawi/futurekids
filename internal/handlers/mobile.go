@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"future_kids/internal/auth"
 	"future_kids/internal/ratelimit"
+	"future_kids/internal/tz"
 	"log/slog"
 	"math"
 	"net/http"
@@ -15,20 +16,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-
-// baghdadLoc is loaded once. Iraq has used a fixed UTC+3 with no DST since 2008, so the fallback is exact.
-var baghdadLoc = func() *time.Location {
-	loc, err := time.LoadLocation("Asia/Baghdad")
-	if err != nil {
-		return time.FixedZone("Asia/Baghdad", 3*60*60)
-	}
-	return loc
-}()
-
-// baghdadToday returns the current time in Asia/Baghdad, independent of the DB session timezone.
-func baghdadToday() time.Time {
-	return time.Now().In(baghdadLoc)
-}
 
 // MobileLoginRequest is the expected JSON payload from the Flutter app for login.
 type MobileLoginRequest struct {
@@ -91,8 +78,7 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	loc, _ := time.LoadLocation("Asia/Baghdad")
-	today := time.Now().In(loc).Format("2006-01-02")
+	today := tz.Today()
 
 	query := `
 		SELECT 
@@ -195,7 +181,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	now := baghdadToday()
+	now := tz.Now()
 	today := now.Format("2006-01-02")
 	monthParam := r.URL.Query().Get("month")
 	if monthParam == "" {
@@ -277,7 +263,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	now := baghdadToday()
+	now := tz.Now()
 	today := now.Format("2006-01-02")
 	monthParam := r.URL.Query().Get("month")
 	if monthParam == "" {
@@ -469,6 +455,10 @@ func (app *AppEnv) MobileStudentsHandler(w http.ResponseWriter, r *http.Request)
 	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": students})
 }
 
+// NotificationsPageSize is the most notifications one request returns; use has_more and
+// next_before to fetch older pages.
+const NotificationsPageSize = 100
+
 func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -482,16 +472,28 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Keyset pagination: newest first by id; ?before=<id> returns the page after that id.
+	var before sql.NullInt64
+	if v := r.URL.Query().Get("before"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id < 1 {
+			respondError(w, http.StatusBadRequest, "before must be a positive notification id")
+			return
+		}
+		before = sql.NullInt64{Int64: id, Valid: true}
+	}
+
 	// 2. استعلام JOIN لجلب الإشعارات عبر مطابقة رقم الهاتف المرتبط بـ parent_id
 	query := `
 		SELECT n.id, n.title, n.body, COALESCE(n.is_read, false) AS is_read, COALESCE(n.created_at AT TIME ZONE 'Asia/Baghdad', CURRENT_TIMESTAMP) AS created_at
 		FROM notifications n
 		JOIN parents p ON n.parent_phone = p.phone_number
-		WHERE p.id = $1
-		ORDER BY n.created_at DESC
+		WHERE p.id = $1 AND ($2::bigint IS NULL OR n.id < $2)
+		ORDER BY n.id DESC
+		LIMIT $3
 	`
 
-	rows, err := app.DB.QueryContext(r.Context(), query, parentID)
+	rows, err := app.DB.QueryContext(r.Context(), query, parentID, before, NotificationsPageSize+1)
 	if err != nil {
 		respondInternalError(w, "Database error", "MobileNotificationsHandler: query failed", err, "parent_id", parentID)
 		return
@@ -507,7 +509,7 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 			return
 		}
 		// تنسيق الوقت ليقبله تطبيق فلاتر بسلاسة
-		n.CreatedAt = createdAt.In(baghdadLoc).Format(time.RFC3339)
+		n.CreatedAt = createdAt.In(tz.Baghdad).Format(time.RFC3339)
 		notifications = append(notifications, n)
 	}
 	if err := rows.Err(); err != nil {
@@ -518,8 +520,19 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 	if notifications == nil {
 		notifications = []MobileNotificationPayload{}
 	}
+	hasMore := len(notifications) > NotificationsPageSize
+	var nextBefore *int
+	if hasMore {
+		notifications = notifications[:NotificationsPageSize]
+		nextBefore = &notifications[NotificationsPageSize-1].ID
+	}
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": notifications})
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":      "success",
+		"data":        notifications,
+		"has_more":    hasMore,
+		"next_before": nextBefore,
+	})
 }
 
 // MobileLoginHandler authenticates a parent against the parents table and issues a parent_id JWT.

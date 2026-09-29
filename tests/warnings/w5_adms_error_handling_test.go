@@ -117,6 +117,35 @@ func TestW5ADMSErrorHandling(t *testing.T) {
 		}
 	}
 	notifications := func(t *testing.T) int { t.Helper(); return countRows(t, db, `SELECT COUNT(*) FROM notifications`) }
+	// settledNotifications waits until background notification writes from earlier requests
+	// have landed (the count is unchanged for 300ms) and returns the count.
+	settledNotifications := func(t *testing.T) int {
+		t.Helper()
+		last, stableSince, deadline := notifications(t), time.Now(), time.Now().Add(3*time.Second)
+		for time.Since(stableSince) < 300*time.Millisecond && time.Now().Before(deadline) {
+			time.Sleep(25 * time.Millisecond)
+			if n := notifications(t); n != last {
+				last, stableSince = n, time.Now()
+			}
+		}
+		return last
+	}
+	// newNotes lists the notification bodies stored after the first `skip` rows, for diagnostics.
+	newNotes := func(t *testing.T, skip int) []string {
+		t.Helper()
+		rows, err := db.Query(`SELECT body FROM notifications ORDER BY id OFFSET $1`, skip)
+		if err != nil {
+			t.Fatalf("list notifications: %v", err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var b string
+			rows.Scan(&b)
+			out = append(out, b)
+		}
+		return out
+	}
 
 	type result struct {
 		code        int
@@ -246,7 +275,7 @@ func TestW5ADMSErrorHandling(t *testing.T) {
 		for _, mode := range []string{"transient", "kill"} {
 			t.Run(route.name+"/database failure on record 3 of 5 rolls back the batch ("+mode+")", func(t *testing.T) {
 				body, times := batch5()
-				beforeNotes := notifications(t)
+				beforeNotes := settledNotifications(t)
 				failAt(t, times[2], mode)
 				r := push(t, h, route.path, "W5-DEVICE", body)
 				expectRetry(t, r)
@@ -259,7 +288,7 @@ func TestW5ADMSErrorHandling(t *testing.T) {
 				}
 				time.Sleep(200 * time.Millisecond)
 				if n := notifications(t); n != beforeNotes {
-					t.Errorf("notification sent for a rolled-back punch (%d -> %d)", beforeNotes, n)
+					t.Errorf("notification sent for a rolled-back punch (%d -> %d): %q (batch day %s)", beforeNotes, n, newNotes(t, beforeNotes), times[0][:10])
 				}
 
 				clearFail(t, times[2])
@@ -272,7 +301,7 @@ func TestW5ADMSErrorHandling(t *testing.T) {
 					time.Sleep(20 * time.Millisecond)
 				}
 				if n := notifications(t); n != beforeNotes+1 {
-					t.Errorf("after the successful resend, notifications %d -> %d, want exactly one check-in", beforeNotes, n)
+					t.Errorf("after the successful resend, notifications %d -> %d, want exactly one check-in: %q (batch day %s)", beforeNotes, n, newNotes(t, beforeNotes), times[0][:10])
 				}
 			})
 		}
@@ -314,7 +343,7 @@ func TestW5ADMSErrorHandling(t *testing.T) {
 			if n := stored(t, []string{ts}); n != 1 {
 				t.Errorf("punch not stored when notification failed")
 			}
-			if findLog(r.logs, slog.LevelError, "ADMSHandler: notification skipped") == nil {
+			if findLog(r.logs, slog.LevelError, "ADMSHandler: notifications skipped") == nil {
 				t.Errorf("notification failure not logged (logs %v)", r.logs)
 			}
 		})
