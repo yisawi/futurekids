@@ -20,6 +20,11 @@ type Config struct {
 	DBUrl     string
 	JWTSecret string
 	DBPool    database.Pool
+	// FirebaseCredentialsJSON (FIREBASE_CREDENTIALS_JSON) holds the service-account JSON itself
+	// and takes precedence; otherwise it is read from FirebaseCredentialsPath
+	// (FIREBASE_CREDENTIALS_PATH, default "firebase-credentials.json").
+	FirebaseCredentialsJSON string
+	FirebaseCredentialsPath string
 }
 
 // LoadConfig reads the environment. It fails on an invalid sslmode or pool setting so a
@@ -46,6 +51,9 @@ func LoadConfig() (*Config, error) {
 		DBUrl:     dbURL,
 		JWTSecret: getEnv("JWT_SECRET", ""),
 		DBPool:    pool,
+
+		FirebaseCredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"),
+		FirebaseCredentialsPath: firebaseCredentialsPath(),
 	}, nil
 }
 
@@ -152,6 +160,16 @@ func loadPool() (database.Pool, error) {
 		p.ConnMaxLifetime = d
 	}
 	return p, nil
+}
+
+// DefaultFirebaseCredentialsPath is used when FIREBASE_CREDENTIALS_PATH is unset or empty.
+const DefaultFirebaseCredentialsPath = "firebase-credentials.json"
+
+func firebaseCredentialsPath() string {
+	if p := strings.TrimSpace(os.Getenv("FIREBASE_CREDENTIALS_PATH")); p != "" {
+		return p
+	}
+	return DefaultFirebaseCredentialsPath
 }
 
 func getEnv(key, fallback string) string {

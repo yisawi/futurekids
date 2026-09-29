@@ -27,8 +27,8 @@ func newTestApp(db *sql.DB) *handlers.AppEnv {
 // returned by the handler against the UI/UX specification:
 //   - RTL view is enabled on Sheet1
 //   - Cell A1 == "وزارة التربية والتعليم"
-//   - Cell A2 == "مدرسة الرحمن الابتدائية الأهلية"
-//   - Row 5 contains the exact 8 column headers
+//   - Cell A2 == the school_name setting (seeded by migration 000020)
+//   - Row 5 contains the exact 9 column headers, including check-in and check-out time
 func TestAdminExportExcelHandler_Structure(t *testing.T) {
 	// ── Arrange ──────────────────────────────────────────────────────────────
 	// Isolated, freshly migrated throwaway database (see internal/testdb).
@@ -122,7 +122,8 @@ func TestAdminExportExcelHandler_Structure(t *testing.T) {
 		{"E5", "ولي الأمر"},
 		{"F5", "رقم الهاتف"},
 		{"G5", "الحالة"},
-		{"H5", "وقت البصمة"},
+		{"H5", "وقت الدخول"},
+		{"I5", "وقت الخروج"},
 	}
 
 	for _, h := range expectedHeaders {

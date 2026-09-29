@@ -8,6 +8,7 @@
 --     AdminDailyAttendanceHandler, AdminExportExcelHandler, AdminDevicesHandler.
 --   internal/handlers/mobile.go — every parent endpoint reads students.
 --   internal/cron/absent_job.go — ProcessDailyAbsences reads students.
+--   internal/notify/notify.go — SendPushNotification clears unregistered students.fcm_token values.
 -- Data loss: every student, device and attendance punch is deleted permanently. Only run this
 --   when tearing down the whole database.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy

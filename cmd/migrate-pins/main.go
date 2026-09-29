@@ -6,7 +6,9 @@ import (
 	"os"
 	"strings"
 
-	_ "github.com/lib/pq"
+	"future_kids/internal/config"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -22,7 +24,13 @@ func main() {
 		log.Fatal("DATABASE_URL or DB_URL environment variable is required")
 	}
 
-	db, err := sql.Open("postgres", dbURL)
+	// Same sslmode/timezone resolution as the API server (require TLS for remote hosts).
+	dsn, err := config.BuildDBURL(dbURL, os.Getenv("DB_SSL_MODE"))
+	if err != nil {
+		log.Fatalf("Invalid database URL: %v", err)
+	}
+
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

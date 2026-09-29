@@ -16,7 +16,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-
 // MobileLoginRequest is the expected JSON payload from the Flutter app for login.
 type MobileLoginRequest struct {
 	Phone    string `json:"phone"`
@@ -158,9 +157,24 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 }
 
 type MonthlyRecord struct {
-	Date      string `json:"date"`
-	Status    string `json:"status"` // Present, Absent, Excused
-	CheckTime *string `json:"check_time"`
+	Date         string  `json:"date"`
+	Status       string  `json:"status"` // Present, Absent, Excused
+	CheckTime    *string `json:"check_time"`
+	CheckOutTime *string `json:"check_out_time"`
+}
+
+// requestedMonth returns the ?month= query param (YYYY-MM), defaulting to now's month;
+// ok is false (and 400 has been written) when the value is malformed.
+func requestedMonth(w http.ResponseWriter, r *http.Request, now time.Time) (month string, ok bool) {
+	m := r.URL.Query().Get("month")
+	if m == "" {
+		return now.Format("2006-01"), true
+	}
+	if _, err := time.Parse("2006-01", m); err != nil {
+		respondError(w, http.StatusBadRequest, "month must be formatted as YYYY-MM")
+		return "", false
+	}
+	return m, true
 }
 
 type StudentMonthlyReport struct {
@@ -183,9 +197,9 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 
 	now := tz.Now()
 	today := now.Format("2006-01-02")
-	monthParam := r.URL.Query().Get("month")
-	if monthParam == "" {
-		monthParam = now.Format("2006-01")
+	monthParam, ok := requestedMonth(w, r, now)
+	if !ok {
+		return
 	}
 
 	// CTE ذكي يحسب الأيام الفعلية للدوام حتى تاريخ اليوم (يستبعد الجمعة، السبت، والأيام المستقبلية)
@@ -228,11 +242,6 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 			return
 		}
 
-		// منع ظهور قيم سالبة في حال وجود خطأ في إدخالات الإجازات/الحضور في أيام العطل
-		if s.TotalAbsent < 0 {
-			s.TotalAbsent = 0
-		}
-
 		summaries = append(summaries, s)
 	}
 	if err := rows.Err(); err != nil {
@@ -265,9 +274,9 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 
 	now := tz.Now()
 	today := now.Format("2006-01-02")
-	monthParam := r.URL.Query().Get("month")
-	if monthParam == "" {
-		monthParam = now.Format("2006-01")
+	monthParam, ok := requestedMonth(w, r, now)
+	if !ok {
+		return
 	}
 
 	// استعلام CTE يولد أيام الشهر، يستبعد المستقبل وعطلة نهاية الأسبوع (5=الجمعة، 6=السبت)
@@ -284,7 +293,8 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 			s.full_name,
 			TO_CHAR(md.m_date, 'YYYY-MM-DD') as record_date,
 			st.status,
-			st.first_check AS check_time
+			st.first_check AS check_time,
+			st.last_check AS check_out_time
 		FROM students s
 		CROSS JOIN month_dates md
 		CROSS JOIN LATERAL get_student_status(s.id, md.m_date) st
@@ -308,9 +318,9 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 	for rows.Next() {
 		var studentID int
 		var fullName, recordDate, status string
-		var checkTime *string
+		var checkTime, checkOutTime *string
 
-		if err := rows.Scan(&studentID, &fullName, &recordDate, &status, &checkTime); err != nil {
+		if err := rows.Scan(&studentID, &fullName, &recordDate, &status, &checkTime, &checkOutTime); err != nil {
 			respondInternalError(w, "Database error", "MobileMonthlyAttendanceHandler: scan failed", err, "parent_id", parentID, "month", monthParam)
 			return
 		}
@@ -325,9 +335,10 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		}
 
 		reportMap[studentID].Records = append(reportMap[studentID].Records, MonthlyRecord{
-			Date:      recordDate,
-			Status:    status,
-			CheckTime: checkTime,
+			Date:         recordDate,
+			Status:       status,
+			CheckTime:    checkTime,
+			CheckOutTime: checkOutTime,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -621,14 +632,18 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// PublicSettingKeys are the only settings the unauthenticated mobile settings endpoint returns.
+var PublicSettingKeys = []string{"whatsapp_number", "school_name"}
+
 func (app *AppEnv) MobileSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
-	query := `SELECT setting_key, setting_value FROM settings`
-	rows, err := app.DB.QueryContext(r.Context(), query)
+	// Public endpoint: return only the keys the app needs, never internal settings.
+	query := `SELECT setting_key, setting_value FROM settings WHERE setting_key = ANY($1::text[])`
+	rows, err := app.DB.QueryContext(r.Context(), query, PublicSettingKeys)
 	if err != nil {
 		respondInternalError(w, "Database error", "MobileSettingsHandler: query failed", err)
 		return

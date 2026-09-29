@@ -23,7 +23,7 @@ var w14Rollbacks = map[string]w14Rollback{
 	"000002": {true, []string{"weekly_schedules", "students.grade", "students.section"}, `(?:FROM|JOIN|INTO|UPDATE)\s+weekly_schedules\b|\bs\.(?:grade|section)\b|, grade, section|COALESCE\((?:s\.)?(?:grade|section)\b`},
 	"000003": {true, []string{"notifications"}, `(?:FROM|JOIN|INTO|UPDATE)\s+notifications\b`},
 	"000004": {true, []string{"students.avatar_url"}, `\bavatar_url\b`},
-	"000005": {true, []string{"student_leaves", "attendance_logs.status"}, `(?:FROM|JOIN|INTO|UPDATE)\s+student_leaves\b|check_time, status\)`},
+	"000005": {true, []string{"student_leaves", "attendance_logs.status"}, `(?:FROM|JOIN|INTO|UPDATE)\s+student_leaves\b`},
 	"000006": {false, nil, `\bs\.parent_pin\b|students\.parent_pin|students \([^)]*parent_pin`},
 	"000007": {true, []string{"banners"}, `(?:FROM|JOIN|INTO|UPDATE)\s+banners\b`},
 	"000008": {true, []string{"admins"}, `(?:FROM|JOIN|INTO|UPDATE)\s+admins\b`},
@@ -37,6 +37,8 @@ var w14Rollbacks = map[string]w14Rollback{
 	"000016": {false, nil, ""},
 	"000017": {false, nil, ""},
 	"000018": {false, nil, ""},
+	"000019": {false, nil, `check_time, status\)|\bstatus\) VALUES|a\.status\b`},
+	"000020": {false, nil, ""},
 }
 
 var (

@@ -52,7 +52,7 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 			notify.SaveNotificationHistory(db, parentPhone.String, title, body)
 		}
 		if fcmToken.Valid && fcmToken.String != "" {
-			notify.SendPushNotification(fcmClient, fcmToken.String, title, body)
+			notify.SendPushNotification(fcmClient, db, fcmToken.String, title, body)
 		}
 
 		slog.Info("ProcessDailyAbsences: processed absence", "student_id", id)

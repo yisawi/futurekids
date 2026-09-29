@@ -141,10 +141,13 @@ func TestW11TestIsolation(t *testing.T) {
 		if err := db.QueryRow(`SELECT column_default FROM information_schema.columns WHERE table_name='parents' AND column_name='pin_code'`).Scan(&pinDefault); err != nil || pinDefault.Valid {
 			t.Errorf("000018 not applied: parents.pin_code default=%q err=%v", pinDefault.String, err)
 		}
-		for table, want := range map[string]int{"students": 0, "parents": 0, "devices": 0, "attendance_logs": 0, "student_leaves": 0, "notifications": 0, "admins": 1, "settings": 1} {
+		for table, want := range map[string]int{"students": 0, "parents": 0, "devices": 0, "attendance_logs": 0, "student_leaves": 0, "notifications": 0, "admins": 1, "settings": 2} {
 			if n := countRows(t, db, "SELECT COUNT(*) FROM "+table); n != want {
 				t.Errorf("fresh database: %s has %d rows, want %d (migration seed only)", table, n, want)
 			}
+		}
+		if n := countRows(t, db, `SELECT COUNT(*) FROM settings WHERE setting_key IN ('whatsapp_number', 'school_name')`); n != 2 {
+			t.Errorf("fresh database: seeded settings are not exactly whatsapp_number (000010) and school_name (000020)")
 		}
 	})
 

@@ -151,9 +151,11 @@ components:
           example: Ali Hassan
         parent_name:
           type: string
+          description: Empty string in GET responses for a student with no linked parent.
           example: Hassan Ali
         parent_phone:
           type: string
+          description: Empty string in GET responses for a student with no linked parent.
           example: "+9647700000001"
         parent_pin:
           type: string
@@ -360,7 +362,12 @@ components:
           nullable: true
           description: First punch within the morning window as text; null when there is none.
           example: "07:15 AM"
-      required: [date, status, check_time]
+        check_out_time:
+          type: string
+          nullable: true
+          description: First punch within the afternoon window as text; null when there is none.
+          example: "12:30 PM"
+      required: [date, status, check_time, check_out_time]
 
     StudentMonthlyReport:
       type: object
@@ -660,7 +667,7 @@ paths:
     get:
       tags: [Admin Dashboard]
       summary: Get daily attendance report
-      description: Returns all active students with their `DailyAttendanceDTO` status for the given date. Defaults to today (Asia/Baghdad) if `date` is omitted.
+      description: Returns all active students with their `DailyAttendanceDTO` status for the given date. Defaults to today (Asia/Baghdad) if `date` is omitted; a `date` not formatted as YYYY-MM-DD returns 400.
       security:
         - BearerAuth: []
       parameters:
@@ -678,6 +685,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DailyAttendanceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -688,7 +697,7 @@ paths:
     get:
       tags: [Admin Dashboard]
       summary: Export daily attendance as Excel (XLSX)
-      description: Generates and streams an RTL-formatted `.xlsx` file with full student and parent details. Defaults to today if `date` is omitted.
+      description: Generates and streams an RTL-formatted `.xlsx` file with full student and parent details. Defaults to today if `date` is omitted; a malformed `date` returns 400. The report header shows the `school_name` setting; columns include check-in and check-out time, and students without a linked parent are included.
       security:
         - BearerAuth: []
       parameters:
@@ -712,6 +721,8 @@ paths:
               schema:
                 type: string
               example: attachment; filename=attendance_2026-09-21.xlsx
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -722,7 +733,7 @@ paths:
     post:
       tags: [Admin Dashboard]
       summary: Record a student leave (excused absence)
-      description: Inserts a leave record. Uses `ON CONFLICT DO UPDATE` so re-submitting the same student+date just updates the notes.
+      description: Inserts a leave record. Uses `ON CONFLICT DO UPDATE` so re-submitting the same student+date just updates the notes. A `leave_date` not formatted as YYYY-MM-DD returns 400.
       security:
         - BearerAuth: []
       requestBody:
@@ -1029,8 +1040,8 @@ paths:
       summary: Monthly attendance summary (aggregate counts)
       description: |
         Returns aggregate Present / Excused / Absent counts per child for the given month.
-        Only counts school days (Mon–Thu). Excludes future dates.
-        Defaults to the current month if `month` is omitted.
+        Only counts school days (Sunday–Thursday). Excludes future dates.
+        A `month` not formatted as YYYY-MM returns 400. Defaults to the current month if `month` is omitted.
       security:
         - BearerAuth: []
       parameters:
@@ -1058,6 +1069,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/StudentSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -1071,7 +1084,7 @@ paths:
       description: |
         Returns a day-by-day attendance record for each child grouped by student.
         Excludes weekends (Fri+Sat) and future dates.
-        Defaults to the current month if `month` is omitted.
+        A `month` not formatted as YYYY-MM returns 400. Defaults to the current month if `month` is omitted.
       security:
         - BearerAuth: []
       parameters:
@@ -1099,6 +1112,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/StudentMonthlyReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -1213,7 +1228,7 @@ paths:
     get:
       tags: [Mobile App]
       summary: Get public app settings (no auth required)
-      description: Returns the key-value settings map. This route is intentionally public so the Flutter app can load configuration before login.
+      description: Returns the public settings only — currently `whatsapp_number` and `school_name`. Other (internal) settings are never exposed here; admins read them via GET /api/admin/settings. This route is intentionally public so the Flutter app can load configuration before login.
       responses:
         '200':
           description: Settings map

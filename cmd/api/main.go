@@ -46,12 +46,13 @@ func main() {
 	ctx := context.Background()
 	var opt option.ClientOption
 
-	if firebaseJSON := os.Getenv("FIREBASE_CREDENTIALS_JSON"); firebaseJSON != "" {
-		opt = option.WithCredentialsJSON([]byte(firebaseJSON))
-	} else if _, err := os.Stat("firebase-credentials.json"); err == nil {
-		opt = option.WithCredentialsFile("firebase-credentials.json")
+	if cfg.FirebaseCredentialsJSON != "" {
+		opt = option.WithCredentialsJSON([]byte(cfg.FirebaseCredentialsJSON))
+	} else if _, err := os.Stat(cfg.FirebaseCredentialsPath); err == nil {
+		opt = option.WithCredentialsFile(cfg.FirebaseCredentialsPath)
 	} else {
-		slog.Error("CRITICAL ERROR: Neither FIREBASE_CREDENTIALS_JSON nor firebase-credentials.json found")
+		slog.Error("No Firebase credentials: set FIREBASE_CREDENTIALS_JSON, or FIREBASE_CREDENTIALS_PATH to a service-account file",
+			"path", cfg.FirebaseCredentialsPath, "error", err)
 		os.Exit(1)
 	}
 

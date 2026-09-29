@@ -558,7 +558,7 @@ func (app *AppEnv) sendPunchNotification(studentID int, checkTime time.Time, stu
 		}()
 	}
 	if fcmToken.Valid && fcmToken.String != "" {
-		notify.SendPushNotification(app.FCMClient, fcmToken.String, title, body)
+		notify.SendPushNotification(app.FCMClient, app.DB, fcmToken.String, title, body)
 	}
 }
 
@@ -615,8 +615,8 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 		WITH student AS (
 			SELECT id FROM students WHERE rfid_tag = $1 LIMIT 1
 		)
-		INSERT INTO attendance_logs (student_id, device_sn, check_time, status)
-		SELECT id, $2, $3, 'Present' FROM student
+		INSERT INTO attendance_logs (student_id, device_sn, check_time)
+		SELECT id, $2, $3 FROM student
 		ON CONFLICT (student_id, check_time) DO NOTHING;
 	`
 

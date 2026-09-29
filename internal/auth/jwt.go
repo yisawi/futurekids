@@ -18,24 +18,30 @@ func InitAuth(secret string) {
 	jwtSecret = []byte(secret)
 }
 
-// GenerateParentToken creates a 30-day JWT embedding the parent's unique DB id.
+// Token lifetimes. Parents stay signed in on their phone for a month; admin sessions last a week.
+const (
+	ParentTokenTTL = 30 * 24 * time.Hour
+	AdminTokenTTL  = 7 * 24 * time.Hour
+)
+
+// GenerateParentToken creates a JWT (valid for ParentTokenTTL, 30 days) embedding the parent's unique DB id.
 func GenerateParentToken(parentID int, phone string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"parent_id": parentID,
 		"phone":     phone,
 		"role":      "parent",
-		"exp":       time.Now().Add(time.Hour * 24 * 30).Unix(),
+		"exp":       time.Now().Add(ParentTokenTTL).Unix(),
 		"iat":       time.Now().Unix(),
 	})
 	return token.SignedString(jwtSecret)
 }
 
-// GenerateAdminToken creates a short-lived JWT for an administrator.
+// GenerateAdminToken creates a JWT (valid for AdminTokenTTL, 7 days) for an administrator.
 func GenerateAdminToken(username string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"username": username,
 		"role":     "admin",
-		"exp":      time.Now().Add(7 * 24 * time.Hour).Unix(),
+		"exp":      time.Now().Add(AdminTokenTTL).Unix(),
 		"iat":      time.Now().Unix(),
 	})
 	return token.SignedString(jwtSecret)

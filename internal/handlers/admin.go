@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -43,12 +44,18 @@ type StudentPayload struct {
 	Section *string `json:"section"`
 }
 
-// getRequestedDateOrDefault returns the ?date= query param, defaulting to today in Asia/Baghdad.
-func getRequestedDateOrDefault(r *http.Request) string {
-	if d := r.URL.Query().Get("date"); d != "" {
-		return d
+// requestedDate returns the ?date= query param (YYYY-MM-DD), defaulting to today in
+// Asia/Baghdad; ok is false (and 400 has been written) when the value is malformed.
+func requestedDate(w http.ResponseWriter, r *http.Request) (date string, ok bool) {
+	d := r.URL.Query().Get("date")
+	if d == "" {
+		return tz.Today(), true
 	}
-	return tz.Today()
+	if _, err := time.Parse("2006-01-02", d); err != nil {
+		respondError(w, http.StatusBadRequest, "date must be formatted as YYYY-MM-DD")
+		return "", false
+	}
+	return d, true
 }
 
 func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -171,13 +178,13 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			SELECT 
 				s.id, 
 				s.full_name, 
-				p.full_name as parent_name, 
-				p.phone_number,
+				COALESCE(p.full_name, '') as parent_name,
+				COALESCE(p.phone_number, ''),
 				COALESCE(s.rfid_tag, ''),
 				s.grade,
 				s.section
 			FROM students s
-			JOIN parents p ON s.parent_id = p.id
+			LEFT JOIN parents p ON s.parent_id = p.id
 			WHERE s.is_active = true
 			ORDER BY s.id DESC
 		`
@@ -359,6 +366,10 @@ func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusBadRequest, "student_id and leave_date are required")
 		return
 	}
+	if _, err := time.Parse("2006-01-02", req.LeaveDate); err != nil {
+		respondError(w, http.StatusBadRequest, "leave_date must be formatted as YYYY-MM-DD")
+		return
+	}
 
 	// استخدام ON CONFLICT لتحديث الملاحظات إذا كانت الإجازة مسجلة مسبقاً لنفس اليوم
 	query := `
@@ -390,7 +401,10 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	dateParam := getRequestedDateOrDefault(r)
+	dateParam, ok := requestedDate(w, r)
+	if !ok {
+		return
+	}
 
 	// استعلام مركب يجلب كل الطلاب ويحدد حالتهم بناءً على الجداول المرتبطة
 	query := `
@@ -444,7 +458,19 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	dateParam := getRequestedDateOrDefault(r)
+	dateParam, ok := requestedDate(w, r)
+	if !ok {
+		return
+	}
+
+	var schoolName string
+	switch err := app.DB.QueryRowContext(r.Context(), `SELECT setting_value FROM settings WHERE setting_key = 'school_name'`).Scan(&schoolName); {
+	case err == sql.ErrNoRows:
+		slog.Warn("AdminExportExcelHandler: school_name setting is missing; the report header will be blank")
+	case err != nil:
+		respondInternalError(w, "Database error", "AdminExportExcelHandler: school name query failed", err, "date", dateParam)
+		return
+	}
 
 	query := `
 		SELECT 
@@ -452,16 +478,17 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 			s.full_name, 
 			COALESCE(s.grade, 'غير محدد'), 
 			COALESCE(s.section, '-'), 
-			p.full_name as parent_name, 
-			p.phone_number,
+			COALESCE(p.full_name, '-') as parent_name,
+			COALESCE(p.phone_number, '-') as phone_number,
 			CASE st.status
 				WHEN 'Present' THEN 'حاضر'
 				WHEN 'Excused' THEN 'مجاز'
 				ELSE 'غائب'
 			END as status,
-			COALESCE(st.first_check, '') as check_time
+			COALESCE(st.first_check, '') as check_in_time,
+			COALESCE(st.last_check, '') as check_out_time
 		FROM students s
-		JOIN parents p ON s.parent_id = p.id
+		LEFT JOIN parents p ON s.parent_id = p.id
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
 		WHERE s.is_active = true
 		ORDER BY st.status DESC, s.full_name ASC
@@ -490,17 +517,17 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 	})
 
 	// 3. كتابة الترويسة الرسمية ودمج الخلايا من العمود A إلى H
-	f.MergeCell(sheet, "A1", "H1")
+	f.MergeCell(sheet, "A1", "I1")
 	f.SetCellValue(sheet, "A1", "وزارة التربية والتعليم")
 
-	f.MergeCell(sheet, "A2", "H2")
-	f.SetCellValue(sheet, "A2", "مدرسة الرحمن الابتدائية الأهلية")
+	f.MergeCell(sheet, "A2", "I2")
+	f.SetCellValue(sheet, "A2", schoolName)
 
-	f.MergeCell(sheet, "A3", "H3")
+	f.MergeCell(sheet, "A3", "I3")
 	f.SetCellValue(sheet, "A3", fmt.Sprintf("تقرير الحضور والغياب اليومي الشامل - تاريخ: %s", dateParam))
 
 	// تطبيق التنسيق على الترويسة
-	f.SetCellStyle(sheet, "A1", "H3", titleStyle)
+	f.SetCellStyle(sheet, "A1", "I3", titleStyle)
 
 	// 4. إعداد ترويسة أعمدة الجدول (في الصف الخامس لترك مسافة)
 	headerStyle, _ := f.NewStyle(&excelize.Style{
@@ -508,19 +535,19 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
 	})
 
-	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت البصمة"}
+	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت الدخول", "وقت الخروج"}
 	for i, header := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 5)
 		f.SetCellValue(sheet, cell, header)
 	}
-	f.SetCellStyle(sheet, "A5", "H5", headerStyle)
+	f.SetCellStyle(sheet, "A5", "I5", headerStyle)
 
 	// 5. تعبئة البيانات (ابتداءً من الصف السادس)
 	rowIndex := 6
 	for rows.Next() {
 		var id int
-		var studentName, grade, section, parentName, phone, status, checkTime string
-		if err := rows.Scan(&id, &studentName, &grade, &section, &parentName, &phone, &status, &checkTime); err != nil {
+		var studentName, grade, section, parentName, phone, status, checkIn, checkOut string
+		if err := rows.Scan(&id, &studentName, &grade, &section, &parentName, &phone, &status, &checkIn, &checkOut); err != nil {
 			respondInternalError(w, "Database error", "AdminExportExcelHandler: scan failed", err, "date", dateParam, "row", rowIndex)
 			return
 		}
@@ -531,7 +558,8 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		f.SetCellValue(sheet, fmt.Sprintf("E%d", rowIndex), parentName)
 		f.SetCellValue(sheet, fmt.Sprintf("F%d", rowIndex), phone)
 		f.SetCellValue(sheet, fmt.Sprintf("G%d", rowIndex), status)
-		f.SetCellValue(sheet, fmt.Sprintf("H%d", rowIndex), checkTime)
+		f.SetCellValue(sheet, fmt.Sprintf("H%d", rowIndex), checkIn)
+		f.SetCellValue(sheet, fmt.Sprintf("I%d", rowIndex), checkOut)
 		rowIndex++
 	}
 	if err := rows.Err(); err != nil {
