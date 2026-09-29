@@ -55,7 +55,11 @@ func TestW2TimezoneConsistency(t *testing.T) {
 
 	utcDB := openDB(t, dsn)
 	t.Setenv("DATABASE_URL", dsn)
-	pinnedDB := openDB(t, config.LoadConfig().DBUrl)
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	pinnedDB := openDB(t, cfg.DBUrl)
 
 	auth.InitAuth("w2-test-secret")
 	parentToken, err := auth.GenerateParentToken(1, w2ParentPhone)
@@ -81,10 +85,13 @@ func TestW2TimezoneConsistency(t *testing.T) {
 			t.Errorf("CURRENT_DATE behavior: pinned CURRENT_DATE = %s, want Baghdad today %s", pinnedToday, want)
 		}
 
-		explicit := withSessionZone(t, dsn, "UTC")
-		t.Setenv("DATABASE_URL", explicit)
-		if got := config.LoadConfig().DBUrl; got != explicit {
-			t.Errorf("explicit DSN timezone must be kept, got %q", got)
+		t.Setenv("DATABASE_URL", withSessionZone(t, dsn, "UTC"))
+		explicitCfg, err := config.LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if u, _ := url.Parse(explicitCfg.DBUrl); u == nil || u.Query().Get("timezone") != "UTC" {
+			t.Errorf("explicit DSN timezone must be kept, got %q", explicitCfg.DBUrl)
 		}
 	})
 

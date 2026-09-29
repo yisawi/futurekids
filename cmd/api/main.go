@@ -26,23 +26,20 @@ func main() {
 	slog.SetDefault(logger)
 
 	// 1. Load the config
-	cfg := config.LoadConfig()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		slog.Error("Invalid configuration", "error", err)
+		os.Exit(1)
+	}
 	auth.InitAuth(cfg.JWTSecret)
 
 	// 2. Connect to the database
-	db, err := database.NewConnection(cfg.DBUrl)
+	db, err := database.NewConnection(cfg.DBUrl, cfg.DBPool)
 	if err != nil {
 		slog.Error("Failed to connect to database", "error", err)
 		os.Exit(1)
 	}
 	defer db.Close()
-
-	// تحديد أقصى عدد للاتصالات المفتوحة (يمنع خنق السيرفر)
-	db.SetMaxOpenConns(25)
-	// تحديد أقصى عدد للاتصالات الخاملة (يحافظ على الذاكرة)
-	db.SetMaxIdleConns(25)
-	// إغلاق الاتصالات التي ظلت خاملة لفترة طويلة
-	db.SetConnMaxLifetime(15 * time.Minute)
 
 	// Initialize Firebase FCM
 	ctx := context.Background()

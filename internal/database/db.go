@@ -12,62 +12,63 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// NewConnection opens and verifies a PostgreSQL connection using the provided
-// DSN (typically the value of DATABASE_URL on Railway).
-//
-// Production behaviour:
-//   - Fails fast with the exact driver error if the DSN is empty or malformed.
-//   - Appends sslmode=disable when no sslmode is present, which is required for
-//     Railway's internal private-network connections.
-//   - Returns a wrapped error so callers always see the root driver message.
-func NewConnection(dsn string) (*sql.DB, error) {
+// Pool holds the connection-pool limits. NewConnection is the only place they are applied.
+type Pool struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+}
+
+// DefaultPool caps concurrent queries at 25, keeps 5 warm connections instead of holding
+// 25 server slots while idle, and recycles connections every 5 minutes.
+var DefaultPool = Pool{
+	MaxOpenConns:    25,
+	MaxIdleConns:    5,
+	ConnMaxLifetime: 5 * time.Minute,
+}
+
+// NewConnection opens a PostgreSQL pool for dsn, applies pool, and verifies the server is
+// reachable. The DSN is used as given; sslmode is resolved by config.LoadConfig.
+func NewConnection(dsn string, pool Pool) (*sql.DB, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, fmt.Errorf("db connection failed: DSN is empty — ensure DATABASE_URL (or DB_URL) is set in your environment")
 	}
-
-	dsn, err := ensureSSLMode(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("db connection failed: could not parse DSN: %w", err)
-	}
+	redacted, sslmode := describe(dsn)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("db connection failed: sql.Open error: %w", err)
+		return nil, fmt.Errorf("db connection failed (sslmode=%s): sql.Open error: %w", sslmode, err)
 	}
+	db.SetMaxOpenConns(pool.MaxOpenConns)
+	db.SetMaxIdleConns(pool.MaxIdleConns)
+	db.SetConnMaxLifetime(pool.ConnMaxLifetime)
 
-	// Connection-pool tuning — prevents exhausting server resources.
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(25)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
-	// Verify the connection is actually reachable before returning.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	if err := db.PingContext(ctx); err != nil {
-		// Close the pool so the caller doesn't hold an unusable handle.
 		_ = db.Close()
-		return nil, fmt.Errorf("db connection failed: ping error (check host/credentials/network): %w", err)
+		return nil, fmt.Errorf("db connection failed (%s, sslmode=%s): ping error (check host/credentials/network; if a LOCAL server has no TLS, set DB_SSL_MODE=disable): %w", redacted, sslmode, err)
 	}
 
-	slog.Info("Successfully connected to the database")
+	slog.Info("Connected to the database",
+		"dsn", redacted,
+		"sslmode", sslmode,
+		"max_open_conns", pool.MaxOpenConns,
+		"max_idle_conns", pool.MaxIdleConns,
+		"conn_max_lifetime", pool.ConnMaxLifetime.String(),
+	)
 	return db, nil
 }
 
-// ensureSSLMode appends sslmode=disable to the DSN when no sslmode query
-// parameter is present. Railway's internal network does not use TLS by
-// default, so the driver requires this to avoid a TLS handshake error.
-func ensureSSLMode(dsn string) (string, error) {
+// describe returns dsn with the password hidden and its sslmode ("driver default" if unset).
+func describe(dsn string) (string, string) {
 	u, err := url.Parse(dsn)
 	if err != nil {
-		return "", err
+		return "(unparseable DSN)", "unknown"
 	}
-
-	q := u.Query()
-	if q.Get("sslmode") == "" {
-		q.Set("sslmode", "disable")
-		u.RawQuery = q.Encode()
+	mode := u.Query().Get("sslmode")
+	if mode == "" {
+		mode = "driver default"
 	}
-
-	return u.String(), nil
+	return u.Redacted(), mode
 }
