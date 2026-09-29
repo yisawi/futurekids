@@ -55,3 +55,11 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, badRequestM
 	}
 	return false
 }
+
+// respondRetry logs a transient failure and writes 503 with Retry-After, telling a client
+// (such as an attendance device) to resend the same request later.
+func respondRetry(w http.ResponseWriter, op string, err error, attrs ...any) {
+	slog.Error(op, append(attrs, "error", err)...)
+	w.Header().Set("Retry-After", "30")
+	respondError(w, http.StatusServiceUnavailable, "Service temporarily unavailable, retry later")
+}

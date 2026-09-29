@@ -37,7 +37,8 @@ func HardwareLoggerMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// DeviceAuthMiddleware ensures requests come from an approved active attendance device.
+// DeviceAuthMiddleware ensures requests come from an approved active attendance device and
+// passes the verified serial number to the next handler under DeviceSNKey.
 func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		deviceSN := r.URL.Query().Get("SN")
@@ -54,17 +55,20 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 			deviceSN,
 		).Scan(&isActive)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				slog.Warn("Unauthorized device attempted connection", "device_sn", deviceSN, "ip", r.RemoteAddr)
+			switch {
+			case err == sql.ErrNoRows:
+				slog.Warn("DeviceAuthMiddleware: unregistered device rejected", "device_sn", deviceSN, "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 				respondError(w, http.StatusUnauthorized, "Unauthorized Device")
-			} else {
+			case isTransientDBError(err):
+				respondRetry(w, "DeviceAuthMiddleware: database unavailable", err, "device_sn", deviceSN)
+			default:
 				respondInternalError(w, "Internal Server Error", "DeviceAuthMiddleware: query failed", err, "device_sn", deviceSN)
 			}
 			return
 		}
 
 		if !isActive {
-			slog.Warn("Disabled device attempted connection", "device_sn", deviceSN)
+			slog.Warn("DeviceAuthMiddleware: disabled device rejected", "device_sn", deviceSN, "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 			respondError(w, http.StatusForbidden, "Device is disabled")
 			return
 		}
@@ -88,14 +92,18 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 			}
 		}(deviceSN)
 
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), DeviceSNKey, deviceSN)))
 	}
 }
 
-// ParentIDKey is the typed context key used to pass the authenticated parent's DB id.
+// contextKey types the values middleware passes to handlers through the request context.
 type contextKey string
 
+// ParentIDKey carries the authenticated parent's DB id (set by AuthMiddleware).
 const ParentIDKey contextKey = "parent_id"
+
+// DeviceSNKey carries the verified device serial number (set by DeviceAuthMiddleware).
+const DeviceSNKey contextKey = "device_sn"
 
 // extractBearerToken pulls the token string from an "Authorization: Bearer <token>" header.
 // Returns the token and true on success, empty string and false if the header is missing or malformed.

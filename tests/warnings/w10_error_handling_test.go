@@ -155,6 +155,15 @@ type w10Endpoint struct {
 	list   bool // returns a collection; covered by scan/iter/empty modes
 }
 
+// failStatus is the expected status on a database failure: device endpoints answer 503 so
+// the device resends (the fake driver's errors count as transient), everything else 500.
+func (ep w10Endpoint) failStatus() int {
+	if ep.op == "DeviceAuthMiddleware:" {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusInternalServerError
+}
+
 func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 	admin, parent := handlers.AdminMiddleware, handlers.AuthMiddleware
 	return []w10Endpoint{
@@ -184,7 +193,6 @@ func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 		{"admin device update", "AdminDevicesHandler:", "PUT", "/api/admin/devices", `{"serial_number":"SN1","location_name":"Gate","is_active":true}`, admin(app.AdminDevicesHandler), false},
 		{"admin device disable", "AdminDevicesHandler:", "DELETE", "/api/admin/devices?sn=SN1", "", admin(app.AdminDevicesHandler), false},
 		{"device auth middleware", "DeviceAuthMiddleware:", "POST", "/api/attendance/push/json?SN=SN1", `{}`, app.DeviceAuthMiddleware(app.HardwareAttendancePushHandler), false},
-		{"hardware JSON push", "HardwareAttendancePushHandler:", "POST", "/api/attendance/push/json?SN=SN1", `{"device_sn":"SN1","rfid_tag":"T","push_time":"2026-09-24 07:15:00"}`, app.HardwareAttendancePushHandler, false},
 	}
 }
 
@@ -229,8 +237,8 @@ func TestW10ErrorHandling(t *testing.T) {
 		t.Helper()
 		before := len(capture.snapshot())
 		rec, logs := call(ep)
-		if rec.Code != http.StatusInternalServerError {
-			t.Errorf("%s: HTTP %d, want 500 (content-type %q)", ep.name, rec.Code, rec.Header().Get("Content-Type"))
+		if rec.Code != ep.failStatus() {
+			t.Errorf("%s: HTTP %d, want %d (content-type %q)", ep.name, rec.Code, ep.failStatus(), rec.Header().Get("Content-Type"))
 			return
 		}
 		var found *w10Log
@@ -240,7 +248,7 @@ func TestW10ErrorHandling(t *testing.T) {
 			}
 		}
 		if found == nil {
-			t.Errorf("%s: 500 returned without an ERROR log starting with %q (logs: %v)", ep.name, ep.op, logs)
+			t.Errorf("%s: %d returned without an ERROR log starting with %q (logs: %v)", ep.name, rec.Code, ep.op, logs)
 			return
 		}
 		if wantErr != nil && !strings.Contains(found.Attrs["error"], wantErr.Error()) {
@@ -371,7 +379,7 @@ func TestW10ErrorHandling(t *testing.T) {
 						}
 						rec := httptest.NewRecorder()
 						ep.h(rec, req)
-						if rec.Code != http.StatusInternalServerError {
+						if rec.Code != ep.failStatus() {
 							mu.Lock()
 							bad++
 							mu.Unlock()

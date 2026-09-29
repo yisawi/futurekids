@@ -280,13 +280,14 @@ components:
       properties:
         device_sn:
           type: string
+          description: Must equal the `SN` query parameter the request was authenticated with; a different value is rejected with 403.
           example: QJT3252301021
         rfid_tag:
           type: string
           example: "1001"
         push_time:
           type: string
-          description: "Format: YYYY-MM-DD HH:MM:SS"
+          description: "Format: YYYY-MM-DD HH:MM:SS (400 otherwise)"
           example: "2026-09-21 07:32:11"
       required: [device_sn, rfid_tag, push_time]
 
@@ -1366,6 +1367,8 @@ paths:
       summary: Hardware JSON Push Endpoint
       description: |
         Alternative attendance push endpoint that accepts JSON. Useful for modern readers or custom hardware that doesn't use ADMS.
+        The device is authenticated by the `SN` query parameter (it must be registered and active). The punch is always stored
+        under that authenticated serial; a body `device_sn` that differs is rejected as a spoofing attempt.
       parameters:
         - name: SN
           in: query
@@ -1403,10 +1406,21 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Disabled device
+          description: Disabled device, or body `device_sn` does not match the authenticated `SN`
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          description: Database temporarily unavailable — nothing was stored; resend the punch later
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                example: 30
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'

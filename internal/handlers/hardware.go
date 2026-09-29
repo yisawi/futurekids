@@ -569,8 +569,38 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// The only trusted device identity is the one DeviceAuthMiddleware verified.
+	deviceSN, ok := r.Context().Value(DeviceSNKey).(string)
+	if !ok || deviceSN == "" {
+		slog.Error("HardwareAttendancePushHandler: no verified device identity (DeviceAuthMiddleware not applied)", "path", r.URL.Path)
+		respondError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+
 	var req HardwarePushPayload
 	if !decodeJSONBody(w, r, &req, "Invalid payload") {
+		return
+	}
+	req.DeviceSN = strings.TrimSpace(req.DeviceSN)
+	req.RFIDTag = strings.TrimSpace(req.RFIDTag)
+
+	if req.DeviceSN == "" {
+		respondError(w, http.StatusBadRequest, "device_sn is required")
+		return
+	}
+	if req.DeviceSN != deviceSN {
+		slog.Warn("HardwareAttendancePushHandler: device_sn does not match the authenticated device — possible spoofing",
+			"authenticated_sn", deviceSN, "claimed_sn", req.DeviceSN, "remote_addr", r.RemoteAddr)
+		respondError(w, http.StatusForbidden, "device_sn does not match the authenticated device")
+		return
+	}
+	if req.RFIDTag == "" {
+		respondError(w, http.StatusBadRequest, "rfid_tag is required")
+		return
+	}
+	pushTime, err := time.Parse("2006-01-02 15:04:05", strings.TrimSpace(req.PushTime))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "push_time must be formatted as YYYY-MM-DD HH:MM:SS")
 		return
 	}
 
@@ -585,10 +615,14 @@ func (app *AppEnv) HardwareAttendancePushHandler(w http.ResponseWriter, r *http.
 		ON CONFLICT (student_id, check_time) DO NOTHING;
 	`
 
-	res, err := app.DB.ExecContext(r.Context(), query, req.RFIDTag, req.DeviceSN, req.PushTime)
+	res, err := app.DB.ExecContext(r.Context(), query, req.RFIDTag, deviceSN, pushTime)
 	if err != nil {
-		// في حال فشل قاعدة البيانات، نرد بخطأ 500 ليحتفظ الجهاز بالبصمة ويعيد إرسالها لاحقاً
-		respondInternalError(w, "Database error", "HardwareAttendancePushHandler: exec failed", err, "device_sn", req.DeviceSN, "rfid_tag", req.RFIDTag)
+		if isTransientDBError(err) {
+			// 503 tells the device to keep the punch and resend it once the database recovers.
+			respondRetry(w, "HardwareAttendancePushHandler: database unavailable", err, "device_sn", deviceSN, "rfid_tag", req.RFIDTag)
+			return
+		}
+		respondInternalError(w, "Database error", "HardwareAttendancePushHandler: exec failed", err, "device_sn", deviceSN, "rfid_tag", req.RFIDTag)
 		return
 	}
 
