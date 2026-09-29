@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -135,14 +136,23 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// 3. Enforce parent role
-		if role, ok := claims["role"].(string); !ok || role != "parent" {
-			slog.Warn("AuthMiddleware: token without parent role", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+		role, err := auth.Role(claims)
+		if err != nil {
+			rejectMalformedClaims(w, r, "AuthMiddleware", err)
+			return
+		}
+		if role != "parent" {
+			slog.Warn("AuthMiddleware: token without parent role", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "role", role)
 			respondError(w, http.StatusForbidden, "Access denied")
 			return
 		}
 
 		// 4. Inject parent_id into context so handlers cannot be spoofed
-		parentID := int(claims["parent_id"].(float64))
+		parentID, err := auth.ParentID(claims)
+		if err != nil {
+			rejectMalformedClaims(w, r, "AuthMiddleware", err)
+			return
+		}
 		ctx := context.WithValue(r.Context(), ParentIDKey, parentID)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -165,12 +175,29 @@ func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			respondError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
-		if role, ok := claims["role"].(string); !ok || role != "admin" {
-			slog.Warn("AdminMiddleware: token without admin role", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+		role, err := auth.Role(claims)
+		if err != nil {
+			rejectMalformedClaims(w, r, "AdminMiddleware", err)
+			return
+		}
+		if role != "admin" {
+			slog.Warn("AdminMiddleware: token without admin role", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "role", role)
 			respondError(w, http.StatusForbidden, "Forbidden")
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	}
+}
+
+// rejectMalformedClaims logs a validly signed token whose claims are missing or mistyped
+// and answers 401, the same as any other unusable token.
+func rejectMalformedClaims(w http.ResponseWriter, r *http.Request, middleware string, err error) {
+	attrs := []any{"path", r.URL.Path, "remote_addr", r.RemoteAddr, "error", err}
+	var ce *auth.ClaimError
+	if errors.As(err, &ce) {
+		attrs = append(attrs, "claim", ce.Claim)
+	}
+	slog.Warn(middleware+": malformed token claims", attrs...)
+	respondError(w, http.StatusUnauthorized, "Invalid or expired token")
 }
