@@ -8,4 +8,4 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 
 -- تسريع جلب الإشعارات بناءً على رقم هاتف ولي الأمر
-CREATE INDEX idx_notifications_phone ON notifications(parent_phone);
+CREATE INDEX IF NOT EXISTS idx_notifications_phone ON notifications(parent_phone);

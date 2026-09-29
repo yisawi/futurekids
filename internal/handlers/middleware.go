@@ -74,24 +74,19 @@ func (app *AppEnv) DeviceAuthMiddleware(next http.HandlerFunc) http.HandlerFunc 
 			return
 		}
 
-		go func(sn string) {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("DeviceAuthMiddleware: recovered panic in last_sync goroutine", "device_sn", sn, "panic", r)
-				}
-			}()
+		app.Background.Go("device last_sync", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 
 			_, err := app.DB.ExecContext(
 				ctx,
 				"UPDATE devices SET last_sync = CURRENT_TIMESTAMP WHERE serial_number = $1",
-				sn,
+				deviceSN,
 			)
 			if err != nil {
-				slog.Error("Failed to update device last_sync", "device_sn", sn, "error", err)
+				slog.Error("Failed to update device last_sync", "device_sn", deviceSN, "error", err)
 			}
-		}(deviceSN)
+		})
 
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), DeviceSNKey, deviceSN)))
 	}

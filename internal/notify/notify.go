@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"time"
 
+	"future_kids/internal/background"
+
 	"firebase.google.com/go/v4/messaging"
 )
 
@@ -31,7 +33,7 @@ func SaveNotificationHistory(db *sql.DB, phone, title, body string) {
 // unregistered (app uninstalled or token rotated), the token is cleared from every student
 // that carries it so no further pushes are attempted. Tokens never appear in logs; use
 // TokenFingerprint to correlate.
-func SendPushNotification(client *messaging.Client, db *sql.DB, token, title, body string) {
+func SendPushNotification(bg *background.Group, client *messaging.Client, db *sql.DB, token, title, body string) {
 	if token == "" || client == nil {
 		return // Skip sending if the student does not have a registered phone or the client is not configured.
 	}
@@ -45,13 +47,7 @@ func SendPushNotification(client *messaging.Client, db *sql.DB, token, title, bo
 	}
 
 	// Send the notification in the background so as not to delay the server's response.
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("SendPushNotification: recovered panic in send goroutine", "panic", r)
-			}
-		}()
-
+	bg.Go("FCM push", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -64,7 +60,7 @@ func SendPushNotification(client *messaging.Client, db *sql.DB, token, title, bo
 		default:
 			slog.Error("Failed to send FCM message", "token", TokenFingerprint(token), "error", err)
 		}
-	}()
+	})
 }
 
 // clearDeadToken removes an FCM token that FCM no longer accepts from every student.

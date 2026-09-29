@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"future_kids/internal/background"
 	"future_kids/internal/notify"
 	"future_kids/internal/tz"
 
@@ -12,7 +13,7 @@ import (
 )
 
 // ProcessDailyAbsences تُنفذ عند الساعة 12:00 ظهراً بتوقيت العراق
-func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
+func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client, bg *background.Group) {
 	// الاعتماد الصارم على توقيت بغداد
 	today := tz.Today()
 
@@ -52,7 +53,7 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client) {
 			notify.SaveNotificationHistory(db, parentPhone.String, title, body)
 		}
 		if fcmToken.Valid && fcmToken.String != "" {
-			notify.SendPushNotification(fcmClient, db, fcmToken.String, title, body)
+			notify.SendPushNotification(bg, fcmClient, db, fcmToken.String, title, body)
 		}
 
 		slog.Info("ProcessDailyAbsences: processed absence", "student_id", id)

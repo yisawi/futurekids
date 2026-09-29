@@ -361,6 +361,21 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 	})
 }
 
+// weekdayRankSQL ranks ws.day_of_week in school-week order: Sunday→Thursday (1-5), then
+// Friday and Saturday (6-7). The name is trimmed, lower-cased and has أ/إ/آ folded to ا, so
+// Arabic (with or without hamza) and English names in any case are recognized. Anything else
+// ranks 8: it sorts after every real day, alphabetically by the stored name.
+const weekdayRankSQL = `CASE translate(lower(btrim(ws.day_of_week)), 'أإآ', 'ااا')
+			WHEN 'sunday' THEN 1 WHEN 'الاحد' THEN 1
+			WHEN 'monday' THEN 2 WHEN 'الاثنين' THEN 2
+			WHEN 'tuesday' THEN 3 WHEN 'الثلاثاء' THEN 3
+			WHEN 'wednesday' THEN 4 WHEN 'الاربعاء' THEN 4
+			WHEN 'thursday' THEN 5 WHEN 'الخميس' THEN 5
+			WHEN 'friday' THEN 6 WHEN 'الجمعة' THEN 6
+			WHEN 'saturday' THEN 7 WHEN 'السبت' THEN 7
+			ELSE 8
+		END`
+
 func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -386,8 +401,9 @@ func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request)
 			COALESCE(ws.teacher_name, '') AS teacher_name
 		FROM students s
 		JOIN weekly_schedules ws ON s.grade = ws.grade AND s.section = ws.section
+		CROSS JOIN LATERAL (SELECT ` + weekdayRankSQL + ` AS rank) day
 		WHERE s.parent_id = $1 AND s.is_active = true
-		ORDER BY s.id ASC, ws.day_of_week ASC, ws.period_number ASC
+		ORDER BY s.id ASC, day.rank ASC, CASE WHEN day.rank = 8 THEN ws.day_of_week END ASC, ws.period_number ASC
 	`
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID)

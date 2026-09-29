@@ -25,7 +25,23 @@ type Config struct {
 	// (FIREBASE_CREDENTIALS_PATH, default "firebase-credentials.json").
 	FirebaseCredentialsJSON string
 	FirebaseCredentialsPath string
+
+	// ShutdownTimeout (SHUTDOWN_TIMEOUT) bounds the whole graceful shutdown after SIGTERM/SIGINT.
+	ShutdownTimeout time.Duration
+	// AbsenceCronSchedule (ABSENCE_CRON_SCHEDULE) is when the daily absence job runs, in Asia/Baghdad.
+	AbsenceCronSchedule string
+	// OnRailway is set when Railway's environment variables are present; RailwayDraining is
+	// RAILWAY_DEPLOYMENT_DRAINING_SECONDS, the time Railway waits after SIGTERM before SIGKILL
+	// (0 when unset, which is Railway's default).
+	OnRailway       bool
+	RailwayDraining time.Duration
 }
+
+// Defaults for the lifecycle settings. 25s of shutdown fits inside a 30s Railway draining period.
+const (
+	DefaultShutdownTimeout     = 25 * time.Second
+	DefaultAbsenceCronSchedule = "0 12 * * 0-4"
+)
 
 // LoadConfig reads the environment. It fails on an invalid sslmode or pool setting so a
 // misconfiguration stops startup instead of weakening the database connection.
@@ -45,6 +61,26 @@ func LoadConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	shutdownTimeout := DefaultShutdownTimeout
+	if v := strings.TrimSpace(os.Getenv("SHUTDOWN_TIMEOUT")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("invalid SHUTDOWN_TIMEOUT %q: want a positive duration such as 25s", v)
+		}
+		shutdownTimeout = d
+	}
+	var railwayDraining time.Duration
+	if v := strings.TrimSpace(os.Getenv("RAILWAY_DEPLOYMENT_DRAINING_SECONDS")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid RAILWAY_DEPLOYMENT_DRAINING_SECONDS %q: want whole seconds >= 0", v)
+		}
+		railwayDraining = time.Duration(n) * time.Second
+	}
+	cronSchedule := strings.TrimSpace(os.Getenv("ABSENCE_CRON_SCHEDULE"))
+	if cronSchedule == "" {
+		cronSchedule = DefaultAbsenceCronSchedule
+	}
 
 	return &Config{
 		Port:      getEnv("PORT", "8080"),
@@ -54,6 +90,11 @@ func LoadConfig() (*Config, error) {
 
 		FirebaseCredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"),
 		FirebaseCredentialsPath: firebaseCredentialsPath(),
+
+		ShutdownTimeout:     shutdownTimeout,
+		AbsenceCronSchedule: cronSchedule,
+		OnRailway:           getEnvFirstMatch("RAILWAY_ENVIRONMENT_NAME", "RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID") != "",
+		RailwayDraining:     railwayDraining,
 	}, nil
 }
 

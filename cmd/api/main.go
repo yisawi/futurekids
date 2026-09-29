@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	firebase "firebase.google.com/go/v4"
@@ -12,6 +16,7 @@ import (
 	"google.golang.org/api/option"
 
 	"future_kids/internal/auth"
+	"future_kids/internal/background"
 	"future_kids/internal/config"
 	cronpkg "future_kids/internal/cron"
 	"future_kids/internal/database"
@@ -22,6 +27,12 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run starts the server and blocks until SIGINT/SIGTERM, then shuts down gracefully.
+// It returns the process exit code.
+func run() int {
 	// Configuring the error logging system (Logger) to use JSON format
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -30,7 +41,7 @@ func main() {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		slog.Error("Invalid configuration", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	auth.InitAuth(cfg.JWTSecret)
 
@@ -38,9 +49,14 @@ func main() {
 	db, err := database.NewConnection(cfg.DBUrl, cfg.DBPool)
 	if err != nil {
 		slog.Error("Failed to connect to database", "error", err)
-		os.Exit(1)
+		return 1
 	}
-	defer db.Close()
+	// Until shutdown takes over, every failure path closes the pool itself.
+	fail := func(msg string, args ...any) int {
+		slog.Error(msg, args...)
+		db.Close()
+		return 1
+	}
 
 	// Initialize Firebase FCM
 	ctx := context.Background()
@@ -51,28 +67,27 @@ func main() {
 	} else if _, err := os.Stat(cfg.FirebaseCredentialsPath); err == nil {
 		opt = option.WithCredentialsFile(cfg.FirebaseCredentialsPath)
 	} else {
-		slog.Error("No Firebase credentials: set FIREBASE_CREDENTIALS_JSON, or FIREBASE_CREDENTIALS_PATH to a service-account file",
+		return fail("No Firebase credentials: set FIREBASE_CREDENTIALS_JSON, or FIREBASE_CREDENTIALS_PATH to a service-account file",
 			"path", cfg.FirebaseCredentialsPath, "error", err)
-		os.Exit(1)
 	}
 
 	fbApp, err := firebase.NewApp(ctx, nil, opt)
 	if err != nil {
-		slog.Error("Failed to initialize Firebase", "error", err)
-		os.Exit(1)
+		return fail("Failed to initialize Firebase", "error", err)
 	}
 
 	fcmClient, err := fbApp.Messaging(ctx)
 	if err != nil {
-		slog.Error("Failed to get FCM client", "error", err)
-		os.Exit(1)
+		return fail("Failed to get FCM client", "error", err)
 	}
 
 	// Passing the database connection and the notification client together
+	bg := &background.Group{}
 	appEnv := &handlers.AppEnv{
 		DB:           db,
 		FCMClient:    fcmClient,
 		LoginLimiter: ratelimit.NewLoginLimiter(5, 15*time.Minute),
+		Background:   bg,
 	}
 
 	// 3. Setup the HTTP Server
@@ -127,24 +142,98 @@ func main() {
 	} else {
 		slog.Warn("No tz database on this system; using fixed UTC+3 for Asia/Baghdad (identical: Iraq has no DST)")
 	}
+	if cfg.OnRailway && cfg.RailwayDraining <= cfg.ShutdownTimeout {
+		slog.Warn("Railway will SIGKILL this process before graceful shutdown can finish; set RAILWAY_DEPLOYMENT_DRAINING_SECONDS above SHUTDOWN_TIMEOUT",
+			"railway_draining", cfg.RailwayDraining.String(), "shutdown_timeout", cfg.ShutdownTimeout.String())
+	}
+
 	c := cron.New(cron.WithLocation(tz.Baghdad))
-	if _, err := c.AddFunc("0 12 * * 0-4", func() {
-		cronpkg.ProcessDailyAbsences(appEnv.DB, appEnv.FCMClient)
+	if _, err := c.AddFunc(cfg.AbsenceCronSchedule, func() {
+		cronpkg.ProcessDailyAbsences(appEnv.DB, appEnv.FCMClient, bg)
 	}); err != nil {
-		slog.Error("Failed to schedule cron job", "error", err)
-		os.Exit(1)
+		return fail("Invalid ABSENCE_CRON_SCHEDULE", "schedule", cfg.AbsenceCronSchedule, "error", err)
 	}
 
-	c.Start()
-	defer c.Stop()
+	// Stop on SIGINT (Ctrl-C) or SIGTERM (Railway deploys). A second signal kills the process.
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 
-	slog.Info("Starting server", "port", cfg.Port)
-
-	// Start the Server
-	err = server.New(":"+cfg.Port, mux, server.DefaultTimeouts).ListenAndServe()
+	srv := server.New(":"+cfg.Port, mux, server.DefaultTimeouts)
+	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
-		slog.Error("Server failed to start", "error", err)
-		os.Exit(1)
+		return fail("Server failed to start", "addr", srv.Addr, "error", err)
+	}
+	c.Start()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+	slog.Info("Server started", "addr", ln.Addr().String(), "absence_cron", cfg.AbsenceCronSchedule, "shutdown_timeout", cfg.ShutdownTimeout.String())
+
+	select {
+	case err := <-serveErr:
+		<-c.Stop().Done()
+		return fail("Server stopped unexpectedly", "error", err)
+	case <-sigCtx.Done():
+	}
+	stopSignals()
+	return shutdown(srv, c, bg, db, cfg.ShutdownTimeout)
+}
+
+// shutdown drains the process within timeout, in order: stop accepting connections and let
+// in-flight requests finish, stop the absence cron and wait for a running job, wait for
+// background work (push notifications, notification history, device last_sync), then close
+// the database. It returns 0 when every phase finished in time. Otherwise it logs an ERROR
+// and returns 1 without waiting further: PostgreSQL rolls back any transaction left open when
+// the process exits, so an interrupted ADMS batch is never stored partially.
+func shutdown(srv *http.Server, c *cron.Cron, bg *background.Group, db *sql.DB, timeout time.Duration) int {
+	start := time.Now()
+	slog.Info("Shutdown: signal received", "timeout", timeout.String())
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	clean := true
+
+	if err := srv.Shutdown(ctx); err != nil {
+		clean = false
+		slog.Error("Shutdown: timeout exceeded while finishing in-flight requests; closing their connections", "error", err)
+		srv.Close()
+	} else {
+		slog.Info("Shutdown: HTTP server stopped")
 	}
 
+	if finished(c.Stop().Done(), ctx) {
+		slog.Info("Shutdown: cron stopped")
+	} else {
+		clean = false
+		slog.Error("Shutdown: timeout exceeded while waiting for the running absence job")
+	}
+
+	if pending, err := bg.Wait(ctx); err != nil {
+		clean = false
+		slog.Error("Shutdown: timeout exceeded while waiting for background work", "pending", pending)
+	} else {
+		slog.Info("Shutdown: background work finished")
+	}
+
+	if !clean {
+		slog.Error("Shutdown incomplete: exiting now; open transactions are rolled back by PostgreSQL", "duration", time.Since(start).String())
+		return 1
+	}
+	db.Close()
+	slog.Info("Shutdown: database closed")
+	slog.Info("Shutdown complete", "duration", time.Since(start).String())
+	return 0
+}
+
+// finished reports whether done closes before ctx expires, preferring done when both are ready.
+func finished(done <-chan struct{}, ctx context.Context) bool {
+	select {
+	case <-done:
+		return true
+	default:
+	}
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

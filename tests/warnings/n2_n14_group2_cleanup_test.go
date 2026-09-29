@@ -248,7 +248,7 @@ func TestGroup2Cleanup(t *testing.T) {
 			(915, 'Via punch', 'G2-FCM-5', 'dead-token-punch')`)
 		before := len(capture.snapshot())
 		for _, tok := range []string{"dead-token-shared", "live-token-1", "bad-token-1"} {
-			notify.SendPushNotification(client, db, tok, "t", "b")
+			notify.SendPushNotification(nil, client, db, tok, "t", "b")
 		}
 		appWithFCM := &handlers.AppEnv{DB: db, FCMClient: client}
 		call(t, appWithFCM.ADMSHandler, "POST", "/iclock/cdata?SN=G2-DEV&table=ATTLOG", "", "G2-FCM-5\t2026-04-02 07:15:00\t1\t1\n")

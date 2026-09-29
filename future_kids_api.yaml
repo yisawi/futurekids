@@ -1124,11 +1124,16 @@ paths:
     get:
       tags: [Mobile App]
       summary: Get weekly class schedule for parent's children
+      description: |
+        Entries are ordered by student, then school week — Sunday, Monday, Tuesday, Wednesday,
+        Thursday, then Friday and Saturday — then period. `day_of_week` is returned exactly as
+        stored; Arabic (الأحد … الخميس, with or without hamza) and English names in any case are
+        recognized. Unrecognized day names sort after all real days, alphabetically.
       security:
         - BearerAuth: []
       responses:
         '200':
-          description: Schedule entries ordered by student, day, period
+          description: Schedule entries ordered by student, school-week day, period
           content:
             application/json:
               schema:

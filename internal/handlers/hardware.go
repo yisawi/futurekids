@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"future_kids/internal/background"
 	"future_kids/internal/notify"
 	"future_kids/internal/ratelimit"
 
@@ -22,6 +23,7 @@ type AppEnv struct {
 	DB           *sql.DB
 	FCMClient    *messaging.Client       // added to control notifications.
 	LoginLimiter *ratelimit.LoginLimiter // failed parent-login attempts per phone number
+	Background   *background.Group       // fire-and-forget work that shutdown waits for
 }
 
 type AttendanceEvent struct {
@@ -180,19 +182,14 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Device is valid and active. Update last_sync asynchronously so we don't delay the ADMS response.
-	go func(sn string) {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("recovered from panic in ADMSHandler last_sync goroutine", "device_sn", sn, "panic", r)
-			}
-		}()
+	app.Background.Go("device last_sync", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_, updateErr := app.DB.ExecContext(ctx, "UPDATE devices SET last_sync = CURRENT_TIMESTAMP WHERE serial_number = $1", sn)
+		_, updateErr := app.DB.ExecContext(ctx, "UPDATE devices SET last_sync = CURRENT_TIMESTAMP WHERE serial_number = $1", deviceSN)
 		if updateErr != nil {
-			slog.Error("Failed to update device last_sync in ADMSHandler", "device_sn", sn, "error", updateErr)
+			slog.Error("Failed to update device last_sync in ADMSHandler", "device_sn", deviceSN, "error", updateErr)
 		}
-	}(deviceSN)
+	})
 
 	// ── Table routing ─────────────────────────────────────────────────────────
 	// Only ATTLOG contains attendance data. All other tables (OPERLOG, USER,
@@ -548,17 +545,12 @@ func (app *AppEnv) sendPunchNotification(studentID int, checkTime time.Time, stu
 	)
 
 	if parentPhone.Valid && parentPhone.String != "" {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("ADMSHandler: recovered panic in notification history goroutine", "panic", r)
-				}
-			}()
+		app.Background.Go("notification history", func() {
 			notify.SaveNotificationHistory(app.DB, parentPhone.String, title, body)
-		}()
+		})
 	}
 	if fcmToken.Valid && fcmToken.String != "" {
-		notify.SendPushNotification(app.FCMClient, app.DB, fcmToken.String, title, body)
+		notify.SendPushNotification(app.Background, app.FCMClient, app.DB, fcmToken.String, title, body)
 	}
 }
 
