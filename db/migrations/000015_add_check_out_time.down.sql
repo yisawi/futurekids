@@ -1,14 +1,16 @@
 -- ⚠ APP-COMPATIBILITY WARNING
+-- Removes: the 3-column get_student_status (status, first_check TEXT, last_check TEXT); it is
+--   replaced by the 2-column version (status, first_check TIMESTAMP).
 -- Running this down-migration against the current main branch will break:
---   internal/handlers/admin.go — AdminDailyAttendanceHandler and
---   AdminExportExcelHandler call get_student_status() and expect a 3-column
---   result (status TEXT, first_check TEXT, last_check TEXT). This down-migration
---   reverts the function to a 2-column signature (status TEXT, first_check TIMESTAMP),
---   which will cause a runtime scan error on every attendance query.
---   internal/handlers/mobile.go — MobileTodayAttendanceHandler and
---   MobileMonthlyAttendanceHandler have the same 3-column dependency.
--- Do not run this migrate-down without first reverting or updating those
--- files to match the pre-migration schema.
+--   internal/handlers/admin.go — AdminDailyAttendanceHandler and AdminExportExcelHandler read
+--     first_check/last_check as text.
+--   internal/handlers/mobile.go — MobileTodayAttendanceHandler and MobileMonthlyAttendanceHandler
+--     read first_check/last_check as text.
+--   internal/handlers/hardware.go — notifyPunch compares first_check/last_check.
+-- Data loss: none (function only); check-out times disappear from every attendance response.
+-- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
+-- app code that no longer uses these objects. Do not run this migrate-down without first
+-- reverting or updating those files to match the pre-migration schema.
 
 DROP FUNCTION IF EXISTS get_student_status(INT, DATE);
 

@@ -1,6 +1,7 @@
--- Restores the 000015 definition of get_student_status (inclusive <= 09:30:00 / <= 13:30:00
--- window ends; check-out-only days reported as 'Absent'). The return signature is unchanged,
--- so the running Go code keeps working, but the boundary gaps from audit warning W3 return.
+-- APP-COMPATIBILITY: none — the get_student_status signature is unchanged, so no Go code breaks. Behavior regresses to
+--   000015: punches at 09:30:01-09:30:59 and 13:30:01-13:30:59 are ignored and check-out-only days
+--   report Absent (audit warning W3).
+-- Data loss: none (function only).
 
 DROP FUNCTION IF EXISTS get_student_status(INT, DATE);
 

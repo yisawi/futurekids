@@ -1,3 +1,5 @@
--- Restores the 000009 state: pin_code stays NOT NULL (as 000009 created it) and regains the
--- plaintext DEFAULT '1234'. The Go code always supplies pin_code, so it is unaffected.
+-- APP-COMPATIBILITY: none — the Go code always supplies parents.pin_code. It restores the plaintext DEFAULT '1234', so
+--   parents seeded by SQL without a bcrypt PIN can never log in again (audit warning W15).
+-- Data loss: none.
+
 ALTER TABLE parents ALTER COLUMN pin_code SET DEFAULT '1234';
