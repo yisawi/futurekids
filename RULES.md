@@ -7,6 +7,12 @@ This document establishes the strict architectural guidelines for the Future Kid
 - **Standard Library Routing:** We use the Go 1.22+ standard library `net/http` enhanced routing (`ServeMux`). **Do not introduce** any external web frameworks like Gin, Fiber, or Echo.
 - **Simplicity:** The architecture relies on straightforward handler functions, minimal middleware (Auth/Admin/Device Logging), and standard library concurrency.
 
+- Package rule: do not create a new package for under ~100 lines or a single consumer.
+Put it in an existing package (handlers, server, config) unless two or more packages need it.
+
+- Read-only review: list every package under internal/ with its line count and number of importers.
+Recommend which ones should be merged into an existing package. Do not change anything.
+
 ## 2. Strict Constraints & Anti-Patterns (CRITICAL)
 - **No Infrastructure Bloat:** The system MUST remain strictly a **Go + PostgreSQL** stack.
 - **Prohibited Technologies:** 
@@ -27,6 +33,8 @@ This document establishes the strict architectural guidelines for the Future Kid
   - `respondJSON(w, status, data)` for successful responses.
   - `respondError(w, status, message)` for errors, guaranteeing a unified `{"status": "error", "message": "..."}` shape.
   - **No raw JSON literals** or manual `w.Write()` error handling.
+- **Routes and error envelope:** Register every non-hardware route with its method (`"GET /api/..."`) and serve the mux through `handlers.RouteErrors`, so an unknown path gets a JSON 404 and a wrong method a JSON 405 with `Allow`, decided before authentication. Hardware routes and `/health` keep their registrations and plain-text answers (§5).
+- **Phone numbers:** A phone number is an Iraqi mobile number stored, compared and returned only in the canonical form `+9647XXXXXXXXX`. Every input passes through `internal/phone.Normalize` (accepting `07…`, `+964…`, `00964…`, `964…`, spaces, dashes, dots, parentheses, direction marks and Arabic-Indic or Persian digits); invalid numbers get 400 from admin endpoints and the unknown-number 401 from login. SQL that converts stored numbers must match it (see `db/migrations/000022_normalize_phone_numbers.up.sql`).
 - **Unified DTOs:** The `DailyAttendanceDTO` struct in `internal/handlers/types.go` is the absolute SSOT for serializing attendance data. It is shared across both Admin and Mobile handlers to prevent DRY violations.
 
 ## 5. Business & Hardware Logic
@@ -42,3 +50,4 @@ This document establishes the strict architectural guidelines for the Future Kid
 - **End-to-End Verification:** The `tests/e2e_test.sh` script is the ultimate validator of the system's integrity.
 - **Strict Requirement:** The `e2e_test.sh` script **MUST pass 100% locally** before any git commit or deployment to Railway. 
 - It guarantees that the entire data flow—from the raw hardware ADMS push, through the SQL time-window function, up to the validated `DailyAttendanceDTO` JSON responses—is working flawlessly.
+

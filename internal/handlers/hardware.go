@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"future_kids/internal/background"
+	"future_kids/internal/clientip"
 	"future_kids/internal/notify"
 	"future_kids/internal/ratelimit"
 
@@ -20,10 +21,13 @@ import (
 )
 
 type AppEnv struct {
-	DB           *sql.DB
-	FCMClient    *messaging.Client       // added to control notifications.
-	LoginLimiter *ratelimit.LoginLimiter // failed parent-login attempts per phone number
-	Background   *background.Group       // fire-and-forget work that shutdown waits for
+	DB               *sql.DB
+	FCMClient        *messaging.Client       // added to control notifications.
+	LoginLimiter     *ratelimit.LoginLimiter // failed parent-login attempts per normalised phone number
+	AdminUserLimiter *ratelimit.LoginLimiter // failed admin-login attempts per username and client IP
+	AdminIPLimiter   *ratelimit.LoginLimiter // failed admin-login attempts per client IP
+	ClientIP         clientip.Resolver       // finds the client address behind a trusted proxy
+	Background       *background.Group       // fire-and-forget work that shutdown waits for
 }
 
 type AttendanceEvent struct {

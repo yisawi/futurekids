@@ -11,7 +11,7 @@ import (
 	"future_kids/internal/handlers"
 )
 
-const w4ParentPhone = "+9647700000304"
+const w4ParentPhone = "+9647000000304"
 
 // TestW4OpenAPICompliance verifies the JSON contract fixes for audit warning W4:
 // nullable time fields are always present (null when empty), students expose
@@ -40,11 +40,11 @@ func TestW4OpenAPICompliance(t *testing.T) {
 
 	auth.InitAuth("w4-test-secret")
 	app := &handlers.AppEnv{DB: db}
-	parentToken, err := auth.GenerateParentToken(1, w4ParentPhone)
+	parentToken, err := auth.GenerateParentToken(1, w4ParentPhone, 0)
 	if err != nil {
 		t.Fatalf("GenerateParentToken: %v", err)
 	}
-	adminToken, err := auth.GenerateAdminToken("admin")
+	adminToken, err := auth.GenerateAdminToken("admin", 0)
 	if err != nil {
 		t.Fatalf("GenerateAdminToken: %v", err)
 	}
@@ -59,17 +59,17 @@ func TestW4OpenAPICompliance(t *testing.T) {
 	}
 
 	t.Run("DailyAttendanceDTO keys always present/admin", func(t *testing.T) {
-		rec := serve(t, handlers.AdminMiddleware(app.AdminDailyAttendanceHandler), http.MethodGet, "/api/admin/attendance?date="+today, adminToken, "")
+		rec := serve(t, app.AdminMiddleware(app.AdminDailyAttendanceHandler), http.MethodGet, "/api/admin/attendance?date="+today, adminToken, "")
 		checkDaily(t, decodeData(t, rec, http.StatusOK))
 	})
 
 	t.Run("DailyAttendanceDTO keys always present/mobile", func(t *testing.T) {
-		rec := serve(t, handlers.AuthMiddleware(app.MobileTodayAttendanceHandler), http.MethodGet, "/api/mobile/attendance/today", parentToken, "")
+		rec := serve(t, app.AuthMiddleware(app.MobileTodayAttendanceHandler), http.MethodGet, "/api/mobile/attendance/today", parentToken, "")
 		checkDaily(t, decodeData(t, rec, http.StatusOK))
 	})
 
 	t.Run("MonthlyRecord check_time always present", func(t *testing.T) {
-		rec := serve(t, handlers.AuthMiddleware(app.MobileMonthlyAttendanceHandler), http.MethodGet, "/api/mobile/attendance/monthly", parentToken, "")
+		rec := serve(t, app.AuthMiddleware(app.MobileMonthlyAttendanceHandler), http.MethodGet, "/api/mobile/attendance/monthly", parentToken, "")
 		data := decodeData(t, rec, http.StatusOK)
 		schoolDay := now.Weekday() != time.Friday && now.Weekday() != time.Saturday
 		checked := 0
@@ -92,7 +92,7 @@ func TestW4OpenAPICompliance(t *testing.T) {
 
 	getStudent := func(t *testing.T, id int) map[string]any {
 		t.Helper()
-		rec := serve(t, handlers.AdminMiddleware(app.AdminStudentsHandler), http.MethodGet, "/api/admin/students", adminToken, "")
+		rec := serve(t, app.AdminMiddleware(app.AdminStudentsHandler), http.MethodGet, "/api/admin/students", adminToken, "")
 		for _, s := range decodeData(t, rec, http.StatusOK) {
 			if s["id"] == float64(id) {
 				return s
@@ -104,7 +104,7 @@ func TestW4OpenAPICompliance(t *testing.T) {
 	put := func(t *testing.T, body map[string]any) {
 		t.Helper()
 		b, _ := json.Marshal(body)
-		rec := serve(t, handlers.AdminMiddleware(app.AdminStudentsHandler), http.MethodPut, "/api/admin/students", adminToken, string(b))
+		rec := serve(t, app.AdminMiddleware(app.AdminStudentsHandler), http.MethodPut, "/api/admin/students", adminToken, string(b))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("PUT %s: HTTP %d %s", b, rec.Code, rec.Body.String())
 		}

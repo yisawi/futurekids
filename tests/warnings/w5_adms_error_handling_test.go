@@ -65,7 +65,7 @@ func TestW5ADMSErrorHandling(t *testing.T) {
 
 	db, _ := setupThrowawayDB(t, "w5")
 	seed := []string{
-		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W5 Parent', '+9647700000501', 'hash')`,
+		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W5 Parent', '+9647000000501', 'hash')`,
 		`INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES
 			(1, 'W5 S1', 'W5-P1', NULL), (2, 'W5 S2', 'W5-P2', NULL), (3, 'W5 S3', 'W5-P3', NULL),
 			(4, 'W5 S4', 'W5-P4', NULL), (5, 'W5 S5', 'W5-P5', 1)`,

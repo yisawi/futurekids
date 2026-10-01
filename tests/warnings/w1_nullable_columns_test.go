@@ -12,7 +12,7 @@ import (
 
 const (
 	w1DeviceSN    = "W1-NULL-DEVICE"
-	w1ParentPhone = "+9647700000301"
+	w1ParentPhone = "+9647000000301"
 )
 
 // TestW1NullableColumnsHandling verifies that NULLs in nullable columns are
@@ -37,17 +37,17 @@ func TestW1NullableColumnsHandling(t *testing.T) {
 		}
 	}
 
-	parentToken, err := auth.GenerateParentToken(1, w1ParentPhone)
+	parentToken, err := auth.GenerateParentToken(1, w1ParentPhone, 0)
 	if err != nil {
 		t.Fatalf("GenerateParentToken: %v", err)
 	}
-	adminToken, err := auth.GenerateAdminToken("admin")
+	adminToken, err := auth.GenerateAdminToken("admin", 0)
 	if err != nil {
 		t.Fatalf("GenerateAdminToken: %v", err)
 	}
 
 	t.Run("weekly_schedules.teacher_name/MobileScheduleHandler", func(t *testing.T) {
-		rec := serve(t, handlers.AuthMiddleware(app.MobileScheduleHandler), http.MethodGet, "/api/mobile/schedule", parentToken, "")
+		rec := serve(t, app.AuthMiddleware(app.MobileScheduleHandler), http.MethodGet, "/api/mobile/schedule", parentToken, "")
 		data := decodeData(t, rec, http.StatusOK)
 		if len(data) != 1 {
 			t.Fatalf("expected 1 schedule entry, got %d (row with NULL teacher_name was dropped)", len(data))
@@ -58,7 +58,7 @@ func TestW1NullableColumnsHandling(t *testing.T) {
 	})
 
 	t.Run("notifications.is_read+created_at/MobileNotificationsHandler", func(t *testing.T) {
-		rec := serve(t, handlers.AuthMiddleware(app.MobileNotificationsHandler), http.MethodGet, "/api/mobile/notifications", parentToken, "")
+		rec := serve(t, app.AuthMiddleware(app.MobileNotificationsHandler), http.MethodGet, "/api/mobile/notifications", parentToken, "")
 		data := decodeData(t, rec, http.StatusOK)
 		if len(data) != 1 {
 			t.Fatalf("expected 1 notification, got %d (row with NULL is_read/created_at was dropped)", len(data))
@@ -73,7 +73,7 @@ func TestW1NullableColumnsHandling(t *testing.T) {
 	})
 
 	t.Run("devices.location_name+is_active/AdminDevicesHandler", func(t *testing.T) {
-		rec := serve(t, handlers.AdminMiddleware(app.AdminDevicesHandler), http.MethodGet, "/api/admin/devices", adminToken, "")
+		rec := serve(t, app.AdminMiddleware(app.AdminDevicesHandler), http.MethodGet, "/api/admin/devices", adminToken, "")
 		data := decodeData(t, rec, http.StatusOK)
 		var device map[string]any
 		for _, d := range data {

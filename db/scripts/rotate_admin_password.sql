@@ -19,8 +19,10 @@ BEGIN
 END $$;
 
 -- Cost 10 matches golang.org/x/crypto/bcrypt DefaultCost used by the Go code.
+-- Raising session_version signs out every admin token issued before the rotation.
 UPDATE admins
-SET password_hash = crypt('NEW_PASSWORD_HERE', gen_salt('bf', 10))
+SET password_hash = crypt('NEW_PASSWORD_HERE', gen_salt('bf', 10)),
+    session_version = session_version + 1
 WHERE username = 'admin';
 
 COMMIT;

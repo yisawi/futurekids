@@ -111,8 +111,10 @@ func extractBearerToken(r *http.Request) (string, bool) {
 	return parts[1], true
 }
 
-// AuthMiddleware protects mobile routes by validating the JWT token and injecting parent_id into context.
-func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+// AuthMiddleware protects mobile routes: it validates the JWT, checks that its session version
+// is still the parent's current one (a PIN change signs out older tokens), and injects
+// parent_id into the context.
+func (app *AppEnv) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// 1. Extract Authorization header
 		token, ok := extractBearerToken(r)
@@ -148,14 +150,34 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			rejectMalformedClaims(w, r, "AuthMiddleware", err)
 			return
 		}
+		version, err := auth.SessionVersion(claims)
+		if err != nil {
+			rejectMalformedClaims(w, r, "AuthMiddleware", err)
+			return
+		}
+		var current int
+		switch err := app.DB.QueryRowContext(r.Context(), `SELECT session_version FROM parents WHERE id = $1`, parentID).Scan(&current); {
+		case err == sql.ErrNoRows:
+			slog.Warn("AuthMiddleware: token for a parent that no longer exists", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "parent_id", parentID)
+			respondError(w, http.StatusUnauthorized, "Invalid or expired token")
+			return
+		case err != nil:
+			respondInternalError(w, "Internal server error", "AuthMiddleware: session lookup failed", err, "parent_id", parentID)
+			return
+		case current != version:
+			slog.Warn("AuthMiddleware: token issued before the parent's PIN changed", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "parent_id", parentID, "token_version", version, "current_version", current)
+			respondError(w, http.StatusUnauthorized, "Invalid or expired token")
+			return
+		}
 		ctx := context.WithValue(r.Context(), ParentIDKey, parentID)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
 
-// AdminMiddleware permits only valid JWTs carrying the admin role.
-func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
+// AdminMiddleware permits only valid JWTs carrying the admin role whose session version is
+// still the admin's current one (rotating the password signs out older tokens).
+func (app *AppEnv) AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, ok := extractBearerToken(r)
 		if !ok {
@@ -178,6 +200,30 @@ func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if role != "admin" {
 			slog.Warn("AdminMiddleware: token without admin role", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "role", role)
 			respondError(w, http.StatusForbidden, "Forbidden")
+			return
+		}
+		username, err := auth.Username(claims)
+		if err != nil {
+			rejectMalformedClaims(w, r, "AdminMiddleware", err)
+			return
+		}
+		version, err := auth.SessionVersion(claims)
+		if err != nil {
+			rejectMalformedClaims(w, r, "AdminMiddleware", err)
+			return
+		}
+		var current int
+		switch err := app.DB.QueryRowContext(r.Context(), `SELECT session_version FROM admins WHERE username = $1`, username).Scan(&current); {
+		case err == sql.ErrNoRows:
+			slog.Warn("AdminMiddleware: token for an admin that no longer exists", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "username", username)
+			respondError(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		case err != nil:
+			respondInternalError(w, "Internal server error", "AdminMiddleware: session lookup failed", err, "username", username)
+			return
+		case current != version:
+			slog.Warn("AdminMiddleware: token issued before the admin password changed", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "username", username, "token_version", version, "current_version", current)
+			respondError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 

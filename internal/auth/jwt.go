@@ -24,25 +24,32 @@ const (
 	AdminTokenTTL  = 7 * 24 * time.Hour
 )
 
+// SessionVersionClaim carries the account's session_version when the token was issued. A token
+// is accepted only while it still equals the stored value, which rises when the PIN or admin
+// password changes, so every token issued before the change stops working.
+const SessionVersionClaim = "sv"
+
 // GenerateParentToken creates a JWT (valid for ParentTokenTTL, 30 days) embedding the parent's unique DB id.
-func GenerateParentToken(parentID int, phone string) (string, error) {
+func GenerateParentToken(parentID int, phone string, sessionVersion int) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"parent_id": parentID,
-		"phone":     phone,
-		"role":      "parent",
-		"exp":       time.Now().Add(ParentTokenTTL).Unix(),
-		"iat":       time.Now().Unix(),
+		"parent_id":         parentID,
+		"phone":             phone,
+		"role":              "parent",
+		SessionVersionClaim: sessionVersion,
+		"exp":               time.Now().Add(ParentTokenTTL).Unix(),
+		"iat":               time.Now().Unix(),
 	})
 	return token.SignedString(jwtSecret)
 }
 
 // GenerateAdminToken creates a JWT (valid for AdminTokenTTL, 7 days) for an administrator.
-func GenerateAdminToken(username string) (string, error) {
+func GenerateAdminToken(username string, sessionVersion int) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"username": username,
-		"role":     "admin",
-		"exp":      time.Now().Add(AdminTokenTTL).Unix(),
-		"iat":      time.Now().Unix(),
+		"username":          username,
+		"role":              "admin",
+		SessionVersionClaim: sessionVersion,
+		"exp":               time.Now().Add(AdminTokenTTL).Unix(),
+		"iat":               time.Now().Unix(),
 	})
 	return token.SignedString(jwtSecret)
 }
@@ -106,4 +113,37 @@ func ParentID(claims jwt.MapClaims) (int, error) {
 		return 0, &ClaimError{"parent_id", fmt.Sprintf("is %v, want a positive integer", f)}
 	}
 	return int(f), nil
+}
+
+// SessionVersion returns the sv claim as a non-negative integer. Tokens issued before session
+// versions existed have no sv claim and are rejected.
+func SessionVersion(claims jwt.MapClaims) (int, error) {
+	raw, ok := claims[SessionVersionClaim]
+	if !ok {
+		return 0, &ClaimError{SessionVersionClaim, "is missing"}
+	}
+	f, ok := raw.(float64)
+	if !ok {
+		return 0, &ClaimError{SessionVersionClaim, fmt.Sprintf("has type %T, want number", raw)}
+	}
+	if f != math.Trunc(f) || f < 0 || f > math.MaxInt32 {
+		return 0, &ClaimError{SessionVersionClaim, fmt.Sprintf("is %v, want a non-negative integer", f)}
+	}
+	return int(f), nil
+}
+
+// Username returns the username claim, which must be a non-empty string.
+func Username(claims jwt.MapClaims) (string, error) {
+	raw, ok := claims["username"]
+	if !ok {
+		return "", &ClaimError{"username", "is missing"}
+	}
+	u, ok := raw.(string)
+	if !ok {
+		return "", &ClaimError{"username", fmt.Sprintf("has type %T, want string", raw)}
+	}
+	if u == "" {
+		return "", &ClaimError{"username", "is empty"}
+	}
+	return u, nil
 }

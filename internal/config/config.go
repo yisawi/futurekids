@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"future_kids/internal/clientip"
 	"future_kids/internal/database"
 
 	"github.com/joho/godotenv"
@@ -35,6 +37,10 @@ type Config struct {
 	// (0 when unset, which is Railway's default).
 	OnRailway       bool
 	RailwayDraining time.Duration
+
+	// TrustedProxies (TRUSTED_PROXY_CIDRS) are the proxy addresses whose X-Real-IP and
+	// X-Forwarded-For headers are believed. Empty unless set, on Railway too.
+	TrustedProxies []netip.Prefix
 }
 
 // Defaults for the lifecycle settings. 25s of shutdown fits inside a 30s Railway draining period.
@@ -77,6 +83,11 @@ func LoadConfig() (*Config, error) {
 		}
 		railwayDraining = time.Duration(n) * time.Second
 	}
+	onRailway := getEnvFirstMatch("RAILWAY_ENVIRONMENT_NAME", "RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID") != ""
+	trusted, err := clientip.ParsePrefixes(os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid TRUSTED_PROXY_CIDRS: %w", err)
+	}
 	cronSchedule := strings.TrimSpace(os.Getenv("ABSENCE_CRON_SCHEDULE"))
 	if cronSchedule == "" {
 		cronSchedule = DefaultAbsenceCronSchedule
@@ -93,8 +104,9 @@ func LoadConfig() (*Config, error) {
 
 		ShutdownTimeout:     shutdownTimeout,
 		AbsenceCronSchedule: cronSchedule,
-		OnRailway:           getEnvFirstMatch("RAILWAY_ENVIRONMENT_NAME", "RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID") != "",
+		OnRailway:           onRailway,
 		RailwayDraining:     railwayDraining,
+		TrustedProxies:      trusted,
 	}, nil
 }
 

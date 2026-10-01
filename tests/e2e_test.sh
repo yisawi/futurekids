@@ -174,8 +174,8 @@ for sn in "DEVICE-E2E-001" "DEVICE-E2E-002"; do
 done
 
 # Create 10 students across 2 parents
-PARENT_A="+9647700000101"
-PARENT_B="+9647700000102"
+PARENT_A="+9647000000101"
+PARENT_B="+9647000000102"
 declare -a RFID_TAGS
 
 for i in {1..10}; do

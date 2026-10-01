@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	"future_kids/internal/auth"
 	"future_kids/internal/background"
+	"future_kids/internal/clientip"
 	"future_kids/internal/config"
 	cronpkg "future_kids/internal/cron"
 	"future_kids/internal/database"
@@ -84,10 +86,13 @@ func run() int {
 	// Passing the database connection and the notification client together
 	bg := &background.Group{}
 	appEnv := &handlers.AppEnv{
-		DB:           db,
-		FCMClient:    fcmClient,
-		LoginLimiter: ratelimit.NewLoginLimiter(5, 15*time.Minute),
-		Background:   bg,
+		DB:               db,
+		FCMClient:        fcmClient,
+		LoginLimiter:     ratelimit.NewLoginLimiter(5, handlers.LoginWindow),
+		AdminUserLimiter: ratelimit.NewLoginLimiter(handlers.AdminFailuresPerUserIP, handlers.LoginWindow),
+		AdminIPLimiter:   ratelimit.NewLoginLimiter(handlers.AdminFailuresPerIP, handlers.LoginWindow),
+		ClientIP:         clientip.Resolver{Trusted: cfg.TrustedProxies},
+		Background:       bg,
 	}
 
 	// 3. Setup the HTTP Server
@@ -111,31 +116,38 @@ func run() int {
 	mux.HandleFunc("POST /iclock/cdata", appEnv.ADMSHandler) // ← real handler: parses ATTLOG + saves to DB
 	mux.HandleFunc("GET /iclock/getrequest", handlers.ADMSGetRequestHandler)
 
-	// Hardware routes: ADMS (ZKTeco text format) and JSON push
+	// Hardware routes: ADMS (ZKTeco text format) and JSON push. They keep no method in the
+	// pattern so devices see exactly what they always have (RULES.md §5).
 	mux.HandleFunc("/api/attendance/push", handlers.HardwareLoggerMiddleware(appEnv.ADMSHandler)) // ADMS alias: ADMSHandler authenticates the device itself and never returns JSON errors
 	mux.HandleFunc("/api/attendance/push/json", handlers.HardwareLoggerMiddleware(appEnv.DeviceAuthMiddleware(appEnv.HardwareAttendancePushHandler)))
-	// The path for Flutter App without the middleware
-	mux.HandleFunc("/api/mobile/attendance/today", handlers.AuthMiddleware(appEnv.MobileTodayAttendanceHandler))
-	mux.HandleFunc("/api/mobile/attendance/monthly", handlers.AuthMiddleware(appEnv.MobileMonthlyAttendanceHandler))
-	mux.HandleFunc("/api/mobile/attendance/summary", handlers.AuthMiddleware(appEnv.MobileAttendanceSummaryHandler))
-	mux.HandleFunc("/api/mobile/students", handlers.AuthMiddleware(appEnv.MobileStudentsHandler))
-	mux.HandleFunc("/api/mobile/schedule", handlers.AuthMiddleware(appEnv.MobileScheduleHandler))
-	mux.HandleFunc("/api/mobile/notifications", handlers.AuthMiddleware(appEnv.MobileNotificationsHandler))
-	mux.HandleFunc("/api/mobile/banners", handlers.AuthMiddleware(appEnv.GetActiveBannersHandler))
 
-	// Public mobile login route; all other mobile routes require AuthMiddleware.
-	mux.HandleFunc("/api/mobile/login", appEnv.MobileLoginHandler)
-	mux.HandleFunc("/api/admin/login", appEnv.AdminLoginHandler)
-	mux.HandleFunc("/api/admin/dashboard", handlers.AdminMiddleware(appEnv.AdminDashboardHandler))
-	mux.HandleFunc("/api/admin/students", handlers.AdminMiddleware(appEnv.AdminStudentsHandler))
-	mux.HandleFunc("/api/admin/leaves", handlers.AdminMiddleware(appEnv.AdminCreateLeaveHandler))
-	mux.HandleFunc("/api/admin/attendance", handlers.AdminMiddleware(appEnv.AdminDailyAttendanceHandler))
-	mux.HandleFunc("/api/admin/export/excel", handlers.AdminMiddleware(appEnv.AdminExportExcelHandler))
-	mux.HandleFunc("/api/admin/settings", handlers.AdminMiddleware(appEnv.AdminSettingsHandler))
-	mux.HandleFunc("/api/admin/devices", handlers.AdminMiddleware(appEnv.AdminDevicesHandler))
+	// Parent app. Every route names its method, so a wrong method gets 405 before authentication.
+	mux.HandleFunc("POST /api/mobile/login", appEnv.MobileLoginHandler)
+	mux.HandleFunc("GET /api/mobile/settings", appEnv.MobileSettingsHandler)
+	mux.HandleFunc("GET /api/mobile/attendance/today", appEnv.AuthMiddleware(appEnv.MobileTodayAttendanceHandler))
+	mux.HandleFunc("GET /api/mobile/attendance/monthly", appEnv.AuthMiddleware(appEnv.MobileMonthlyAttendanceHandler))
+	mux.HandleFunc("GET /api/mobile/attendance/summary", appEnv.AuthMiddleware(appEnv.MobileAttendanceSummaryHandler))
+	mux.HandleFunc("GET /api/mobile/students", appEnv.AuthMiddleware(appEnv.MobileStudentsHandler))
+	mux.HandleFunc("GET /api/mobile/schedule", appEnv.AuthMiddleware(appEnv.MobileScheduleHandler))
+	mux.HandleFunc("GET /api/mobile/notifications", appEnv.AuthMiddleware(appEnv.MobileNotificationsHandler))
+	mux.HandleFunc("GET /api/mobile/banners", appEnv.AuthMiddleware(appEnv.GetActiveBannersHandler))
 
-	// مسار الموبايل العام (بدون AuthMiddleware)
-	mux.HandleFunc("/api/mobile/settings", appEnv.MobileSettingsHandler)
+	// Admin dashboard.
+	mux.HandleFunc("POST /api/admin/login", appEnv.AdminLoginHandler)
+	mux.HandleFunc("GET /api/admin/dashboard", appEnv.AdminMiddleware(appEnv.AdminDashboardHandler))
+	mux.HandleFunc("GET /api/admin/students", appEnv.AdminMiddleware(appEnv.AdminStudentsHandler))
+	mux.HandleFunc("POST /api/admin/students", appEnv.AdminMiddleware(appEnv.AdminStudentsHandler))
+	mux.HandleFunc("PUT /api/admin/students", appEnv.AdminMiddleware(appEnv.AdminStudentsHandler))
+	mux.HandleFunc("DELETE /api/admin/students", appEnv.AdminMiddleware(appEnv.AdminStudentsHandler))
+	mux.HandleFunc("GET /api/admin/devices", appEnv.AdminMiddleware(appEnv.AdminDevicesHandler))
+	mux.HandleFunc("POST /api/admin/devices", appEnv.AdminMiddleware(appEnv.AdminDevicesHandler))
+	mux.HandleFunc("PUT /api/admin/devices", appEnv.AdminMiddleware(appEnv.AdminDevicesHandler))
+	mux.HandleFunc("DELETE /api/admin/devices", appEnv.AdminMiddleware(appEnv.AdminDevicesHandler))
+	mux.HandleFunc("POST /api/admin/leaves", appEnv.AdminMiddleware(appEnv.AdminCreateLeaveHandler))
+	mux.HandleFunc("GET /api/admin/attendance", appEnv.AdminMiddleware(appEnv.AdminDailyAttendanceHandler))
+	mux.HandleFunc("GET /api/admin/export/excel", appEnv.AdminMiddleware(appEnv.AdminExportExcelHandler))
+	mux.HandleFunc("GET /api/admin/settings", appEnv.AdminMiddleware(appEnv.AdminSettingsHandler))
+	mux.HandleFunc("PUT /api/admin/settings", appEnv.AdminMiddleware(appEnv.AdminSettingsHandler))
 
 	if tz.FromTZDatabase {
 		slog.Info("Timezone loaded", "location", tz.Baghdad.String())
@@ -158,7 +170,16 @@ func run() int {
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 
-	srv := server.New(":"+cfg.Port, mux, server.DefaultTimeouts)
+	switch {
+	case len(cfg.TrustedProxies) > 0:
+		slog.Info("Trusting client-IP headers from proxies", "trusted_proxy_cidrs", fmt.Sprint(cfg.TrustedProxies))
+	case cfg.OnRailway:
+		slog.Warn("TRUSTED_PROXY_CIDRS is not set: every client appears as Railway's proxy address, so admin-login limits are shared by all clients; set it from the 'Observed client address' logs")
+	default:
+		slog.Info("TRUSTED_PROXY_CIDRS is not set: the client IP is the connection's remote address and forwarding headers are ignored")
+	}
+
+	srv := server.New(":"+cfg.Port, handlers.LogObservedClients(handlers.RouteErrors(mux), appEnv.ClientIP), server.DefaultTimeouts)
 	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		return fail("Server failed to start", "addr", srv.Addr, "error", err)

@@ -13,7 +13,7 @@ import (
 	"future_kids/internal/handlers"
 )
 
-const w2ParentPhone = "+9647700000302"
+const w2ParentPhone = "+9647000000302"
 
 // TestW2TimezoneConsistency verifies that "today" and notification timestamps
 // follow Asia/Baghdad regardless of the Postgres session timezone (audit warning W2).
@@ -62,7 +62,7 @@ func TestW2TimezoneConsistency(t *testing.T) {
 	pinnedDB := openDB(t, cfg.DBUrl)
 
 	auth.InitAuth("w2-test-secret")
-	parentToken, err := auth.GenerateParentToken(1, w2ParentPhone)
+	parentToken, err := auth.GenerateParentToken(1, w2ParentPhone, 0)
 	if err != nil {
 		t.Fatalf("GenerateParentToken: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestW2TimezoneConsistency(t *testing.T) {
 		app := &handlers.AppEnv{DB: openDB(t, withSessionZone(t, dsn, zone))}
 
 		t.Run("monthly uses Baghdad today/"+zone, func(t *testing.T) {
-			rec := serve(t, handlers.AuthMiddleware(app.MobileMonthlyAttendanceHandler), http.MethodGet, "/api/mobile/attendance/monthly", parentToken, "")
+			rec := serve(t, app.AuthMiddleware(app.MobileMonthlyAttendanceHandler), http.MethodGet, "/api/mobile/attendance/monthly", parentToken, "")
 			data := decodeData(t, rec, http.StatusOK)
 			var got []string
 			if len(data) == 1 {
@@ -155,7 +155,7 @@ func TestW2TimezoneConsistency(t *testing.T) {
 		})
 
 		t.Run("summary uses Baghdad today/"+zone, func(t *testing.T) {
-			rec := serve(t, handlers.AuthMiddleware(app.MobileAttendanceSummaryHandler), http.MethodGet, "/api/mobile/attendance/summary", parentToken, "")
+			rec := serve(t, app.AuthMiddleware(app.MobileAttendanceSummaryHandler), http.MethodGet, "/api/mobile/attendance/summary", parentToken, "")
 			data := decodeData(t, rec, http.StatusOK)
 			total := 0
 			if len(data) == 1 {
@@ -169,7 +169,7 @@ func TestW2TimezoneConsistency(t *testing.T) {
 		})
 
 		t.Run("notification created_at in Baghdad time/"+zone, func(t *testing.T) {
-			rec := serve(t, handlers.AuthMiddleware(app.MobileNotificationsHandler), http.MethodGet, "/api/mobile/notifications", parentToken, "")
+			rec := serve(t, app.AuthMiddleware(app.MobileNotificationsHandler), http.MethodGet, "/api/mobile/notifications", parentToken, "")
 			data := decodeData(t, rec, http.StatusOK)
 			if len(data) != 1 {
 				t.Fatalf("expected 1 notification, got %d", len(data))

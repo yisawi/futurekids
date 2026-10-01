@@ -68,7 +68,7 @@ func TestGroup2Cleanup(t *testing.T) {
 	root := filepath.Join("..", "..")
 	db, dsn := setupThrowawayDB(t, "g2")
 	auth.InitAuth("g2-test-secret")
-	adminToken, _ := auth.GenerateAdminToken("admin")
+	adminToken, _ := auth.GenerateAdminToken("admin", 0)
 	app := &handlers.AppEnv{DB: db}
 
 	exec_ := func(t *testing.T, qs ...string) {
@@ -154,7 +154,7 @@ func TestGroup2Cleanup(t *testing.T) {
 		}
 
 		existing, _ := bcrypt.GenerateFromPassword([]byte("2468"), bcrypt.MinCost)
-		exec_(t, `INSERT INTO parents (full_name, phone_number, pin_code) VALUES ('Plain A', '+9647700000701', '1234'), ('Plain B', '+9647700000702', '98765'), ('Hashed', '+9647700000703', '`+string(existing)+`')`)
+		exec_(t, `INSERT INTO parents (full_name, phone_number, pin_code) VALUES ('Plain A', '+9647000000701', '1234'), ('Plain B', '+9647000000702', '98765'), ('Hashed', '+9647000000703', '`+string(existing)+`')`)
 		bin := buildBin(t, "cmd/migrate-pins")
 		run := func() string {
 			cmd := exec.Command(bin)
@@ -167,19 +167,19 @@ func TestGroup2Cleanup(t *testing.T) {
 		}
 		first := run()
 		pins := map[string]string{}
-		rows, _ := db.Query(`SELECT phone_number, pin_code FROM parents WHERE phone_number LIKE '+96477000007%'`)
+		rows, _ := db.Query(`SELECT phone_number, pin_code FROM parents WHERE phone_number LIKE '+96470000007%'`)
 		for rows.Next() {
 			var phone, pin string
 			rows.Scan(&phone, &pin)
 			pins[phone] = pin
 		}
 		rows.Close()
-		for phone, plain := range map[string]string{"+9647700000701": "1234", "+9647700000702": "98765", "+9647700000703": "2468"} {
+		for phone, plain := range map[string]string{"+9647000000701": "1234", "+9647000000702": "98765", "+9647000000703": "2468"} {
 			if bcrypt.CompareHashAndPassword([]byte(pins[phone]), []byte(plain)) != nil {
 				t.Errorf("%s: stored PIN no longer verifies against %q", phone, plain)
 			}
 		}
-		if pins["+9647700000703"] != string(existing) {
+		if pins["+9647000000703"] != string(existing) {
 			t.Error("an already-hashed PIN was rehashed")
 		}
 		if !strings.Contains(first, "Successfully migrated: 2") {
@@ -192,7 +192,7 @@ func TestGroup2Cleanup(t *testing.T) {
 
 	exec_(t,
 		`INSERT INTO devices (serial_number, location_name, is_active) VALUES ('G2-DEV', 'Gate', true)`,
-		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (901, 'G2 Parent', '+9647700000901', 'h')`,
+		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (901, 'G2 Parent', '+9647000000901', 'h')`,
 		`INSERT INTO students (id, full_name, rfid_tag, parent_id, grade, section) VALUES (901, 'G2 Kid', 'G2-TAG-1', 901, 'G1', 'A'), (902, 'G2 Orphan', 'G2-TAG-2', NULL, NULL, NULL)`,
 	)
 
@@ -297,7 +297,7 @@ func TestGroup2Cleanup(t *testing.T) {
 	})
 
 	t.Run("N9/school name from settings, parentless students included, check-out exported", func(t *testing.T) {
-		rec := call(t, handlers.AdminMiddleware(app.AdminStudentsHandler), "GET", "/api/admin/students", adminToken, "")
+		rec := call(t, app.AdminMiddleware(app.AdminStudentsHandler), "GET", "/api/admin/students", adminToken, "")
 		var list struct {
 			Data []map[string]any `json:"data"`
 		}
@@ -314,7 +314,7 @@ func TestGroup2Cleanup(t *testing.T) {
 
 		excel := func(t *testing.T) (*excelize.File, int) {
 			t.Helper()
-			rec := call(t, handlers.AdminMiddleware(app.AdminExportExcelHandler), "GET", "/api/admin/export/excel?date=2026-04-01", adminToken, "")
+			rec := call(t, app.AdminMiddleware(app.AdminExportExcelHandler), "GET", "/api/admin/export/excel?date=2026-04-01", adminToken, "")
 			if rec.Code != http.StatusOK {
 				return nil, rec.Code
 			}
@@ -348,7 +348,7 @@ func TestGroup2Cleanup(t *testing.T) {
 			t.Errorf("orphan row: parent=%q in=%q out=%q, want '-', 07:15 AM, 12:05 PM", parent, in, out)
 		}
 
-		call(t, handlers.AdminMiddleware(app.AdminSettingsHandler), "PUT", "/api/admin/settings", adminToken, `{"key":"school_name","value":"مدرسة المستقبل"}`)
+		call(t, app.AdminMiddleware(app.AdminSettingsHandler), "PUT", "/api/admin/settings", adminToken, `{"key":"school_name","value":"مدرسة المستقبل"}`)
 		f, _ = excel(t)
 		if a2, _ := f.GetCellValue("Sheet1", "A2"); a2 != "مدرسة المستقبل" {
 			t.Errorf("after editing school_name, A2 = %q", a2)
@@ -363,9 +363,9 @@ func TestGroup2Cleanup(t *testing.T) {
 		}
 		exec_(t, `INSERT INTO settings (setting_key, setting_value) VALUES ('school_name', 'مدرسة الرحمن الابتدائية الأهلية')`)
 
-		parentToken, _ := auth.GenerateParentToken(901, "+9647700000901")
+		parentToken, _ := auth.GenerateParentToken(901, "+9647000000901", 0)
 		exec_(t, `INSERT INTO attendance_logs (student_id, device_sn, check_time) VALUES (901, 'G2-DEV', '2026-04-01 07:20:00'), (901, 'G2-DEV', '2026-04-01 12:10:00')`)
-		rec = call(t, handlers.AuthMiddleware(app.MobileMonthlyAttendanceHandler), "GET", "/api/mobile/attendance/monthly?month=2026-04", parentToken, "")
+		rec = call(t, app.AuthMiddleware(app.MobileMonthlyAttendanceHandler), "GET", "/api/mobile/attendance/monthly?month=2026-04", parentToken, "")
 		var monthly struct {
 			Data []struct {
 				Records []map[string]any `json:"records"`
@@ -389,8 +389,8 @@ func TestGroup2Cleanup(t *testing.T) {
 	})
 
 	t.Run("N11/malformed date and month parameters return 400", func(t *testing.T) {
-		parentToken, _ := auth.GenerateParentToken(901, "+9647700000901")
-		admin, parent := handlers.AdminMiddleware, handlers.AuthMiddleware
+		parentToken, _ := auth.GenerateParentToken(901, "+9647000000901", 0)
+		admin, parent := app.AdminMiddleware, app.AuthMiddleware
 		cases := []struct {
 			name, method, target, token, body, msg string
 			h                                      http.HandlerFunc
@@ -437,7 +437,7 @@ func TestGroup2Cleanup(t *testing.T) {
 		if auth.AdminTokenTTL != 7*24*time.Hour || auth.ParentTokenTTL != 30*24*time.Hour {
 			t.Errorf("TTLs admin=%v parent=%v", auth.AdminTokenTTL, auth.ParentTokenTTL)
 		}
-		parentToken, _ := auth.GenerateParentToken(1, "x")
+		parentToken, _ := auth.GenerateParentToken(1, "x", 0)
 		for name, c := range map[string]struct {
 			token string
 			ttl   time.Duration
@@ -476,7 +476,7 @@ func TestGroup2Cleanup(t *testing.T) {
 		if strings.Contains(rec.Body.String(), "secret-value") {
 			t.Error("internal setting leaked through the public endpoint")
 		}
-		rec = call(t, handlers.AdminMiddleware(app.AdminSettingsHandler), "GET", "/api/admin/settings", adminToken, "")
+		rec = call(t, app.AdminMiddleware(app.AdminSettingsHandler), "GET", "/api/admin/settings", adminToken, "")
 		if !strings.Contains(rec.Body.String(), "internal_api_key") {
 			t.Error("admin settings endpoint should still list every key")
 		}

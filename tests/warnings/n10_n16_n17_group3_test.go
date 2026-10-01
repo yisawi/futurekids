@@ -40,7 +40,7 @@ import (
 func TestGroup3N10WeekdayOrder(t *testing.T) {
 	db, _ := setupThrowawayDB(t, "g3n10")
 	seed := []string{
-		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1001, 'G3 Parent', '+9647700001001', 'h')`,
+		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1001, 'G3 Parent', '+9647000001001', 'h')`,
 		`INSERT INTO students (id, full_name, rfid_tag, parent_id, grade, section) VALUES
 			(1001, 'Arabic Kid', 'G3-1', 1001, 'G1', 'A'), (1002, 'English Kid', 'G3-2', 1001, 'G2', 'B')`,
 		// Scrambled insertion order on purpose.
@@ -70,13 +70,13 @@ func TestGroup3N10WeekdayOrder(t *testing.T) {
 		}
 	}
 	auth.InitAuth("g3-test-secret")
-	token, _ := auth.GenerateParentToken(1001, "+9647700001001")
+	token, _ := auth.GenerateParentToken(1001, "+9647000001001", 0)
 	app := &handlers.AppEnv{DB: db}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mobile/schedule", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-	handlers.AuthMiddleware(app.MobileScheduleHandler)(rec, req)
+	app.AuthMiddleware(app.MobileScheduleHandler)(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body.String())
 	}
@@ -196,7 +196,7 @@ func TestGroup3N17IdempotentMigrations(t *testing.T) {
 				t.Fatalf("roll back %s: %v", filepath.Base(f), err)
 			}
 		}
-		if _, err := db.Exec(`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'Drift Parent', '+9647700001101', 'h');
+		if _, err := db.Exec(`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'Drift Parent', '+9647000001101', 'h');
 			INSERT INTO students (full_name, rfid_tag, parent_id) VALUES ('Drift Kid', 'D-1', 1);
 			ALTER TABLE students ADD COLUMN parent_name VARCHAR(255)`); err != nil {
 			t.Fatal(err)
@@ -205,7 +205,7 @@ func TestGroup3N17IdempotentMigrations(t *testing.T) {
 			t.Fatalf("000009 down on a database that already has students.parent_name: %v", err)
 		}
 		var name, phone string
-		if err := db.QueryRow(`SELECT parent_name, parent_phone FROM students WHERE rfid_tag = 'D-1'`).Scan(&name, &phone); err != nil || name != "Drift Parent" || phone != "+9647700001101" {
+		if err := db.QueryRow(`SELECT parent_name, parent_phone FROM students WHERE rfid_tag = 'D-1'`).Scan(&name, &phone); err != nil || name != "Drift Parent" || phone != "+9647000001101" {
 			t.Errorf("parent data not copied back: name=%q phone=%q err=%v", name, phone, err)
 		}
 	})
@@ -484,7 +484,7 @@ func TestGroup3N16GracefulShutdown(t *testing.T) {
 	t.Run("in-flight ADMS batch and its notification finish; new connections are refused", func(t *testing.T) {
 		db, dsn := setupThrowawayDB(t, "g3n16b")
 		if _, err := db.Exec(`
-			INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'P', '+9647700001201', 'h');
+			INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'P', '+9647000001201', 'h');
 			INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (1, 'Kid', 'G3-SLOW', 1);
 			INSERT INTO devices (serial_number, location_name, is_active) VALUES ('G3-DEV', 'Gate', true);
 			CREATE FUNCTION g3_slow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(0.05); RETURN NEW; END $$;
@@ -556,7 +556,7 @@ func TestGroup3N16GracefulShutdown(t *testing.T) {
 	t.Run("running absence job finishes before the cron phase completes", func(t *testing.T) {
 		db, dsn := setupThrowawayDB(t, "g3n16c")
 		if _, err := db.Exec(`
-			INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'P', '+9647700001202', 'h');
+			INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'P', '+9647000001202', 'h');
 			INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (1, 'Absent Kid', 'G3-ABS', 1);
 			CREATE FUNCTION g3_slow_note() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.5); RETURN NEW; END $$;
 			CREATE TRIGGER g3_slow_note BEFORE INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION g3_slow_note();`); err != nil {

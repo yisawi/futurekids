@@ -161,7 +161,7 @@ func TestW11TestIsolation(t *testing.T) {
 				mu.Lock()
 				names = append(names, dbName(t, dsn))
 				mu.Unlock()
-				phone := fmt.Sprintf("+96477000011%02d", i)
+				phone := fmt.Sprintf("+96470000011%02d", i)
 				if _, err := db.Exec(`INSERT INTO parents (full_name, phone_number, pin_code) VALUES ('W11', $1, 'hash')`, phone); err != nil {
 					t.Fatalf("insert: %v", err)
 				}

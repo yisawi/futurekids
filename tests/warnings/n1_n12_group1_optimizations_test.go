@@ -201,7 +201,7 @@ func TestGroup1Optimizations(t *testing.T) {
 
 	t.Run("N6/notifications unchanged: first check-in and check-out only", func(t *testing.T) {
 		for _, q := range []string{
-			`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (601, 'PA', '+9647700000601', 'h'), (602, 'PB', '+9647700000602', 'h'), (603, 'PC', '+9647700000603', 'h'), (604, 'PD', '+9647700000604', 'h')`,
+			`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (601, 'PA', '+9647000000601', 'h'), (602, 'PB', '+9647000000602', 'h'), (603, 'PC', '+9647000000603', 'h'), (604, 'PD', '+9647000000604', 'h')`,
 			`INSERT INTO students (full_name, rfid_tag, parent_id) VALUES ('Kid A', 'PAR-A', 601), ('Kid B', 'PAR-B', 602), ('Kid C', 'PAR-C', 603), ('Kid D', 'PAR-D', 604)`,
 		} {
 			if _, err := db.Exec(q); err != nil {
@@ -216,7 +216,7 @@ func TestGroup1Optimizations(t *testing.T) {
 			"PAR-C\t2026-03-05 07:20:00", "PAR-C\t2026-03-05 07:10:00",
 			"PAR-D\t2026-03-05 07:25:00",
 		}, "\t1\t1\n")+"\t1\t1\n")
-		got := notes(t, "+9647700000601", "+9647700000602", "+9647700000603", "+9647700000604")
+		got := notes(t, "+9647000000601", "+9647000000602", "+9647000000603", "+9647000000604")
 		sort.Strings(got)
 		want := []string{
 			"تم تسجيل خروج الطالب Kid A الساعة 12:05",
@@ -292,11 +292,11 @@ func TestGroup1Optimizations(t *testing.T) {
 		}
 
 		auth.InitAuth("g1-test-secret")
-		adminToken, _ := auth.GenerateAdminToken("admin")
+		adminToken, _ := auth.GenerateAdminToken("admin", 0)
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/admin/dashboard", nil)
 		req.Header.Set("Authorization", "Bearer "+adminToken)
-		handlers.AdminMiddleware(app.AdminDashboardHandler)(rec, req)
+		app.AdminMiddleware(app.AdminDashboardHandler)(rec, req)
 		var dash map[string]any
 		json.Unmarshal(rec.Body.Bytes(), &dash)
 		if rec.Code != http.StatusOK || dash["date"] != tz.Today() {
@@ -306,9 +306,9 @@ func TestGroup1Optimizations(t *testing.T) {
 
 	t.Run("N12/notifications are paginated 100 at a time with no gaps", func(t *testing.T) {
 		for _, q := range []string{
-			`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1201, 'Busy', '+9647700001201', 'h'), (1202, 'Other', '+9647700001202', 'h'), (1203, 'Quiet', '+9647700001203', 'h')`,
-			`INSERT INTO notifications (parent_phone, title, body, created_at) SELECT '+9647700001201', 't', 'busy ' || i, TIMESTAMP '2026-01-01' + i * INTERVAL '1 minute' FROM generate_series(1, 150) AS i`,
-			`INSERT INTO notifications (parent_phone, title, body) SELECT '+9647700001202', 't', 'other ' || i FROM generate_series(1, 5) AS i`,
+			`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1201, 'Busy', '+9647000001201', 'h'), (1202, 'Other', '+9647000001202', 'h'), (1203, 'Quiet', '+9647000001203', 'h')`,
+			`INSERT INTO notifications (parent_phone, title, body, created_at) SELECT '+9647000001201', 't', 'busy ' || i, TIMESTAMP '2026-01-01' + i * INTERVAL '1 minute' FROM generate_series(1, 150) AS i`,
+			`INSERT INTO notifications (parent_phone, title, body) SELECT '+9647000001202', 't', 'other ' || i FROM generate_series(1, 5) AS i`,
 		} {
 			if _, err := db.Exec(q); err != nil {
 				t.Fatalf("seed: %v", err)
@@ -317,11 +317,11 @@ func TestGroup1Optimizations(t *testing.T) {
 		auth.InitAuth("g1-test-secret")
 		get := func(t *testing.T, parentID int, query string) (int, map[string]any) {
 			t.Helper()
-			token, _ := auth.GenerateParentToken(parentID, "x")
+			token, _ := auth.GenerateParentToken(parentID, "x", 0)
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/api/mobile/notifications"+query, nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			handlers.AuthMiddleware(app.MobileNotificationsHandler)(rec, req)
+			app.AuthMiddleware(app.MobileNotificationsHandler)(rec, req)
 			var body map[string]any
 			json.Unmarshal(rec.Body.Bytes(), &body)
 			return rec.Code, body
@@ -363,7 +363,7 @@ func TestGroup1Optimizations(t *testing.T) {
 			}
 			seen[id] = true
 		}
-		if n := countRows(t, db, `SELECT COUNT(*) FROM notifications WHERE parent_phone = '+9647700001201'`); len(seen) != n {
+		if n := countRows(t, db, `SELECT COUNT(*) FROM notifications WHERE parent_phone = '+9647000001201'`); len(seen) != n {
 			t.Errorf("pages returned %d distinct notifications, parent has %d", len(seen), n)
 		}
 		if _, other := get(t, 1202, ""); len(ids(other)) != 5 {

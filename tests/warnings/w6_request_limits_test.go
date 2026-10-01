@@ -55,7 +55,7 @@ func TestW6RequestLimits(t *testing.T) {
 	db, _ := setupThrowawayDB(t, "w6")
 	pinHash, _ := bcrypt.GenerateFromPassword([]byte("4321"), bcrypt.MinCost)
 	seed := []string{
-		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W6 Parent', '+9647700000601', '` + string(pinHash) + `')`,
+		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W6 Parent', '+9647000000601', '` + string(pinHash) + `')`,
 		`INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (1, 'W6 Student', 'W6-RFID-1', 1)`,
 		`INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (2, 'W6 Orphan', 'W6-RFID-2', NULL)`,
 		`INSERT INTO devices (serial_number, location_name, is_active) VALUES ('W6-DEVICE', 'Gate', true)`,
@@ -68,18 +68,18 @@ func TestW6RequestLimits(t *testing.T) {
 	}
 
 	auth.InitAuth("w6-test-secret")
-	adminToken, _ := auth.GenerateAdminToken("admin")
-	app := &handlers.AppEnv{DB: db, LoginLimiter: ratelimit.NewLoginLimiter(1000, time.Minute)}
-	admin := handlers.AdminMiddleware
+	adminToken, _ := auth.GenerateAdminToken("admin", 0)
+	app := &handlers.AppEnv{DB: db, LoginLimiter: ratelimit.NewLoginLimiter(1000, time.Minute), AdminUserLimiter: ratelimit.NewLoginLimiter(1000, time.Minute), AdminIPLimiter: ratelimit.NewLoginLimiter(1000, time.Minute)}
+	admin := app.AdminMiddleware
 
 	endpoints := []w6Endpoint{
 		{"admin login", "POST", "/api/admin/login", func(int) string { return `{"username":"admin","password":"admin123"}` }, "Invalid request", app.AdminLoginHandler},
-		{"mobile login", "POST", "/api/mobile/login", func(int) string { return `{"phone":"+9647700000601","pin":"4321"}` }, "Invalid request", app.MobileLoginHandler},
+		{"mobile login", "POST", "/api/mobile/login", func(int) string { return `{"phone":"+9647000000601","pin":"4321"}` }, "Invalid request", app.MobileLoginHandler},
 		{"student create", "POST", "/api/admin/students", func(v int) string {
-			return fmt.Sprintf(`{"name":"K%d","parent_name":"W6 Parent","parent_phone":"+9647700000601","rfid_tag":"W6-NEW-%d"}`, v, v)
+			return fmt.Sprintf(`{"name":"K%d","parent_name":"W6 Parent","parent_phone":"+9647000000601","rfid_tag":"W6-NEW-%d"}`, v, v)
 		}, "Invalid request body", admin(app.AdminStudentsHandler)},
 		{"student update", "PUT", "/api/admin/students", func(int) string {
-			return `{"id":1,"name":"W6 Student","parent_name":"W6 Parent","parent_phone":"+9647700000601"}`
+			return `{"id":1,"name":"W6 Student","parent_name":"W6 Parent","parent_phone":"+9647000000601"}`
 		}, "Invalid request body or missing ID", admin(app.AdminStudentsHandler)},
 		{"leave create", "POST", "/api/admin/leaves", func(int) string { return `{"student_id":1,"leave_date":"2026-09-24"}` }, "Invalid request payload", admin(app.AdminCreateLeaveHandler)},
 		{"setting save", "PUT", "/api/admin/settings", func(int) string { return `{"key":"w6","value":"v"}` }, "Invalid payload", admin(app.AdminSettingsHandler)},

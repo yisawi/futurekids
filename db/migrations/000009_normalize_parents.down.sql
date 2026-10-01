@@ -6,6 +6,7 @@
 --   internal/handlers/mobile.go — MobileLoginHandler reads parents; every parent endpoint
 --     filters students by parent_id; MobileNotificationsHandler joins parents.
 --   internal/handlers/hardware.go — notifyPunch joins parents.
+--   internal/handlers/middleware.go — AuthMiddleware reads parents.session_version on every parent request.
 --   internal/cron/absent_job.go — ProcessDailyAbsences joins parents.
 --   cmd/migrate-pins/main.go — reads and updates parents.
 -- Data loss: parents with no student and parents.created_at are lost; the rest is copied back to

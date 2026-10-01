@@ -54,7 +54,10 @@ func (c *w10Conn) CheckNamedValue(*driver.NamedValue) error {
 	return nil
 }
 
-func (c *w10Conn) QueryContext(_ context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
+func (c *w10Conn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if strings.HasPrefix(query, "SELECT session_version FROM") {
+		return &w10Rows{cols: []string{"session_version"}, rows: [][]driver.Value{{int64(0)}}}, nil
+	}
 	switch c.mode {
 	case "query":
 		return nil, errW10Query
@@ -165,7 +168,7 @@ func (ep w10Endpoint) failStatus() int {
 }
 
 func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
-	admin, parent := handlers.AdminMiddleware, handlers.AuthMiddleware
+	admin, parent := app.AdminMiddleware, app.AuthMiddleware
 	return []w10Endpoint{
 		{"admin students list", "AdminStudentsHandler:", "GET", "/api/admin/students", "", admin(app.AdminStudentsHandler), true},
 		{"admin daily attendance", "AdminDailyAttendanceHandler:", "GET", "/api/admin/attendance?date=2026-09-24", "", admin(app.AdminDailyAttendanceHandler), true},
@@ -183,9 +186,9 @@ func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 
 		{"admin dashboard", "AdminDashboardHandler:", "GET", "/api/admin/dashboard", "", admin(app.AdminDashboardHandler), false},
 		{"admin login", "AdminLoginHandler:", "POST", "/api/admin/login", `{"username":"admin","password":"x"}`, app.AdminLoginHandler, false},
-		{"mobile login", "MobileLoginHandler:", "POST", "/api/mobile/login", `{"phone":"+9647700000501","pin":"1234"}`, app.MobileLoginHandler, false},
-		{"admin student create", "AdminStudentsHandler:", "POST", "/api/admin/students", `{"name":"K","parent_name":"P","parent_phone":"+9647700000502","parent_pin":"1234","rfid_tag":"T"}`, admin(app.AdminStudentsHandler), false},
-		{"admin student update", "AdminStudentsHandler:", "PUT", "/api/admin/students", `{"id":1,"name":"K","parent_name":"P","parent_phone":"+9647700000502"}`, admin(app.AdminStudentsHandler), false},
+		{"mobile login", "MobileLoginHandler:", "POST", "/api/mobile/login", `{"phone":"+9647000000501","pin":"1234"}`, app.MobileLoginHandler, false},
+		{"admin student create", "AdminStudentsHandler:", "POST", "/api/admin/students", `{"name":"K","parent_name":"P","parent_phone":"+9647000000502","parent_pin":"1234","rfid_tag":"T"}`, admin(app.AdminStudentsHandler), false},
+		{"admin student update", "AdminStudentsHandler:", "PUT", "/api/admin/students", `{"id":1,"name":"K","parent_name":"P","parent_phone":"+9647000000502"}`, admin(app.AdminStudentsHandler), false},
 		{"admin student delete", "AdminStudentsHandler:", "DELETE", "/api/admin/students?id=1", "", admin(app.AdminStudentsHandler), false},
 		{"admin leave create", "AdminCreateLeaveHandler:", "POST", "/api/admin/leaves", `{"student_id":1,"leave_date":"2026-09-24"}`, admin(app.AdminCreateLeaveHandler), false},
 		{"admin setting save", "AdminSettingsHandler:", "PUT", "/api/admin/settings", `{"key":"k","value":"v"}`, admin(app.AdminSettingsHandler), false},
@@ -207,8 +210,8 @@ func TestW10ErrorHandling(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	auth.InitAuth("w10-test-secret")
-	parentToken, _ := auth.GenerateParentToken(1, "+9647700000500")
-	adminToken, _ := auth.GenerateAdminToken("admin")
+	parentToken, _ := auth.GenerateParentToken(1, "+9647000000500", 0)
+	adminToken, _ := auth.GenerateAdminToken("admin", 0)
 
 	appFor := func(mode string) *handlers.AppEnv {
 		db, err := sql.Open("w10fake", mode)
@@ -216,7 +219,7 @@ func TestW10ErrorHandling(t *testing.T) {
 			t.Fatalf("open fake db: %v", err)
 		}
 		t.Cleanup(func() { db.Close() })
-		return &handlers.AppEnv{DB: db, LoginLimiter: ratelimit.NewLoginLimiter(1000, time.Minute)}
+		return &handlers.AppEnv{DB: db, LoginLimiter: ratelimit.NewLoginLimiter(1000, time.Minute), AdminUserLimiter: ratelimit.NewLoginLimiter(1000, time.Minute), AdminIPLimiter: ratelimit.NewLoginLimiter(1000, time.Minute)}
 	}
 
 	call := func(ep w10Endpoint) (*orderRecorder, []w10Log) {
@@ -325,12 +328,12 @@ func TestW10ErrorHandling(t *testing.T) {
 			h                http.HandlerFunc
 			want             int
 		}{
-			{"parent route without token", "AuthMiddleware:", "", handlers.AuthMiddleware(app.MobileStudentsHandler), 401},
-			{"parent route with bad token", "AuthMiddleware:", "Bearer not.a.token", handlers.AuthMiddleware(app.MobileStudentsHandler), 401},
-			{"parent route with admin token", "AuthMiddleware:", "Bearer " + adminToken, handlers.AuthMiddleware(app.MobileStudentsHandler), 403},
-			{"admin route without token", "AdminMiddleware:", "", handlers.AdminMiddleware(app.AdminStudentsHandler), 401},
-			{"admin route with bad token", "AdminMiddleware:", "Bearer not.a.token", handlers.AdminMiddleware(app.AdminStudentsHandler), 401},
-			{"admin route with parent token", "AdminMiddleware:", "Bearer " + parentToken, handlers.AdminMiddleware(app.AdminStudentsHandler), 403},
+			{"parent route without token", "AuthMiddleware:", "", app.AuthMiddleware(app.MobileStudentsHandler), 401},
+			{"parent route with bad token", "AuthMiddleware:", "Bearer not.a.token", app.AuthMiddleware(app.MobileStudentsHandler), 401},
+			{"parent route with admin token", "AuthMiddleware:", "Bearer " + adminToken, app.AuthMiddleware(app.MobileStudentsHandler), 403},
+			{"admin route without token", "AdminMiddleware:", "", app.AdminMiddleware(app.AdminStudentsHandler), 401},
+			{"admin route with bad token", "AdminMiddleware:", "Bearer not.a.token", app.AdminMiddleware(app.AdminStudentsHandler), 401},
+			{"admin route with parent token", "AdminMiddleware:", "Bearer " + parentToken, app.AdminMiddleware(app.AdminStudentsHandler), 403},
 			{"device route without SN", "DeviceAuthMiddleware:", "", app.DeviceAuthMiddleware(app.HardwareAttendancePushHandler), 401},
 		}
 		for _, c := range cases {

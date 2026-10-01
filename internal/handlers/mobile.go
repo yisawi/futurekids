@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"future_kids/internal/auth"
+	"future_kids/internal/phone"
 	"future_kids/internal/ratelimit"
 	"future_kids/internal/tz"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -585,11 +585,19 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
+	// A number that is not an Iraqi mobile number gets the same answer as an unregistered one.
+	canonical, valid := phone.Normalize(req.Phone)
+	if !valid {
+		burnBcrypt(req.Pin)
+		respondError(w, http.StatusUnauthorized, "Invalid phone number or PIN")
+		return
+	}
+	req.Phone = canonical
 	// Unknown phone numbers are limited too, so a 429 never reveals which numbers are registered.
 	allowed, retryAfter := app.LoginLimiter.Allow(req.Phone)
 	if !allowed {
-		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retryAfter.Seconds()))))
-		respondError(w, http.StatusTooManyRequests, "Too many failed login attempts. Try again later.")
+		logRateLimited("MobileLoginHandler", r, "phone", req.Phone)
+		respondTooManyAttempts(w, retryAfter)
 		return
 	}
 	outcome := ratelimit.Released
@@ -598,14 +606,14 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var parentID int
+	var parentID, sessionVersion int
 	var parentName, dbPin string
 
-	// البحث حصراً في جدول الآباء
-	query := `SELECT id, full_name, pin_code FROM parents WHERE phone_number = $1`
-	err := app.DB.QueryRowContext(ctx, query, req.Phone).Scan(&parentID, &parentName, &dbPin)
+	query := `SELECT id, full_name, pin_code, session_version FROM parents WHERE phone_number = $1`
+	err := app.DB.QueryRowContext(ctx, query, req.Phone).Scan(&parentID, &parentName, &dbPin, &sessionVersion)
 
 	if err == sql.ErrNoRows {
+		burnBcrypt(req.Pin)
 		outcome = ratelimit.Failed
 		respondError(w, http.StatusUnauthorized, "Invalid phone number or PIN")
 		return
@@ -622,7 +630,7 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome = ratelimit.Succeeded
 
-	tokenString, err := auth.GenerateParentToken(parentID, req.Phone)
+	tokenString, err := auth.GenerateParentToken(parentID, req.Phone, sessionVersion)
 	if err != nil {
 		respondInternalError(w, "Internal server error", "MobileLoginHandler: token generation failed", err, "parent_id", parentID)
 		return

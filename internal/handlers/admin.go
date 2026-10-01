@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"future_kids/internal/auth"
+	"future_kids/internal/phone"
+	"future_kids/internal/ratelimit"
 	"future_kids/internal/tz"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -69,29 +71,54 @@ func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// جلب الهاش المخزن في قاعدة البيانات
-	var storedHash string
-	query := `SELECT password_hash FROM admins WHERE username = $1`
-	err := app.DB.QueryRowContext(r.Context(), query, req.Username).Scan(&storedHash)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			respondError(w, http.StatusUnauthorized, "بيانات الدخول غير صحيحة")
+	if app.AdminUserLimiter == nil || app.AdminIPLimiter == nil {
+		slog.Error("AdminLoginHandler: admin login limiters are not configured")
+		respondError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+	ip, identified := app.ClientIP.Resolve(r)
+	userKey := limiterKey("user:", req.Username) + "|" + ip
+	if ok, retryAfter := app.AdminUserLimiter.Allow(userKey); !ok {
+		logRateLimited("AdminLoginHandler", r, "username", logValue(req.Username), "ip", ip, "limit", "username+ip")
+		respondTooManyAttempts(w, retryAfter)
+		return
+	}
+	userOutcome := ratelimit.Released
+	defer func() { app.AdminUserLimiter.Finish(userKey, userOutcome) }()
+	ipOutcome := ratelimit.Released
+	if identified {
+		ipKey := "ip:" + ip
+		if ok, retryAfter := app.AdminIPLimiter.Allow(ipKey); !ok {
+			logRateLimited("AdminLoginHandler", r, "username", logValue(req.Username), "ip", ip, "limit", "ip")
+			respondTooManyAttempts(w, retryAfter)
 			return
 		}
-		respondInternalError(w, "Internal server error", "AdminLoginHandler: query failed", err, "username", req.Username)
+		defer func() { app.AdminIPLimiter.Finish(ipKey, ipOutcome) }()
+	}
+
+	var storedHash string
+	var sessionVersion int
+	query := `SELECT password_hash, session_version FROM admins WHERE username = $1`
+	err := app.DB.QueryRowContext(r.Context(), query, req.Username).Scan(&storedHash, &sessionVersion)
+	switch {
+	case err == sql.ErrNoRows:
+		burnBcrypt(req.Password)
+		userOutcome, ipOutcome = ratelimit.Failed, ratelimit.Failed
+		respondError(w, http.StatusUnauthorized, "بيانات الدخول غير صحيحة")
+		return
+	case err != nil:
+		respondInternalError(w, "Internal server error", "AdminLoginHandler: query failed", err, "username", logValue(req.Username))
 		return
 	}
 
-	// مقارنة كلمة المرور المدخلة مع الهاش
-	err = bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(req.Password))
-	if err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(req.Password)); err != nil {
+		userOutcome, ipOutcome = ratelimit.Failed, ratelimit.Failed
 		respondError(w, http.StatusUnauthorized, "بيانات الدخول غير صحيحة")
 		return
 	}
+	userOutcome = ratelimit.Succeeded
 
-	// إصدار توكن الإدارة
-	tokenString, err := auth.GenerateAdminToken(req.Username)
+	tokenString, err := auth.GenerateAdminToken(req.Username, sessionVersion)
 	if err != nil {
 		respondInternalError(w, "Could not generate token", "AdminLoginHandler: token generation failed", err, "username", req.Username)
 		return
@@ -152,8 +179,12 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// validateStudentPayload trims the required fields in place and returns an error
-// message for the first one that is empty, or "" when the payload is valid.
+// InvalidParentPhoneMessage is the 400 message for a parent_phone that is not an Iraqi mobile number.
+const InvalidParentPhoneMessage = "parent_phone must be an Iraqi mobile number, for example 07XXXXXXXXX or +9647XXXXXXXXX"
+
+// validateStudentPayload trims the required fields in place, rewrites parent_phone to its
+// canonical form, and returns an error message for the first invalid field, or "" when the
+// payload is valid.
 func validateStudentPayload(req *StudentPayload) string {
 	req.Name = strings.TrimSpace(req.Name)
 	req.ParentName = strings.TrimSpace(req.ParentName)
@@ -166,6 +197,11 @@ func validateStudentPayload(req *StudentPayload) string {
 	case req.Name == "":
 		return "name is required"
 	}
+	canonical, ok := phone.Normalize(req.ParentPhone)
+	if !ok {
+		return InvalidParentPhoneMessage
+	}
+	req.ParentPhone = canonical
 	return ""
 }
 
@@ -244,7 +280,8 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				VALUES ($1, $2, $3)
 				ON CONFLICT (phone_number) DO UPDATE 
 				SET full_name = CASE WHEN $9::boolean THEN EXCLUDED.full_name ELSE parents.full_name END,
-				    pin_code = CASE WHEN $8::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END
+				    pin_code = CASE WHEN $8::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END,
+				    session_version = CASE WHEN $8::boolean THEN parents.session_version + 1 ELSE parents.session_version END
 				RETURNING id
 			)
 			INSERT INTO students (full_name, rfid_tag, parent_id, grade, section)
@@ -289,7 +326,8 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				VALUES ($1, $2, $3)
 				ON CONFLICT (phone_number) DO UPDATE
 				SET full_name = CASE WHEN $10::boolean THEN EXCLUDED.full_name ELSE parents.full_name END,
-				    pin_code = CASE WHEN $9::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END
+				    pin_code = CASE WHEN $9::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END,
+				    session_version = CASE WHEN $9::boolean THEN parents.session_version + 1 ELSE parents.session_version END
 				RETURNING id
 			)
 			UPDATE students

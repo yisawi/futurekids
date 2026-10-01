@@ -2,6 +2,7 @@
 -- Removes: table admins.
 -- Running this down-migration against the current main branch will break:
 --   internal/handlers/admin.go — AdminLoginHandler reads admins; every admin login fails.
+--   internal/handlers/middleware.go — AdminMiddleware reads admins.session_version on every admin request.
 --   db/scripts/rotate_admin_password.sql — updates admins.
 -- Data loss: every admin account and the rotated password hash. Re-applying 000008 re-seeds the public
 --   admin/admin123 password, so rotate it again afterwards (db/scripts/README.md).

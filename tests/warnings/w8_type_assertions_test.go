@@ -55,18 +55,23 @@ func TestW8TypeAssertions(t *testing.T) {
 	slog.SetDefault(slog.New(capture))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	auth.InitAuth(w8Secret)
+	db, _ := setupThrowawayDB(t, "w8")
+	if _, err := db.Exec(`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (7, 'W8 Parent', '+9647000000801', 'unused')`); err != nil {
+		t.Fatal(err)
+	}
+	app := &handlers.AppEnv{DB: db}
 
 	now := time.Now()
-	parentBase := map[string]any{"parent_id": 7, "phone": "+9647700000801", "role": "parent", "exp": now.Add(time.Hour).Unix(), "iat": now.Unix()}
-	adminBase := map[string]any{"username": "admin", "role": "admin", "exp": now.Add(time.Hour).Unix(), "iat": now.Unix()}
+	parentBase := map[string]any{"parent_id": 7, "phone": "+9647000000801", "role": "parent", "sv": 0, "exp": now.Add(time.Hour).Unix(), "iat": now.Unix()}
+	adminBase := map[string]any{"username": "admin", "role": "admin", "sv": 0, "exp": now.Add(time.Hour).Unix(), "iat": now.Unix()}
 
 	var seenParentID atomic.Int64
-	parentRoute := handlers.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	parentRoute := app.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := r.Context().Value(handlers.ParentIDKey).(int)
 		seenParentID.Store(int64(id))
 		w.WriteHeader(http.StatusOK)
 	})
-	adminRoute := handlers.AdminMiddleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	adminRoute := app.AdminMiddleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	// call runs h and converts a panic into a result instead of crashing the test binary.
 	call := func(h http.HandlerFunc, token string) (code int, panicked any, logs []w10Log) {
@@ -112,9 +117,15 @@ func TestW8TypeAssertions(t *testing.T) {
 		{"iat as string", "parent", jwt.SigningMethodHS256, map[string]any{"iat": "now"}, 401, "", ""},
 		{"iat in the future", "parent", jwt.SigningMethodHS256, map[string]any{"iat": now.Add(time.Hour).Unix()}, 401, "", ""},
 		{"HS512 instead of HS256", "parent", jwt.SigningMethodHS512, nil, 401, "", ""},
+		{"legacy token without sv", "parent", jwt.SigningMethodHS256, map[string]any{"sv": w8Delete}, 401, "sv", "is missing"},
+		{"sv as string", "parent", jwt.SigningMethodHS256, map[string]any{"sv": "0"}, 401, "sv", "has type string, want number"},
+		{"sv negative", "parent", jwt.SigningMethodHS256, map[string]any{"sv": -1}, 401, "sv", "want a non-negative integer"},
+		{"sv of an older session", "parent", jwt.SigningMethodHS256, map[string]any{"sv": 1}, 401, "", ""},
 
 		{"valid admin token", "admin", jwt.SigningMethodHS256, nil, 200, "", ""},
-		{"username as number (claim is never read)", "admin", jwt.SigningMethodHS256, map[string]any{"username": 42}, 200, "", ""},
+		{"username as number", "admin", jwt.SigningMethodHS256, map[string]any{"username": 42}, 401, "username", "has type float64, want string"},
+		{"admin legacy token without sv", "admin", jwt.SigningMethodHS256, map[string]any{"sv": w8Delete}, 401, "sv", "is missing"},
+		{"admin unknown username", "admin", jwt.SigningMethodHS256, map[string]any{"username": "nobody"}, 401, "", ""},
 		{"admin role missing", "admin", jwt.SigningMethodHS256, map[string]any{"role": w8Delete}, 401, "role", "is missing"},
 		{"admin role as array", "admin", jwt.SigningMethodHS256, map[string]any{"role": []any{"admin"}}, 401, "role", "has type []interface"},
 		{"parent token on admin route", "admin", jwt.SigningMethodHS256, map[string]any{"role": "parent"}, 403, "", ""},

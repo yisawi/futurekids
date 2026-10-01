@@ -24,10 +24,15 @@ const (
 //
 // Allow reserves a slot before the credentials are checked, so concurrent requests
 // cannot exceed the limit. Every successful Allow must be paired with exactly one Finish.
-// Expired entries are swept during normal calls, at most once per window.
+// Expired entries are swept during normal calls, at most once per window, and whenever the
+// limiter is full. At most MaxKeys keys are tracked: when every slot holds a live entry, a new
+// key is refused (fail closed) rather than evicting an entry, so a flood of new keys can never
+// erase an existing lockout.
 type LoginLimiter struct {
 	// Now returns the current time. Tests may replace it before first use.
 	Now func() time.Time
+	// MaxKeys caps how many keys are tracked (DefaultMaxKeys). Tests may lower it before first use.
+	MaxKeys int
 
 	maxFailures int
 	window      time.Duration
@@ -43,10 +48,14 @@ type entry struct {
 	inFlight int
 }
 
+// DefaultMaxKeys bounds a limiter's memory to a few megabytes.
+const DefaultMaxKeys = 100_000
+
 // NewLoginLimiter returns a limiter allowing maxFailures failed attempts per key per window.
 func NewLoginLimiter(maxFailures int, window time.Duration) *LoginLimiter {
 	return &LoginLimiter{
 		Now:         time.Now,
+		MaxKeys:     DefaultMaxKeys,
 		maxFailures: maxFailures,
 		window:      window,
 		entries:     make(map[string]*entry),
@@ -64,6 +73,15 @@ func (l *LoginLimiter) Allow(key string) (bool, time.Duration) {
 
 	e, ok := l.entries[key]
 	if !ok {
+		if l.MaxKeys > 0 && len(l.entries) >= l.MaxKeys {
+			if now.Sub(l.lastSweep) >= time.Second {
+				l.lastSweep = now.Add(-l.window)
+				l.sweep(now)
+			}
+			if len(l.entries) >= l.MaxKeys {
+				return false, l.window
+			}
+		}
 		e = &entry{start: now}
 		l.entries[key] = e
 	} else if !now.Before(e.start.Add(l.window)) {

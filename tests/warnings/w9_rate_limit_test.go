@@ -203,7 +203,7 @@ func TestW9RateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash PIN: %v", err)
 	}
-	for _, phone := range []string{"+9647700000401", "+9647700000402", "+9647700000403"} {
+	for _, phone := range []string{"+9647000000401", "+9647000000402", "+9647000000403"} {
 		if _, err := db.Exec(`INSERT INTO parents (full_name, phone_number, pin_code) VALUES ('W9 Parent', $1, $2)`, phone, string(hash)); err != nil {
 			t.Fatalf("seed parent %s: %v", phone, err)
 		}
@@ -227,42 +227,42 @@ func TestW9RateLimit(t *testing.T) {
 	t.Run("http/wrong PINs lock the number, correct PIN works after the window", func(t *testing.T) {
 		l, clock := newTestLimiter()
 		app := &handlers.AppEnv{DB: db, LoginLimiter: l}
-		expect(t, app, "+9647700000401", "0000", w9Max, http.StatusUnauthorized)
-		code, retry := login(t, app, "+9647700000401", "0000")
+		expect(t, app, "+9647000000401", "0000", w9Max, http.StatusUnauthorized)
+		code, retry := login(t, app, "+9647000000401", "0000")
 		if code != http.StatusTooManyRequests || retry != "900" {
 			t.Errorf("attempt %d: HTTP %d Retry-After %q, want 429 and 900", w9Max+1, code, retry)
 		}
-		if code, _ := login(t, app, "+9647700000401", "4321"); code != http.StatusTooManyRequests {
+		if code, _ := login(t, app, "+9647000000401", "4321"); code != http.StatusTooManyRequests {
 			t.Errorf("correct PIN while locked: HTTP %d, want 429", code)
 		}
 		clock.Advance(w9Window)
-		expect(t, app, "+9647700000401", "4321", 1, http.StatusOK)
-		expect(t, app, "+9647700000401", "0000", w9Max, http.StatusUnauthorized)
-		expect(t, app, "+9647700000401", "0000", 1, http.StatusTooManyRequests)
+		expect(t, app, "+9647000000401", "4321", 1, http.StatusOK)
+		expect(t, app, "+9647000000401", "0000", w9Max, http.StatusUnauthorized)
+		expect(t, app, "+9647000000401", "0000", 1, http.StatusTooManyRequests)
 	})
 
 	t.Run("http/successful login resets the counter", func(t *testing.T) {
 		l, _ := newTestLimiter()
 		app := &handlers.AppEnv{DB: db, LoginLimiter: l}
-		expect(t, app, "+9647700000402", "0000", w9Max-1, http.StatusUnauthorized)
-		expect(t, app, "+9647700000402", "4321", 1, http.StatusOK)
-		expect(t, app, "+9647700000402", "0000", w9Max, http.StatusUnauthorized)
-		expect(t, app, "+9647700000402", "0000", 1, http.StatusTooManyRequests)
+		expect(t, app, "+9647000000402", "0000", w9Max-1, http.StatusUnauthorized)
+		expect(t, app, "+9647000000402", "4321", 1, http.StatusOK)
+		expect(t, app, "+9647000000402", "0000", w9Max, http.StatusUnauthorized)
+		expect(t, app, "+9647000000402", "0000", 1, http.StatusTooManyRequests)
 	})
 
 	t.Run("http/unregistered numbers are limited the same way", func(t *testing.T) {
 		l, _ := newTestLimiter()
 		app := &handlers.AppEnv{DB: db, LoginLimiter: l}
-		expect(t, app, "+9647799999999", "0000", w9Max, http.StatusUnauthorized)
-		expect(t, app, "+9647799999999", "0000", 1, http.StatusTooManyRequests)
+		expect(t, app, "+9647099999999", "0000", w9Max, http.StatusUnauthorized)
+		expect(t, app, "+9647099999999", "0000", 1, http.StatusTooManyRequests)
 	})
 
 	t.Run("http/whitespace variants share one counter", func(t *testing.T) {
 		l, _ := newTestLimiter()
 		app := &handlers.AppEnv{DB: db, LoginLimiter: l}
-		expect(t, app, "+9647700000401", "0000", 3, http.StatusUnauthorized)
-		expect(t, app, "  +9647700000401  ", "0000", 2, http.StatusUnauthorized)
-		expect(t, app, " +9647700000401", "4321", 1, http.StatusTooManyRequests)
+		expect(t, app, "+9647000000401", "0000", 3, http.StatusUnauthorized)
+		expect(t, app, "  +9647000000401  ", "0000", 2, http.StatusUnauthorized)
+		expect(t, app, " +9647000000401", "4321", 1, http.StatusTooManyRequests)
 	})
 
 	t.Run("http/concurrent burst gets exactly the limit", func(t *testing.T) {
@@ -274,7 +274,7 @@ func TestW9RateLimit(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				switch code, _ := login(t, app, "+9647700000403", "0000"); code {
+				switch code, _ := login(t, app, "+9647000000403", "0000"); code {
 				case http.StatusUnauthorized:
 					unauthorized.Add(1)
 				case http.StatusTooManyRequests:
@@ -299,14 +299,14 @@ func TestW9RateLimit(t *testing.T) {
 		}
 		closed.Close()
 		app := &handlers.AppEnv{DB: closed, LoginLimiter: l}
-		expect(t, app, "+9647700000401", "0000", 2*w9Max, http.StatusInternalServerError)
+		expect(t, app, "+9647000000401", "0000", 2*w9Max, http.StatusInternalServerError)
 		app.DB = db
-		expect(t, app, "+9647700000401", "4321", 1, http.StatusOK)
+		expect(t, app, "+9647000000401", "4321", 1, http.StatusOK)
 	})
 
 	t.Run("http/missing limiter fails closed", func(t *testing.T) {
 		app := &handlers.AppEnv{DB: db}
-		expect(t, app, "+9647700000401", "4321", 1, http.StatusInternalServerError)
+		expect(t, app, "+9647000000401", "4321", 1, http.StatusInternalServerError)
 	})
 
 	if t.Failed() {

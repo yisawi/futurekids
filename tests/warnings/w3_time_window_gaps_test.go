@@ -25,7 +25,7 @@ func TestW3TimeWindowGaps(t *testing.T) {
 	db, _ := setupThrowawayDB(t, "w3")
 
 	seed := []string{
-		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W3 Parent', '+9647700000303', 'unused')`,
+		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W3 Parent', '+9647000000303', 'unused')`,
 		`INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (1, 'W3 Student', 'W3-RFID-1', 1)`,
 		`INSERT INTO devices (serial_number, location_name, is_active) VALUES ('W3-DEVICE', 'Gate', true)`,
 	}
