@@ -1,0 +1,16 @@
+extends:
+  - recommended
+
+apis:
+  main:
+    root: future_kids_api.yaml
+  flutter:
+    root: future_kids_api.yaml
+    decorators:
+      remove-x-internal: on
+
+rules:
+  # The localhost server entry is intentional: it documents local development.
+  no-server-example.com: off
+  # The license is proprietary (see LICENSE); there is no public license URL to link.
+  info-license-strict: off
