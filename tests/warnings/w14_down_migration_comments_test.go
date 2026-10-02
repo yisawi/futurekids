@@ -41,7 +41,8 @@ var w14Rollbacks = map[string]w14Rollback{
 	"000020": {false, nil, ""},
 	"000021": {true, []string{"parents.session_version", "admins.session_version"}, `session_version`},
 	"000022": {true, []string{"device_tokens"}, `device_tokens`},
-	"000023": {true, []string{"parents.phone_number_original", "notifications.parent_phone_original"}, `phone\.Normalize\(`},
+	"000023": {true, []string{"notifications.parent_id", "notifications_fill_parent_id"}, `INTO notifications \(parent_id|n\.parent_id|UPDATE notifications`},
+	"000024": {true, []string{"parents.phone_number_original", "notifications.parent_phone_original"}, `phone\.Normalize\(`},
 }
 
 var (

@@ -136,7 +136,7 @@ These strings are never null but may be `""`:
 `GET /api/mobile/notifications` returns at most **100** items per page, newest first:
 
 ```json
-{"status": "success", "data": [...], "has_more": true, "next_before": 1402}
+{"status": "success", "data": [...], "has_more": true, "next_before": 1402, "unread_count": 3}
 ```
 
 1. **First page:** call without `before`. Pull-to-refresh does the same.
@@ -146,8 +146,27 @@ These strings are never null but may be `""`:
 Pages are keyed on the notification id, so new notifications arriving while you scroll don't
 shift or duplicate items. A `before` that isn't a positive integer returns 400.
 
-`is_read` is **always `false`**: no endpoint marks notifications as read. Track read state on the
-device by notification `id`.
+### Read state and the unread badge
+
+- **`is_read`** is stored on the server and is the same on every phone of the parent. New
+  notifications always arrive unread.
+- **`unread_count`** is the parent's total number of unread notifications, across all pages. Use
+  it for the badge (for example on the bell icon). It's optional to use, but don't count
+  `is_read` on the pages you've loaded: older pages may hold more unread items.
+- **Mark one:** call `PUT /api/mobile/notifications/read?id=<id>` (no body) when the parent opens
+  or taps a notification.
+  - Returns 200, also when it was already read.
+  - Returns 404 when the id isn't one of this parent's notifications.
+  - Returns 400 for an id that isn't a positive integer.
+- **Mark all:** call `PUT /api/mobile/notifications/read-all` (no body) for a "mark all as read"
+  action. It returns `{"data": {"updated": <how many changed>}}`; 0 means nothing was unread.
+- **After either call,** refresh the list or update the badge from its next `unread_count`. A push
+  that arrives later is unread again.
+
+### History belongs to the account
+
+History follows the parent account, not the phone number: it survives a change of the parent's
+number and is deleted only with the account.
 
 ## Push notifications (FCM)
 
@@ -206,7 +225,10 @@ children goes to all of them, including children the school adds later.
 - **The server never tells you which phones are registered.** There's no list endpoint. Keep this
   phone's token locally if you want to `DELETE` it later.
 - **More than 10 phones:** the phone seen least recently stops receiving pushes until it registers again.
-- **Notifications are keyed by the parent's phone number,** not the parent id. History follows the phone number.
+- **Read state is per account, not per phone:** marking a notification read on one phone marks it
+  read on all of the parent's phones.
+- **`unread_count` can change between calls** (new pushes, another phone marking items read).
+  Take it from the latest list response; don't calculate it yourself.
 - **A valid token isn't proof the account still has children:** a parent with no active child gets
   `200` with empty lists, not an error.
 - **Don't keep using a token after a 401:** once the school changes the PIN, every phone signed in
@@ -216,7 +238,15 @@ children goes to all of them, including children the school adds later.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.3.0 (this release):**
+**In API 1.4.0 (this release):**
+
+- **`is_read` is no longer always `false`:** it's the real read state, set by the new `PUT`
+  `/api/mobile/notifications/read?id=` and `/api/mobile/notifications/read-all`.
+- **The notification list adds `unread_count`** (required, the total of unread notifications). The
+  rest of the list response is unchanged.
+- **History is keyed by the parent account,** so it survives a change of the parent's phone number.
+
+**In API 1.3.0:**
 
 - **Push tokens are per parent device:** new `PUT` and `DELETE /api/mobile/device-token`.
   - Every registered phone of a parent gets every push. Before, only the last phone to log in did,

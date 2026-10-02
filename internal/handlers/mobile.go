@@ -512,12 +512,10 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 		before = sql.NullInt64{Int64: id, Valid: true}
 	}
 
-	// 2. استعلام JOIN لجلب الإشعارات عبر مطابقة رقم الهاتف المرتبط بـ parent_id
 	query := `
 		SELECT n.id, n.title, n.body, COALESCE(n.is_read, false) AS is_read, COALESCE(n.created_at AT TIME ZONE 'Asia/Baghdad', CURRENT_TIMESTAMP) AS created_at
 		FROM notifications n
-		JOIN parents p ON n.parent_phone = p.phone_number
-		WHERE p.id = $1 AND ($2::bigint IS NULL OR n.id < $2)
+		WHERE n.parent_id = $1 AND ($2::bigint IS NULL OR n.id < $2)
 		ORDER BY n.id DESC
 		LIMIT $3
 	`
@@ -556,11 +554,18 @@ func (app *AppEnv) MobileNotificationsHandler(w http.ResponseWriter, r *http.Req
 		nextBefore = &notifications[NotificationsPageSize-1].ID
 	}
 
+	var unread int64
+	if err := app.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM notifications n WHERE n.parent_id = $1 AND n.is_read IS NOT TRUE`, parentID).Scan(&unread); err != nil {
+		respondInternalError(w, "Database error", "MobileNotificationsHandler: unread count failed", err, "parent_id", parentID)
+		return
+	}
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"status":      "success",
-		"data":        notifications,
-		"has_more":    hasMore,
-		"next_before": nextBefore,
+		"status":       "success",
+		"data":         notifications,
+		"has_more":     hasMore,
+		"next_before":  nextBefore,
+		"unread_count": unread,
 	})
 }
 
@@ -797,4 +802,51 @@ func (app *AppEnv) RemoveDeviceTokenHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "success", "message": "Device token removed"})
+}
+
+// MarkNotificationReadHandler (PUT /api/mobile/notifications/read?id=) marks one of the
+// parent's notifications as read. It is idempotent. An id that is not the parent's, or does not
+// exist, gets the same 404, so nothing is revealed about other parents' notifications.
+func (app *AppEnv) MarkNotificationReadHandler(w http.ResponseWriter, r *http.Request) {
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
+		return
+	}
+	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err != nil || id < 1 {
+		respondError(w, http.StatusBadRequest, "id must be a positive notification id")
+		return
+	}
+	res, err := app.DB.ExecContext(r.Context(), `UPDATE notifications n SET is_read = true WHERE n.id = $1 AND n.parent_id = $2`, id, parentID)
+	if err != nil {
+		respondInternalError(w, "Database error", "MarkNotificationReadHandler: update failed", err, "parent_id", parentID, "notification_id", id)
+		return
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		respondError(w, http.StatusNotFound, "Notification not found")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"status": "success", "message": "Notification marked as read"})
+}
+
+// MarkAllNotificationsReadHandler (PUT /api/mobile/notifications/read-all) marks every unread
+// notification of the parent as read and reports how many changed. It is idempotent.
+func (app *AppEnv) MarkAllNotificationsReadHandler(w http.ResponseWriter, r *http.Request) {
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
+		return
+	}
+	res, err := app.DB.ExecContext(r.Context(), `UPDATE notifications n SET is_read = true WHERE n.parent_id = $1 AND n.is_read IS NOT TRUE`, parentID)
+	if err != nil {
+		respondInternalError(w, "Database error", "MarkAllNotificationsReadHandler: update failed", err, "parent_id", parentID)
+		return
+	}
+	updated, err := res.RowsAffected()
+	if err != nil {
+		respondInternalError(w, "Database error", "MarkAllNotificationsReadHandler: rows affected failed", err, "parent_id", parentID)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"status": "success", "data": map[string]int64{"updated": updated}})
 }

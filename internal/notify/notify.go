@@ -14,25 +14,23 @@ import (
 	"firebase.google.com/go/v4/messaging"
 )
 
-func SaveNotificationHistory(db *sql.DB, phone, title, body string) {
+// SaveNotificationHistory stores a notification for the parent with parentID. It also stores
+// the parent's phone number, which code from before notifications were keyed by parent reads.
+func SaveNotificationHistory(db *sql.DB, parentID int, phone, title, body string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := db.ExecContext(
-		ctx,
-		"INSERT INTO notifications (parent_phone, title, body) VALUES ($1, $2, $3)",
-		phone,
-		title,
-		body,
-	)
+	_, err := db.ExecContext(ctx,
+		"INSERT INTO notifications (parent_id, parent_phone, title, body) VALUES ($1, $2, $3, $4)",
+		parentID, phone, title, body)
 	if err != nil {
-		slog.Error("Failed to save notification history", "error", err)
+		slog.Error("Failed to save notification history", "parent_id", parentID, "error", err)
 	}
 }
 
 // SendPushNotification sends an FCM message in the background. If FCM reports the token as
-// unregistered (app uninstalled or token rotated), the token is cleared from every student
-// that carries it so no further pushes are attempted. Tokens never appear in logs; use
+// unregistered (app uninstalled or token rotated), that device token is deleted so no further
+// pushes are attempted. Tokens never appear in logs; use
 // TokenFingerprint to correlate.
 func SendPushNotification(bg *background.Group, client *messaging.Client, db *sql.DB, token, title, body string) {
 	if token == "" || client == nil {

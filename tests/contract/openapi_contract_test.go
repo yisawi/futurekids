@@ -132,8 +132,6 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 			('Open day', 'https://example.com/banners/open-day.jpg', NULL, true, '2026-01-02 10:00'),
 			(NULL, 'https://example.com/banners/sports.jpg', 'https://example.com/sports', true, '2026-01-03 10:00'),
 			('Old news', 'https://example.com/banners/old.jpg', NULL, false, '2026-01-04 10:00')`, nil},
-		{`INSERT INTO notifications (parent_phone, title, body)
-			SELECT $1, 'إشعار تجريبي', 'رسالة رقم ' || g FROM generate_series(1, 150) g`, []any{phone1}},
 	}
 	for _, st := range stmts {
 		if _, err := db.Exec(st.q, st.args...); err != nil {
@@ -431,6 +429,10 @@ func (r *runner) scenario() {
 		t.Fatalf("parent login returned no token or id: %v", d)
 	}
 	r.expect("login returns the canonical phone", at(d, "data", "parent", "phone"), phone1)
+	if _, err := r.db.Exec(`INSERT INTO notifications (parent_id, parent_phone, title, body)
+		SELECT $1, $2, 'إشعار تجريبي', 'رسالة رقم ' || g FROM generate_series(1, 150) g`, r.parentID, phone1); err != nil {
+		t.Fatalf("notification fixture: %v", err)
+	}
 	for _, format := range []string{phone1, "009647000000101", "٠٧٠٠٠٠٠٠١٠١", "(0700) 000-0101"} {
 		_, d := r.call("POST /api/mobile/login", "phone written as "+format, "", "", map[string]string{"phone": format, "pin": "4821"}, 200)
 		r.expect("same parent for "+format, toInt(at(d, "data", "parent", "id")), r.parentID)
@@ -604,6 +606,37 @@ func (r *runner) scenario() {
 	}
 	parentDenied("GET /api/mobile/notifications", "")
 
+	// ── Read state ─────────────────────────────────────────────────────────────
+	var unread int
+	r.db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE parent_id = $1 AND is_read IS NOT TRUE`, r.parentID).Scan(&unread)
+	_, d = r.call("GET /api/mobile/notifications", "unread_count", "", parent, nil, 200)
+	r.expect("unread_count before marking", toInt(at(d, "unread_count")), unread)
+	own := toInt(at(d, "data", 0, "id"))
+	for i := 0; i < 2; i++ {
+		r.call("PUT /api/mobile/notifications/read", "own notification", fmt.Sprintf("?id=%d", own), parent, nil, 200)
+	}
+	_, d = r.call("GET /api/mobile/notifications", "after marking one", "", parent, nil, 200)
+	r.expect("marked notification is read", at(d, "data", 0, "is_read"), true)
+	r.expect("unread_count after marking one", toInt(at(d, "unread_count")), unread-1)
+	var foreign int
+	r.db.QueryRow(`SELECT id FROM notifications WHERE parent_id <> $1 ORDER BY id LIMIT 1`, r.parentID).Scan(&foreign)
+	if foreign == 0 {
+		t.Fatalf("no notification of another parent to test with")
+	}
+	r.call("PUT /api/mobile/notifications/read", "another parent's notification", fmt.Sprintf("?id=%d", foreign), parent, nil, 404)
+	r.call("PUT /api/mobile/notifications/read", "missing notification", "?id=999999", parent, nil, 404)
+	for _, bad := range []string{"", "?id=abc", "?id=0", "?id=-1"} {
+		r.call("PUT /api/mobile/notifications/read", "invalid id "+bad, bad, parent, nil, 400)
+	}
+	_, d = r.call("PUT /api/mobile/notifications/read-all", "mark all", "", parent, nil, 200)
+	r.expect("mark all updated", toInt(at(d, "data", "updated")), unread-1)
+	_, d = r.call("PUT /api/mobile/notifications/read-all", "mark all again", "", parent, nil, 200)
+	r.expect("mark all again updated", toInt(at(d, "data", "updated")), 0)
+	_, d = r.call("GET /api/mobile/notifications", "after marking all", "", parent, nil, 200)
+	r.expect("unread_count after marking all", toInt(at(d, "unread_count")), 0)
+	parentDenied("PUT /api/mobile/notifications/read", "?id=1")
+	parentDenied("PUT /api/mobile/notifications/read-all", "")
+
 	// ── Banners ────────────────────────────────────────────────────────────────
 	_, d = r.call("GET /api/mobile/banners", "active banners", "", parent, nil, 200)
 	var banners []string
@@ -765,10 +798,11 @@ func (r *runner) databaseFailures() {
 	for _, op := range []string{
 		"GET /api/mobile/students", "GET /api/mobile/attendance/today", "GET /api/mobile/attendance/summary",
 		"GET /api/mobile/attendance/monthly", "GET /api/mobile/schedule", "GET /api/mobile/notifications",
-		"GET /api/mobile/banners",
+		"GET /api/mobile/banners", "PUT /api/mobile/notifications/read-all",
 	} {
 		r.call(op, "database error", "", parent, nil, 500)
 	}
+	r.call("PUT /api/mobile/notifications/read", "database error", "?id=1", parent, nil, 500)
 	r.call("GET /api/mobile/settings", "database error", "", "", nil, 500)
 	r.call("PUT /api/mobile/device-token", "database error", "", parent, map[string]string{"token": "contract-device-token-0002"}, 500)
 	r.call("DELETE /api/mobile/device-token", "database error", "", parent, map[string]string{"token": "contract-device-token-0002"}, 500)
@@ -1281,6 +1315,11 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 			responses := node(root, "paths", "/api/mobile/device-token", "delete", "responses")
 			responses["404"] = responses["200"]
 			delete(responses, "200")
+		}},
+		{"unread_count is no longer documented", []string{"responses"}, func(root map[string]any) {
+			page := node(schemas(root), "NotificationPage")
+			delete(obj(page["properties"]), "unread_count")
+			page["required"] = []any{"status", "data", "has_more", "next_before"}
 		}},
 		{"production is listed as a server", []string{"hygiene"}, func(root map[string]any) {
 			root["servers"] = append(list(root["servers"]), map[string]any{"url": "https://futurekids-production.up.railway.app"})

@@ -130,6 +130,8 @@ func run() int {
 	mux.HandleFunc("GET /api/mobile/students", appEnv.AuthMiddleware(appEnv.MobileStudentsHandler))
 	mux.HandleFunc("GET /api/mobile/schedule", appEnv.AuthMiddleware(appEnv.MobileScheduleHandler))
 	mux.HandleFunc("GET /api/mobile/notifications", appEnv.AuthMiddleware(appEnv.MobileNotificationsHandler))
+	mux.HandleFunc("PUT /api/mobile/notifications/read", appEnv.AuthMiddleware(appEnv.MarkNotificationReadHandler))
+	mux.HandleFunc("PUT /api/mobile/notifications/read-all", appEnv.AuthMiddleware(appEnv.MarkAllNotificationsReadHandler))
 	mux.HandleFunc("GET /api/mobile/banners", appEnv.AuthMiddleware(appEnv.GetActiveBannersHandler))
 	mux.HandleFunc("PUT /api/mobile/device-token", appEnv.AuthMiddleware(appEnv.RegisterDeviceTokenHandler))
 	mux.HandleFunc("DELETE /api/mobile/device-token", appEnv.AuthMiddleware(appEnv.RemoveDeviceTokenHandler))

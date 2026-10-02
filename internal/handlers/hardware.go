@@ -504,12 +504,13 @@ func (app *AppEnv) notifyPunches(ctx context.Context, punches []storedPunch) {
 		var checkTime time.Time
 		var studentName string
 		var deviceTokens, parentPhone sql.NullString
+		var parentID sql.NullInt64
 		var isCheckOut bool
-		if err := rows.Scan(&studentID, &checkTime, &studentName, &deviceTokens, &parentPhone, &isCheckOut); err != nil {
+		if err := rows.Scan(&studentID, &checkTime, &studentName, &deviceTokens, &parentID, &parentPhone, &isCheckOut); err != nil {
 			slog.Error("ADMSHandler: notifications skipped — scan failed", "punches", len(punches), "error", err)
 			return
 		}
-		app.sendPunchNotification(studentID, checkTime, studentName, notify.DeviceTokens(deviceTokens), parentPhone, isCheckOut)
+		app.sendPunchNotification(studentID, checkTime, studentName, notify.DeviceTokens(deviceTokens), parentID, parentPhone, isCheckOut)
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("ADMSHandler: notifications incomplete — rows iteration failed", "punches", len(punches), "error", err)
@@ -520,7 +521,7 @@ func (app *AppEnv) notifyPunches(ctx context.Context, punches []storedPunch) {
 // are the first punch of their check-in or check-out window, with what the notification needs:
 // the student's name, every device token of the student's parent, and the parent's phone.
 var notifyPunchesSQL = `
-	SELECT p.student_id, p.check_time, s.full_name, ` + fmt.Sprintf(notify.ParentDeviceTokensSQL, "s.parent_id") + `, par.phone_number,
+	SELECT p.student_id, p.check_time, s.full_name, ` + fmt.Sprintf(notify.ParentDeviceTokensSQL, "s.parent_id") + `, par.id, par.phone_number,
 	       COALESCE(st.last_check = TO_CHAR(p.check_time, 'HH12:MI AM'), false) AS is_check_out
 	FROM unnest($1::int[], $2::timestamp[]) AS p(student_id, check_time)
 	JOIN students s ON s.id = p.student_id
@@ -533,7 +534,7 @@ var notifyPunchesSQL = `
 		  AND date_trunc('minute', a.check_time) = date_trunc('minute', p.check_time)
 	  )`
 
-func (app *AppEnv) sendPunchNotification(studentID int, checkTime time.Time, studentName string, deviceTokens []string, parentPhone sql.NullString, isCheckOut bool) {
+func (app *AppEnv) sendPunchNotification(studentID int, checkTime time.Time, studentName string, deviceTokens []string, parentID sql.NullInt64, parentPhone sql.NullString, isCheckOut bool) {
 	title := "إشعار دخول"
 	body := fmt.Sprintf("تم تسجيل دخول الطالب %s الساعة %s",
 		studentName, checkTime.Format("15:04"))
@@ -549,9 +550,9 @@ func (app *AppEnv) sendPunchNotification(studentID int, checkTime time.Time, stu
 		"has_parent_phone", parentPhone.Valid && parentPhone.String != "",
 	)
 
-	if parentPhone.Valid && parentPhone.String != "" {
+	if parentID.Valid {
 		app.Background.Go("notification history", func() {
-			notify.SaveNotificationHistory(app.DB, parentPhone.String, title, body)
+			notify.SaveNotificationHistory(app.DB, int(parentID.Int64), parentPhone.String, title, body)
 		})
 	}
 	notify.SendToDevices(app.Background, app.FCMClient, app.DB, deviceTokens, title, body)

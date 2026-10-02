@@ -58,6 +58,9 @@ func (c *w10Conn) QueryContext(_ context.Context, query string, _ []driver.Named
 	if strings.HasPrefix(query, "SELECT session_version FROM") {
 		return &w10Rows{cols: []string{"session_version"}, rows: [][]driver.Value{{int64(0)}}}, nil
 	}
+	if c.mode == "empty" && strings.HasPrefix(query, "SELECT COUNT(*)") {
+		return &w10Rows{cols: []string{"count"}, rows: [][]driver.Value{{int64(0)}}}, nil
+	}
 	switch c.mode {
 	case "query":
 		return nil, errW10Query
