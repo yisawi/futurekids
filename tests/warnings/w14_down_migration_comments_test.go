@@ -40,7 +40,8 @@ var w14Rollbacks = map[string]w14Rollback{
 	"000019": {false, nil, `check_time, status\)|\bstatus\) VALUES|a\.status\b`},
 	"000020": {false, nil, ""},
 	"000021": {true, []string{"parents.session_version", "admins.session_version"}, `session_version`},
-	"000022": {true, []string{"parents.phone_number_original", "notifications.parent_phone_original"}, `phone\.Normalize\(`},
+	"000022": {true, []string{"device_tokens"}, `device_tokens`},
+	"000023": {true, []string{"parents.phone_number_original", "notifications.parent_phone_original"}, `phone\.Normalize\(`},
 }
 
 var (

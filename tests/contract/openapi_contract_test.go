@@ -424,7 +424,7 @@ func (r *runner) scenario() {
 	r.call("POST /api/mobile/login", "wrong PIN", "", "", map[string]string{"phone": phone1, "pin": "0000"}, 401)
 	r.call("POST /api/mobile/login", "unregistered phone", "", "", map[string]string{"phone": unknownPhone, "pin": "4821"}, 401)
 	r.call("POST /api/mobile/login", "not an Iraqi mobile number", "", "", map[string]string{"phone": "12345", "pin": "4821"}, 401)
-	_, d = r.call("POST /api/mobile/login", "valid PIN with FCM token", "", "", map[string]string{"phone": "0700 000 0101", "pin": "4821", "fcm_token": "fcm-contract-token"}, 200)
+	_, d = r.call("POST /api/mobile/login", "valid PIN with FCM token", "", "", map[string]string{"phone": "0700 000 0101", "pin": "4821", "fcm_token": "fcm-contract-token-0001"}, 200)
 	r.parent = str(at(d, "data", "token"))
 	r.parentID = toInt(at(d, "data", "parent", "id"))
 	if r.parent == "" || r.parentID == 0 {
@@ -437,11 +437,11 @@ func (r *runner) scenario() {
 	}
 	r.expect("login returns the parent name", at(d, "data", "parent", "name"), "Omar Example")
 	var tokens int
-	r.db.QueryRow(`SELECT COUNT(*) FROM students WHERE parent_id = $1 AND fcm_token = 'fcm-contract-token'`, r.parentID).Scan(&tokens)
-	r.expect("FCM token stored on every child of the parent", tokens, 3)
+	r.db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = $1 AND token = 'fcm-contract-token-0001'`, r.parentID).Scan(&tokens)
+	r.expect("login fcm_token registered as a device token", tokens, 1)
 	r.call("POST /api/mobile/login", "valid PIN without FCM token", "", "", map[string]string{"phone": phone1, "pin": "4821"}, 200)
-	r.db.QueryRow(`SELECT COUNT(*) FROM students WHERE parent_id = $1 AND fcm_token = 'fcm-contract-token'`, r.parentID).Scan(&tokens)
-	r.expect("login without fcm_token keeps the stored token", tokens, 3)
+	r.db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = $1`, r.parentID).Scan(&tokens)
+	r.expect("login without fcm_token keeps the registered device", tokens, 1)
 	r.call("POST /api/mobile/login", "pin missing", "", "", map[string]string{"phone": phone1}, 400)
 	r.call("POST /api/mobile/login", "malformed JSON", "", "", "{", 400)
 	r.call("POST /api/mobile/login", "oversized body", "", "", oversized(), 413)
@@ -614,6 +614,22 @@ func (r *runner) scenario() {
 	parentDenied("GET /api/mobile/banners", "")
 	parentDenied("GET /api/mobile/students", "")
 
+	// ── Device tokens ──────────────────────────────────────────────────────────
+	device := map[string]string{"token": "contract-device-token-0001"}
+	for _, op := range []string{"PUT /api/mobile/device-token", "DELETE /api/mobile/device-token"} {
+		r.call(op, "valid token", "", parent, device, 200)
+		r.call(op, "same token again (idempotent)", "", parent, device, 200)
+		r.call(op, "token too short", "", parent, map[string]string{"token": "short"}, 400)
+		r.call(op, "token with spaces", "", parent, map[string]string{"token": "contract device token 0001"}, 400)
+		r.call(op, "token missing", "", parent, map[string]string{}, 400)
+		r.call(op, "malformed JSON", "", parent, "{", 400)
+		r.call(op, "oversized body", "", parent, oversized(), 413)
+		r.call(op, "no token", "", "", device, 401)
+		r.call(op, "expired token", "", expiredParent, device, 401)
+		r.call(op, "admin token", "", admin, device, 403)
+	}
+	r.call("PUT /api/mobile/device-token", "register before the PIN change", "", parent, device, 200)
+
 	// ── PIN change signs the parent out ────────────────────────────────────────
 	r.call("PUT /api/admin/students", "change the parent's PIN", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": "4822"}, 200)
 	r.call("GET /api/mobile/students", "token issued before the PIN change", "", parent, nil, 401)
@@ -621,6 +637,8 @@ func (r *runner) scenario() {
 	_, d = r.call("POST /api/mobile/login", "new PIN", "", "", map[string]string{"phone": phone1, "pin": "4822"}, 200)
 	r.parent = str(at(d, "data", "token"))
 	r.call("GET /api/mobile/students", "token issued after the PIN change", "", r.parent, nil, 200)
+	r.db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = $1`, r.parentID).Scan(&tokens)
+	r.expect("PIN change removed the parent's device tokens", tokens, 0)
 
 	// ── Admin reports ──────────────────────────────────────────────────────────
 	_, d = r.call("GET /api/admin/dashboard", "today's totals", "", admin, nil, 200)
@@ -740,7 +758,7 @@ func (r *runner) databaseFailures() {
 	}
 	admin, parent := r.admin, r.parent
 
-	tables := []string{"students", "parents", "settings", "devices", "notifications", "banners", "admins"}
+	tables := []string{"students", "parents", "settings", "devices", "notifications", "banners", "admins", "device_tokens"}
 	for _, tb := range tables {
 		exec("ALTER TABLE " + tb + " RENAME TO " + tb + "_offline")
 	}
@@ -752,6 +770,8 @@ func (r *runner) databaseFailures() {
 		r.call(op, "database error", "", parent, nil, 500)
 	}
 	r.call("GET /api/mobile/settings", "database error", "", "", nil, 500)
+	r.call("PUT /api/mobile/device-token", "database error", "", parent, map[string]string{"token": "contract-device-token-0002"}, 500)
+	r.call("DELETE /api/mobile/device-token", "database error", "", parent, map[string]string{"token": "contract-device-token-0002"}, 500)
 	r.call("POST /api/mobile/login", "database error", "", "", map[string]string{"phone": phone1, "pin": "4821"}, 500)
 	r.call("POST /api/admin/login", "database error", "", "", map[string]string{"username": "admin", "password": adminPassword}, 500)
 	for _, op := range []string{
@@ -1256,6 +1276,11 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 			hdr := node(root, "components", "responses", "HeaderTooLarge", "content")
 			hdr["application/json"] = hdr["text/plain"]
 			delete(hdr, "text/plain")
+		}},
+		{"device-token removal documents 404 instead of 200", []string{"responses"}, func(root map[string]any) {
+			responses := node(root, "paths", "/api/mobile/device-token", "delete", "responses")
+			responses["404"] = responses["200"]
+			delete(responses, "200")
 		}},
 		{"production is listed as a server", []string{"hygiene"}, func(root map[string]any) {
 			root["servers"] = append(list(root["servers"]), map[string]any{"url": "https://futurekids-production.up.railway.app"})

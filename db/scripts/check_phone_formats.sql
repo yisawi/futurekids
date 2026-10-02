@@ -1,10 +1,10 @@
--- READ-ONLY check to run on a database BEFORE migration 000022 (phone normalisation).
+-- READ-ONLY check to run on a database BEFORE migration 000023 (phone normalisation).
 -- It changes nothing (READ ONLY transaction, rolled back) and prints no phone numbers: only
 -- number shapes (digits shown as 9), counts, and parent ids. Its normalisation is the same as
--- 000022 and internal/phone.Normalize (checked by tests/warnings/a1_a4_security_sessions_test.go).
---   invalid parent ids            — numbers 000022 cannot convert; it would abort on them.
---   collision groups (parent ids) — parents whose numbers are one number; 000022 would abort.
---   would change / already canonical — rows 000022 rewrites or leaves alone.
+-- 000023 and internal/phone.Normalize (checked by tests/warnings/a1_a4_security_sessions_test.go).
+--   invalid parent ids            — numbers 000023 cannot convert; it would abort on them.
+--   collision groups (parent ids) — parents whose numbers are one number; 000023 would abort.
+--   would change / already canonical — rows 000023 rewrites or leaves alone.
 -- Usage: psql "$DATABASE_URL" -X -f db/scripts/check_phone_formats.sql
 
 BEGIN READ ONLY;

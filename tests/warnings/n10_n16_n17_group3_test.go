@@ -217,7 +217,7 @@ func TestGroup3N17IdempotentMigrations(t *testing.T) {
 		}
 		db, dsn := setupThrowawayDB(t, "g3n17e")
 		reference := g3Schema(t, db)
-		for _, tbl := range []string{"settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
+		for _, tbl := range []string{"device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
 			if _, err := db.Exec("DROP TABLE IF EXISTS " + tbl + " CASCADE"); err != nil {
 				t.Fatal(err)
 			}

@@ -283,6 +283,8 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				    pin_code = CASE WHEN $8::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END,
 				    session_version = CASE WHEN $8::boolean THEN parents.session_version + 1 ELSE parents.session_version END
 				RETURNING id
+			), signed_out_devices AS (
+				DELETE FROM device_tokens WHERE $8::boolean AND parent_id = (SELECT id FROM upsert_parent)
 			)
 			INSERT INTO students (full_name, rfid_tag, parent_id, grade, section)
 			VALUES ($4, $5, (SELECT id FROM upsert_parent), $6, $7)
@@ -329,6 +331,8 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				    pin_code = CASE WHEN $9::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END,
 				    session_version = CASE WHEN $9::boolean THEN parents.session_version + 1 ELSE parents.session_version END
 				RETURNING id
+			), signed_out_devices AS (
+				DELETE FROM device_tokens WHERE $9::boolean AND parent_id = (SELECT id FROM upsert_parent)
 			)
 			UPDATE students
 			SET full_name = $4,

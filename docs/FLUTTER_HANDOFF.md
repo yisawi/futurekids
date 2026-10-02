@@ -22,7 +22,7 @@ Production is shared separately at release. Don't hard-code URLs; make the base 
 1. **Before login (optional):** call `GET /api/mobile/settings` to get `school_name` and `whatsapp_number`
    for the login screen. It needs no token.
 2. **Get the device's FCM token:** `FirebaseMessaging.instance.getToken()`.
-3. **Log in:** send `POST /api/mobile/login` with `{"phone": "07000000101", "pin": "4821", "fcm_token": "<fcm token>"}`.
+3. **Log in:** send `POST /api/mobile/login` with `{"phone": "07000000101", "pin": "4821"}`.
    - `phone` is the parent's Iraqi mobile number, as typed. The server accepts:
      - `07XXXXXXXXX`, `+9647XXXXXXXXX`, `009647XXXXXXXXX` and `9647XXXXXXXXX` (an extra 0 after
        `964` is tolerated);
@@ -40,9 +40,9 @@ Production is shared separately at release. Don't hard-code URLs; make the base 
    or expired, the **school changed the parent's PIN** (which signs the parent out of every phone),
    or the account was removed. Delete the token and show the login screen. Tokens last **30 days**,
    and there is **no refresh endpoint**.
-7. **Log out:** there is no server logout. Delete the stored token and call
-   `FirebaseMessaging.instance.deleteToken()`, so this phone stops getting that parent's pushes
-   (see FCM below).
+7. **Register for pushes:** right after login, call `PUT /api/mobile/device-token` (see FCM below).
+8. **Log out:** call `DELETE /api/mobile/device-token` with this phone's FCM token **while you still
+   hold the parent token**, then delete the stored token. There is no other server-side logout.
 
 ## Errors
 
@@ -151,13 +151,49 @@ device by notification `id`.
 
 ## Push notifications (FCM)
 
-- **Registering a token:** the only way to send the token is the `fcm_token` field of
-  `POST /api/mobile/login`. Send it on every login.
-- **What gets sent:**
-  - A check-in push when a child's first punch of the morning window arrives.
-  - A check-out push for the first punch of the afternoon window.
-  - An absence push at 12:00 Baghdad time, Sunday to Thursday, for each child still `Absent`.
-  - One push per child per event.
+Each parent can have up to **10 phones** registered. Every push about any of the parent's
+children goes to all of them, including children the school adds later.
+
+**The flow:**
+
+1. **After every successful login**, get the token with `FirebaseMessaging.instance.getToken()` and
+   send `PUT /api/mobile/device-token` with `{"token": "<fcm token>"}` and the parent token.
+2. **At every app start** while signed in, send the same `PUT` again. It's idempotent, and it
+   marks the phone as recently used, which protects it from the 10-phone limit.
+3. **On `FirebaseMessaging.instance.onTokenRefresh`**, `PUT` the new token. The old one is
+   removed automatically the next time FCM rejects it. You can also `DELETE` it if the app kept it.
+4. **On logout**, first `DELETE /api/mobile/device-token` with `{"token": "<fcm token>"}` and the
+   parent token, then discard the parent token, then optionally `deleteToken()`. The `DELETE`
+   needs the parent token, so do it before discarding it.
+
+**Responses:**
+
+- **200** for both calls, including when the token wasn't registered to this parent. A retried
+  logout is safe.
+- **400** when the token isn't 20–1024 characters of letters, digits, `:`, `_`, `.` or `-`.
+  Real FCM tokens always fit.
+- **401 / 403** are handled as for any parent call: sign in again.
+
+**Situations the app should expect:**
+
+- **Reinstall:** the app gets a new FCM token and must log in again, which registers the new token.
+  The old token stops working at FCM and the server drops it on the next push.
+- **Another parent signs in on the same phone:** registering moves the token to that parent, so the
+  phone only receives that parent's pushes.
+- **PIN change by the school:** removes all of the parent's phones; they get 401 and must log in
+  and register again.
+- **Login compatibility:** `fcm_token` in the login body still works, but use the dedicated
+  endpoints, which are the contract.
+
+**What gets sent:**
+
+- A check-in push for a child's first punch in the morning window.
+- A check-out push for the first punch in the afternoon window.
+- An absence push at 12:00 Baghdad time, Sunday to Thursday, for each child still `Absent`.
+- One push per child per event, to every registered phone of the parent.
+
+**Payload and history:**
+
 - **Payload:** **notification only** (Arabic `title` and `body`). There's **no `data` payload**, so
   there are no ids or types to deep-link on. On tap, open the notifications screen and refresh it.
 - **History:** every notification is also saved to the history list, even when no push could be
@@ -165,14 +201,12 @@ device by notification `id`.
 
 ## Don't assume
 
-- **Pushes reach only one device per parent.** The token is stored on each child's record, so the
-  most recent login wins. If both parents use the same account on two phones, only the last phone
-  to log in gets pushes.
-- **A refreshed FCM token doesn't reach the server** until the next login. There's no endpoint to
-  update it yet, and the app must not keep the PIN to log in silently.
-- **A child added after login gets no pushes** until the parent logs in again (history still records them).
+- **Tokens belong to the account, not to one child or one phone.** A parent's phones all receive
+  every child's pushes. Don't assume one token per parent, and don't send per-child tokens.
+- **The server never tells you which phones are registered.** There's no list endpoint. Keep this
+  phone's token locally if you want to `DELETE` it later.
+- **More than 10 phones:** the phone seen least recently stops receiving pushes until it registers again.
 - **Notifications are keyed by the parent's phone number,** not the parent id. History follows the phone number.
-- **Logging out doesn't stop pushes on the server side.** Call `deleteToken()` on logout.
 - **A valid token isn't proof the account still has children:** a parent with no active child gets
   `200` with empty lists, not an error.
 - **Don't keep using a token after a 401:** once the school changes the PIN, every phone signed in
@@ -182,7 +216,17 @@ device by notification `id`.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.2.0 (this release):**
+**In API 1.3.0 (this release):**
+
+- **Push tokens are per parent device:** new `PUT` and `DELETE /api/mobile/device-token`.
+  - Every registered phone of a parent gets every push. Before, only the last phone to log in did,
+    and only for children that existed at that login.
+  - Logout now stops pushes (`DELETE`), and a refreshed token can be sent (`PUT`).
+- **A PIN change also removes the parent's registered phones.**
+- **Login's `fcm_token`:** an invalid token is now ignored (the login still succeeds) instead of
+  stored.
+
+**In API 1.2.0:**
 
 - **Every parent must log in once after the upgrade.** Tokens issued before 1.2.0 get 401.
 - **Changing a PIN signs the parent out of every phone** (401); before, old tokens kept working.

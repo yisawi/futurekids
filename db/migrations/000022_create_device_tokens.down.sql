@@ -1,0 +1,15 @@
+-- ⚠ APP-COMPATIBILITY WARNING
+-- Removes: table device_tokens.
+-- Running this down-migration against the current main branch will break:
+--   internal/handlers/mobile.go — the device-token routes and MobileLoginHandler (fcm_token) write it.
+--   internal/handlers/admin.go — a PIN change deletes the parent's device tokens.
+--   internal/handlers/hardware.go — punch notifications find their recipients in it.
+--   internal/cron/absent_job.go — absence notifications find their recipients in it.
+--   internal/notify/notify.go — SendPushNotification deletes tokens FCM reports unregistered.
+-- Data loss: every registered device token. students.fcm_token only holds the tokens old code
+--   wrote, so after this rollback no phone registered or refreshed since the up-migration
+--   receives pushes until the app registers again.
+-- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
+-- app code that no longer uses these objects. Do not run this migrate-down without first
+-- reverting or updating those files to match the pre-migration schema.
+DROP TABLE IF EXISTS device_tokens;

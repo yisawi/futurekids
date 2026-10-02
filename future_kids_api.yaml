@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.2.0"
+  version: "1.3.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -301,14 +301,28 @@ components:
         fcm_token:
           type: string
           description: |
-            Optional FCM registration token of this device. When non-empty it replaces the push
-            token stored for every child of this parent, so only the most recently logged-in
-            device receives pushes. Empty or omitted leaves the stored token unchanged.
+            Optional, kept for compatibility: a valid FCM registration token here is registered
+            exactly as `PUT /api/mobile/device-token` would (an invalid one is ignored and the
+            login still succeeds). Use `PUT` and `DELETE /api/mobile/device-token` for refresh and
+            logout; they are the contract.
       required: [phone, pin]
       example:
         phone: "+9647000000101"
         pin: "4821"
         fcm_token: fcm-example-registration-token
+
+    DeviceTokenRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 20
+          maxLength: 1024
+          pattern: '^[A-Za-z0-9:_.-]+$'
+          description: The FCM registration token of this phone, from `FirebaseMessaging.instance.getToken()`.
+      required: [token]
+      example:
+        token: example-fcm-registration-token-0001
 
     ParentProfile:
       type: object
@@ -479,8 +493,9 @@ components:
           maxLength: 72
           description: |
             For a new parent: the PIN, or `1234` when empty or omitted. For an existing parent:
-            a non-empty value replaces the PIN and signs the parent out of every device (their
-            tokens get 401); an empty one keeps both. Never returned.
+            a non-empty value replaces the PIN and signs the parent out of every device: their
+            tokens get 401 and their registered push devices are removed. An empty one keeps
+            both. Never returned.
         rfid_tag:
           type: string
           maxLength: 50
@@ -533,8 +548,9 @@ components:
           type: string
           maxLength: 72
           description: |
-            Non-empty replaces the parent's PIN and signs the parent out of every device; empty or
-            omitted keeps it (a newly created parent gets `1234`).
+            Non-empty replaces the parent's PIN and signs the parent out of every device (tokens
+            get 401, registered push devices are removed); empty or omitted keeps it (a newly
+            created parent gets `1234`).
         rfid_tag:
           type: string
           maxLength: 50
@@ -1309,6 +1325,23 @@ components:
           example:
             status: error
             message: Forbidden
+    InvalidDeviceToken:
+      description: Malformed JSON, or `token` missing or not 20 to 1024 of the allowed characters.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalid:
+              summary: Token fails validation
+              value:
+                status: error
+                message: "token must be 20 to 1024 characters: letters, digits, ':', '_', '.' or '-'"
+            malformed:
+              summary: Body is not valid JSON
+              value:
+                status: error
+                message: Invalid request body
     TooManyLoginAttempts:
       description: Too many failed login attempts; see the operation's rate limit.
       headers:
@@ -1681,6 +1714,92 @@ paths:
           $ref: '#/components/responses/ParentUnauthorized'
         '403':
           $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/mobile/device-token:
+    put:
+      tags: [Parent App]
+      operationId: registerDeviceToken
+      summary: Register or refresh this phone's push token
+      description: |
+        Stores this phone's FCM token for the signed-in parent. Call it after every login, at
+        every app start, and whenever Firebase gives the app a new token. It is idempotent.
+
+        Every push for any of the parent's children goes to all of the parent's registered
+        phones, including children added later. A token belongs to one parent at a time: when
+        another parent registers the same token (the phone changed hands), it moves to that
+        parent. A parent keeps at most 10 tokens; registering an 11th removes the one seen
+        least recently. A token FCM reports as no longer registered is removed automatically,
+        and changing the parent's PIN removes all of the parent's tokens.
+      security:
+        - ParentJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTokenRequest'
+      responses:
+        '200':
+          description: Registered (or refreshed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Device token registered
+        '400':
+          $ref: '#/components/responses/InvalidDeviceToken'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Parent App]
+      operationId: removeDeviceToken
+      summary: Remove this phone's push token (logout)
+      description: |
+        Stops pushes to this phone. Call it on logout, before discarding the parent token. The
+        token travels in the JSON body so it never appears in URLs or request logs. It only
+        removes the caller's own token and answers 200 whether or not the token was registered
+        to this parent, so a retried logout succeeds and nothing is revealed about other
+        parents.
+      security:
+        - ParentJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTokenRequest'
+      responses:
+        '200':
+          description: Removed, or was not registered to this parent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Device token removed
+        '400':
+          $ref: '#/components/responses/InvalidDeviceToken'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':

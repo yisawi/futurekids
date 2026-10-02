@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"future_kids/internal/auth"
+	"future_kids/internal/notify"
 	"future_kids/internal/phone"
 	"future_kids/internal/ratelimit"
 	"future_kids/internal/tz"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -637,9 +639,10 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.FCMToken != "" {
-		_, err := app.DB.ExecContext(ctx, "UPDATE students SET fcm_token = $1 WHERE parent_id = $2", req.FCMToken, parentID)
-		if err != nil {
-			slog.Error("Failed to update fcm_token for students", "parent_id", parentID, "error", err)
+		if !validDeviceToken(req.FCMToken) {
+			slog.Warn("MobileLoginHandler: invalid fcm_token ignored", "parent_id", parentID)
+		} else if err := app.registerDeviceToken(ctx, parentID, req.FCMToken); err != nil {
+			slog.Error("MobileLoginHandler: device token not registered", "parent_id", parentID, "token", notify.TokenFingerprint(req.FCMToken), "error", err)
 		}
 	}
 
@@ -693,4 +696,105 @@ func (app *AppEnv) MobileSettingsHandler(w http.ResponseWriter, r *http.Request)
 		"status": "success",
 		"data":   settings,
 	})
+}
+
+// Device tokens: each parent's phones register their FCM token, and every push for any of the
+// parent's children goes to all of them.
+const (
+	MaxDeviceTokensPerParent = 10
+	MinDeviceTokenLength     = 20
+	MaxDeviceTokenLength     = 1024
+)
+
+// InvalidDeviceTokenMessage is the 400 message for a token that fails validDeviceToken.
+const InvalidDeviceTokenMessage = "token must be 20 to 1024 characters: letters, digits, ':', '_', '.' or '-'"
+
+var deviceTokenChars = regexp.MustCompile(`^[A-Za-z0-9:_.-]+$`)
+
+func validDeviceToken(token string) bool {
+	return len(token) >= MinDeviceTokenLength && len(token) <= MaxDeviceTokenLength && deviceTokenChars.MatchString(token)
+}
+
+type DeviceTokenRequest struct {
+	Token string `json:"token"`
+}
+
+// registerDeviceToken stores token for parentID, moving it from any other parent (a phone
+// belongs to one parent at a time) and marking it seen now. A parent keeps at most
+// MaxDeviceTokensPerParent tokens; the least recently seen ones beyond that are deleted.
+func (app *AppEnv) registerDeviceToken(ctx context.Context, parentID int, token string) error {
+	tx, err := app.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO device_tokens (parent_id, token) VALUES ($1, $2)
+		ON CONFLICT (token) DO UPDATE
+		SET created_at = CASE WHEN device_tokens.parent_id = EXCLUDED.parent_id THEN device_tokens.created_at ELSE CURRENT_TIMESTAMP END,
+		    parent_id = EXCLUDED.parent_id,
+		    last_seen_at = CURRENT_TIMESTAMP`, parentID, token); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM device_tokens WHERE id IN (
+			SELECT id FROM device_tokens WHERE parent_id = $1
+			ORDER BY last_seen_at DESC, id DESC
+			OFFSET $2)`, parentID, MaxDeviceTokensPerParent); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// decodeDeviceToken reads {"token": "..."}, writing 400 or 413 and returning false when it is
+// malformed or the token is invalid.
+func decodeDeviceToken(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var req DeviceTokenRequest
+	if !decodeJSONBody(w, r, &req, "Invalid request body") {
+		return "", false
+	}
+	if !validDeviceToken(req.Token) {
+		respondError(w, http.StatusBadRequest, InvalidDeviceTokenMessage)
+		return "", false
+	}
+	return req.Token, true
+}
+
+// RegisterDeviceTokenHandler (PUT /api/mobile/device-token) registers or refreshes this phone's
+// FCM token for the authenticated parent.
+func (app *AppEnv) RegisterDeviceTokenHandler(w http.ResponseWriter, r *http.Request) {
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
+		return
+	}
+	token, ok := decodeDeviceToken(w, r)
+	if !ok {
+		return
+	}
+	if err := app.registerDeviceToken(r.Context(), parentID, token); err != nil {
+		respondInternalError(w, "Internal server error", "RegisterDeviceTokenHandler: register failed", err, "parent_id", parentID, "token", notify.TokenFingerprint(token))
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"status": "success", "message": "Device token registered"})
+}
+
+// RemoveDeviceTokenHandler (DELETE /api/mobile/device-token) removes this phone's FCM token
+// from the authenticated parent. It answers 200 whether or not the parent had the token, so a
+// retried logout succeeds and nothing is revealed about other parents' tokens.
+func (app *AppEnv) RemoveDeviceTokenHandler(w http.ResponseWriter, r *http.Request) {
+	parentID, ok := r.Context().Value(ParentIDKey).(int)
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Unauthorized context")
+		return
+	}
+	token, ok := decodeDeviceToken(w, r)
+	if !ok {
+		return
+	}
+	if _, err := app.DB.ExecContext(r.Context(), `DELETE FROM device_tokens WHERE token = $1 AND parent_id = $2`, token, parentID); err != nil {
+		respondInternalError(w, "Internal server error", "RemoveDeviceTokenHandler: delete failed", err, "parent_id", parentID, "token", notify.TokenFingerprint(token))
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"status": "success", "message": "Device token removed"})
 }

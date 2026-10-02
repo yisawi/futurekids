@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"log/slog"
+	"strings"
 	"time"
 
 	"future_kids/internal/background"
@@ -63,20 +64,39 @@ func SendPushNotification(bg *background.Group, client *messaging.Client, db *sq
 	})
 }
 
-// clearDeadToken removes an FCM token that FCM no longer accepts from every student.
+// ParentDeviceTokensSQL selects, for the parent whose id is the expression %s, all of that
+// parent's device tokens as one comma-separated value (NULL when there are none).
+const ParentDeviceTokensSQL = `(SELECT string_agg(dt.token, ',' ORDER BY dt.id) FROM device_tokens dt WHERE dt.parent_id = %s)`
+
+// DeviceTokens splits a value selected with ParentDeviceTokensSQL. Tokens never contain commas.
+func DeviceTokens(list sql.NullString) []string {
+	if !list.Valid || list.String == "" {
+		return nil
+	}
+	return strings.Split(list.String, ",")
+}
+
+// SendToDevices sends one push to each device token, in the background.
+func SendToDevices(bg *background.Group, client *messaging.Client, db *sql.DB, tokens []string, title, body string) {
+	for _, token := range tokens {
+		SendPushNotification(bg, client, db, token, title, body)
+	}
+}
+
+// clearDeadToken deletes the one device token FCM reports as no longer registered.
 func clearDeadToken(db *sql.DB, token string) {
 	if db == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res, err := db.ExecContext(ctx, "UPDATE students SET fcm_token = NULL WHERE fcm_token = $1", token)
+	res, err := db.ExecContext(ctx, "DELETE FROM device_tokens WHERE token = $1", token)
 	if err != nil {
 		slog.Error("FCM token is unregistered but could not be cleared", "token", TokenFingerprint(token), "error", err)
 		return
 	}
 	n, _ := res.RowsAffected()
-	slog.Warn("FCM token is no longer registered; cleared it", "token", TokenFingerprint(token), "students", n)
+	slog.Warn("FCM token is no longer registered; deleted it", "token", TokenFingerprint(token), "devices", n)
 }
 
 // TokenFingerprint returns a short, non-reversible identifier for an FCM token, safe to log.

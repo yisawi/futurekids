@@ -232,7 +232,7 @@ func TestGroup2Cleanup(t *testing.T) {
 		}
 	})
 
-	t.Run("N8/unregistered FCM tokens are cleared and never logged raw", func(t *testing.T) {
+	t.Run("N8/unregistered FCM tokens are deleted and never logged raw", func(t *testing.T) {
 		fcm := g2FakeFCM(t)
 		fbApp, err := firebase.NewApp(context.Background(), &firebase.Config{ProjectID: "fk-test"}, option.WithEndpoint(fcm.URL), option.WithoutAuthentication())
 		if err != nil {
@@ -242,10 +242,9 @@ func TestGroup2Cleanup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		exec_(t, `INSERT INTO students (id, full_name, rfid_tag, fcm_token) VALUES
-			(911, 'Sib 1', 'G2-FCM-1', 'dead-token-shared'), (912, 'Sib 2', 'G2-FCM-2', 'dead-token-shared'),
-			(913, 'Live', 'G2-FCM-3', 'live-token-1'), (914, 'Bad', 'G2-FCM-4', 'bad-token-1'),
-			(915, 'Via punch', 'G2-FCM-5', 'dead-token-punch')`)
+		exec_(t, `INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (911, 'Token Parent', '+9647000000911', 'x'), (912, 'Punch Parent', '+9647000000912', 'x')`)
+		exec_(t, `INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (911, 'Sib 1', 'G2-FCM-1', 911), (912, 'Sib 2', 'G2-FCM-2', 911), (915, 'Via punch', 'G2-FCM-5', 912)`)
+		exec_(t, `INSERT INTO device_tokens (parent_id, token) VALUES (911, 'dead-token-shared'), (911, 'live-token-1'), (911, 'bad-token-1'), (912, 'dead-token-punch')`)
 		before := len(capture.snapshot())
 		for _, tok := range []string{"dead-token-shared", "live-token-1", "bad-token-1"} {
 			notify.SendPushNotification(nil, client, db, tok, "t", "b")
@@ -253,23 +252,25 @@ func TestGroup2Cleanup(t *testing.T) {
 		appWithFCM := &handlers.AppEnv{DB: db, FCMClient: client}
 		call(t, appWithFCM.ADMSHandler, "POST", "/iclock/cdata?SN=G2-DEV&table=ATTLOG", "", "G2-FCM-5\t2026-04-02 07:15:00\t1\t1\n")
 
-		tokenOf := func(id int) string {
-			var tok *string
-			db.QueryRow(`SELECT fcm_token FROM students WHERE id = $1`, id).Scan(&tok)
-			if tok == nil {
-				return "<null>"
-			}
-			return *tok
+		stored := func(tok string) bool {
+			var n int
+			db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE token = $1`, tok).Scan(&n)
+			return n == 1
 		}
 		deadline := time.Now().Add(5 * time.Second)
-		for (tokenOf(911) != "<null>" || tokenOf(912) != "<null>" || tokenOf(915) != "<null>") && time.Now().Before(deadline) {
+		for (stored("dead-token-shared") || stored("dead-token-punch")) && time.Now().Before(deadline) {
 			time.Sleep(50 * time.Millisecond)
 		}
 		time.Sleep(200 * time.Millisecond)
-		for id, want := range map[int]string{911: "<null>", 912: "<null>", 915: "<null>", 913: "live-token-1", 914: "bad-token-1"} {
-			if got := tokenOf(id); got != want {
-				t.Errorf("student %d fcm_token = %q, want %q", id, got, want)
+		for tok, want := range map[string]bool{"dead-token-shared": false, "dead-token-punch": false, "live-token-1": true, "bad-token-1": true} {
+			if got := stored(tok); got != want {
+				t.Errorf("device token %s stored = %v, want %v", notify.TokenFingerprint(tok), got, want)
 			}
+		}
+		var studentTokens int
+		db.QueryRow(`SELECT COUNT(*) FROM students WHERE fcm_token IS NOT NULL`).Scan(&studentTokens)
+		if studentTokens != 0 {
+			t.Errorf("students.fcm_token written: %d rows", studentTokens)
 		}
 		logs := capture.snapshot()[before:]
 		var clearedShared, badLogged, liveLogged bool
@@ -277,7 +278,7 @@ func TestGroup2Cleanup(t *testing.T) {
 			if strings.Contains(l.Msg+fmt.Sprint(l.Attrs), "-token-") {
 				t.Errorf("raw FCM token in log: %s %v", l.Msg, l.Attrs)
 			}
-			if l.Level == slog.LevelWarn && strings.HasPrefix(l.Msg, "FCM token is no longer registered") && l.Attrs["token"] == notify.TokenFingerprint("dead-token-shared") && l.Attrs["students"] == "2" {
+			if l.Level == slog.LevelWarn && strings.HasPrefix(l.Msg, "FCM token is no longer registered") && l.Attrs["token"] == notify.TokenFingerprint("dead-token-shared") && l.Attrs["devices"] == "1" {
 				clearedShared = true
 			}
 			if l.Level == slog.LevelError && l.Msg == "Failed to send FCM message" && l.Attrs["token"] == notify.TokenFingerprint("bad-token-1") {
@@ -288,7 +289,7 @@ func TestGroup2Cleanup(t *testing.T) {
 			}
 		}
 		if !clearedShared || !badLogged || !liveLogged {
-			t.Errorf("log events: cleared-shared=%v invalid-argument-error=%v sent=%v, want all true (logs %v)", clearedShared, badLogged, liveLogged, logs)
+			t.Errorf("log events: deleted-dead=%v invalid-argument-error=%v sent=%v, want all true (logs %v)", clearedShared, badLogged, liveLogged, logs)
 		}
 		fp := notify.TokenFingerprint("dead-token-shared")
 		if fp != notify.TokenFingerprint("dead-token-shared") || strings.Contains(fp, "dead") || len(fp) != len("fcm:")+12 {
