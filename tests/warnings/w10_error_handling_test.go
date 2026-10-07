@@ -49,7 +49,12 @@ func (c *w10Conn) Prepare(string) (driver.Stmt, error) {
 	return nil, errors.New("w10: prepare unsupported")
 }
 func (c *w10Conn) Close() error              { return nil }
-func (c *w10Conn) Begin() (driver.Tx, error) { return nil, errors.New("w10: tx unsupported") }
+func (c *w10Conn) Begin() (driver.Tx, error) { return w10Tx{}, nil }
+
+type w10Tx struct{}
+
+func (w10Tx) Commit() error   { return nil }
+func (w10Tx) Rollback() error { return nil }
 func (c *w10Conn) CheckNamedValue(*driver.NamedValue) error {
 	return nil
 }
@@ -189,8 +194,8 @@ func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 
 		{"admin dashboard", "AdminDashboardHandler:", "GET", "/api/admin/dashboard", "", admin(app.AdminDashboardHandler), false},
 		{"admin login", "AdminLoginHandler:", "POST", "/api/admin/login", `{"username":"admin","password":"x"}`, app.AdminLoginHandler, false},
-		{"mobile login", "MobileLoginHandler:", "POST", "/api/mobile/login", `{"phone":"+9647000000501","pin":"1234"}`, app.MobileLoginHandler, false},
-		{"admin student create", "AdminStudentsHandler:", "POST", "/api/admin/students", `{"name":"K","parent_name":"P","parent_phone":"+9647000000502","parent_pin":"1234","rfid_tag":"T"}`, admin(app.AdminStudentsHandler), false},
+		{"mobile login", "MobileLoginHandler:", "POST", "/api/mobile/login", `{"phone":"+9647000000501","pin":"581736"}`, app.MobileLoginHandler, false},
+		{"admin student create", "AdminStudentsHandler:", "POST", "/api/admin/students", `{"name":"K","parent_name":"P","parent_phone":"+9647000000502","parent_pin":"581736","rfid_tag":"T"}`, admin(app.AdminStudentsHandler), false},
 		{"admin student update", "AdminStudentsHandler:", "PUT", "/api/admin/students", `{"id":1,"name":"K","parent_name":"P","parent_phone":"+9647000000502"}`, admin(app.AdminStudentsHandler), false},
 		{"admin student delete", "AdminStudentsHandler:", "DELETE", "/api/admin/students?id=1", "", admin(app.AdminStudentsHandler), false},
 		{"admin leave create", "AdminCreateLeaveHandler:", "POST", "/api/admin/leaves", `{"student_id":1,"leave_date":"2026-09-24"}`, admin(app.AdminCreateLeaveHandler), false},

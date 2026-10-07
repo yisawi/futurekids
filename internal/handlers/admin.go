@@ -2,14 +2,17 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"future_kids/internal/auth"
 	"future_kids/internal/phone"
@@ -53,11 +56,44 @@ func requestedDate(w http.ResponseWriter, r *http.Request) (date string, ok bool
 	if d == "" {
 		return tz.Today(), true
 	}
-	if _, err := time.Parse("2006-01-02", d); err != nil {
+	t, err := time.Parse("2006-01-02", d)
+	if err != nil {
 		respondError(w, http.StatusBadRequest, "date must be formatted as YYYY-MM-DD")
 		return "", false
 	}
+	if !yearInRange(t) {
+		respondError(w, http.StatusBadRequest, "date must have a year from 2000 to 2100")
+		return "", false
+	}
 	return d, true
+}
+
+// Dates and months the API accepts lie in years MinYear to MaxYear.
+const (
+	MinYear = 2000
+	MaxYear = 2100
+)
+
+func yearInRange(t time.Time) bool { return t.Year() >= MinYear && t.Year() <= MaxYear }
+
+// tooLong returns "<field> must be at most max characters" when value has more than max
+// characters, or "". Characters are counted as PostgreSQL counts them for varchar(max), which
+// silently drops excess trailing spaces instead of rejecting them, so trailing spaces are ignored.
+func tooLong(field, value string, max int) string {
+	if utf8.RuneCountInString(strings.TrimRight(value, " ")) > max {
+		return fmt.Sprintf("%s must be at most %d characters", field, max)
+	}
+	return ""
+}
+
+// firstProblem returns the first non-empty message.
+func firstProblem(msgs ...string) string {
+	for _, m := range msgs {
+		if m != "" {
+			return m
+		}
+	}
+	return ""
 }
 
 func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -202,7 +238,85 @@ func validateStudentPayload(req *StudentPayload) string {
 		return InvalidParentPhoneMessage
 	}
 	req.ParentPhone = canonical
-	return ""
+	if strings.TrimSpace(req.ParentPin) != "" && !pinFormat.MatchString(req.ParentPin) {
+		return PINFormatMessage
+	}
+	grade, section := "", ""
+	if req.Grade != nil {
+		grade = *req.Grade
+	}
+	if req.Section != nil {
+		section = *req.Section
+	}
+	return firstProblem(
+		tooLong("name", req.Name, 100),
+		tooLong("parent_name", req.ParentName, 255),
+		tooLong("parent_phone", req.ParentPhone, 20),
+		tooLong("rfid_tag", req.RfidTag, 50),
+		tooLong("grade", grade, 50),
+		tooLong("section", section, 50),
+	)
+}
+
+// A PIN the admin sets is exactly 6 ASCII digits. Login does not check the format, so parents
+// whose PIN was set before this rule keep logging in with it.
+var pinFormat = regexp.MustCompile(`^[0-9]{6}$`)
+
+// PINFormatMessage is the 400 message for a parent_pin that is set but not 6 ASCII digits.
+const PINFormatMessage = "parent_pin must be exactly 6 digits (0-9)"
+
+// Messages for the student writes.
+const (
+	PINRequiredMessage  = "parent_pin is required for a new parent (parent_phone is not registered yet)"
+	RFIDTagTakenMessage = "rfid_tag is already used by another student"
+	rfidTagUniqueIndex  = "students_rfid_tag_key"
+)
+
+var errNewParentNeedsPIN = errors.New("new parent without a PIN")
+
+// resolveParent finds or creates, inside tx, the parent with phone and returns its id. With a
+// PIN it creates the parent or replaces the PIN, which signs the parent out (session_version
+// rises, device tokens are removed). Without one it only updates an existing parent's name and
+// returns errNewParentNeedsPIN when the number is not registered, so no parent is ever written
+// without a PIN chosen by the admin.
+func resolveParent(ctx context.Context, tx *sql.Tx, name, phone, pin string) (int, error) {
+	var id int
+	if strings.TrimSpace(pin) == "" {
+		err := tx.QueryRowContext(ctx, `UPDATE parents SET full_name = $1 WHERE phone_number = $2 RETURNING id`, name, phone).Scan(&id)
+		if err == sql.ErrNoRows {
+			return 0, errNewParentNeedsPIN
+		}
+		return id, err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO parents (full_name, phone_number, pin_code) VALUES ($1, $2, $3)
+		ON CONFLICT (phone_number) DO UPDATE
+		SET full_name = EXCLUDED.full_name,
+		    pin_code = EXCLUDED.pin_code,
+		    session_version = parents.session_version + 1
+		RETURNING id`, name, phone, string(hash)).Scan(&id); err != nil {
+		return 0, err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM device_tokens WHERE parent_id = $1`, id)
+	return id, err
+}
+
+// respondStudentWriteError answers a failed student create or update: 400 for a new parent
+// without a PIN, 409 for an rfid_tag another student has, and a logged 500 otherwise.
+func respondStudentWriteError(w http.ResponseWriter, op string, err error, attrs ...any) {
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.Is(err, errNewParentNeedsPIN):
+		respondError(w, http.StatusBadRequest, PINRequiredMessage)
+	case errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == rfidTagUniqueIndex:
+		respondError(w, http.StatusConflict, RFIDTagTakenMessage)
+	default:
+		respondInternalError(w, "Internal server error", op, err, attrs...)
+	}
 }
 
 func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) {
@@ -259,39 +373,30 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, msg)
 			return
 		}
-		// Captured before defaults are applied: on parent conflict, only overwrite what the admin actually sent.
-		pinProvided, nameProvided := req.ParentPin != "", req.ParentName != ""
-		if req.ParentPin == "" {
-			req.ParentPin = "1234"
-		}
-		hashedPin, err := bcrypt.GenerateFromPassword([]byte(req.ParentPin), bcrypt.DefaultCost)
-		if err != nil {
-			respondInternalError(w, "Internal server error", "AdminStudentsHandler: PIN hashing failed", err, "parent_phone", req.ParentPhone)
-			return
-		}
-
 		if req.RfidTag == "" {
 			req.RfidTag = fmt.Sprintf("admin-%d", time.Now().UnixNano())
 		}
 
-		query := `
-			WITH upsert_parent AS (
-				INSERT INTO parents (full_name, phone_number, pin_code)
-				VALUES ($1, $2, $3)
-				ON CONFLICT (phone_number) DO UPDATE 
-				SET full_name = CASE WHEN $9::boolean THEN EXCLUDED.full_name ELSE parents.full_name END,
-				    pin_code = CASE WHEN $8::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END,
-				    session_version = CASE WHEN $8::boolean THEN parents.session_version + 1 ELSE parents.session_version END
-				RETURNING id
-			), signed_out_devices AS (
-				DELETE FROM device_tokens WHERE $8::boolean AND parent_id = (SELECT id FROM upsert_parent)
-			)
-			INSERT INTO students (full_name, rfid_tag, parent_id, grade, section)
-			VALUES ($4, $5, (SELECT id FROM upsert_parent), $6, $7)
-			RETURNING id
-		`
-		if err := app.DB.QueryRowContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section, pinProvided, nameProvided).Scan(&req.ID); err != nil {
-			respondInternalError(w, "Failed to create student and parent", "AdminStudentsHandler: create failed", err, "parent_phone", req.ParentPhone, "rfid_tag", req.RfidTag)
+		err := func() error {
+			tx, err := app.DB.BeginTx(r.Context(), nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			parentID, err := resolveParent(r.Context(), tx, req.ParentName, req.ParentPhone, req.ParentPin)
+			if err != nil {
+				return err
+			}
+			if err := tx.QueryRowContext(r.Context(), `
+				INSERT INTO students (full_name, rfid_tag, parent_id, grade, section)
+				VALUES ($1, $2, $3, $4, $5)
+				RETURNING id`, req.Name, req.RfidTag, parentID, req.Grade, req.Section).Scan(&req.ID); err != nil {
+				return err
+			}
+			return tx.Commit()
+		}()
+		if err != nil {
+			respondStudentWriteError(w, "AdminStudentsHandler: create failed", err, "parent_phone", req.ParentPhone, "rfid_tag", req.RfidTag)
 			return
 		}
 		req.ParentPin = "" // Don't echo it back
@@ -311,49 +416,41 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, msg)
 			return
 		}
-		// Captured before defaults are applied: on parent conflict, only overwrite what the admin actually sent.
-		pinProvided, nameProvided := req.ParentPin != "", req.ParentName != ""
-		if req.ParentPin == "" {
-			req.ParentPin = "1234"
-		}
-		hashedPin, err := bcrypt.GenerateFromPassword([]byte(req.ParentPin), bcrypt.DefaultCost)
-		if err != nil {
-			respondInternalError(w, "Internal server error", "AdminStudentsHandler: PIN hashing failed", err, "parent_phone", req.ParentPhone)
-			return
-		}
-
-		query := `
-			WITH upsert_parent AS (
-				INSERT INTO parents (full_name, phone_number, pin_code)
-				VALUES ($1, $2, $3)
-				ON CONFLICT (phone_number) DO UPDATE
-				SET full_name = CASE WHEN $10::boolean THEN EXCLUDED.full_name ELSE parents.full_name END,
-				    pin_code = CASE WHEN $9::boolean THEN EXCLUDED.pin_code ELSE parents.pin_code END,
-				    session_version = CASE WHEN $9::boolean THEN parents.session_version + 1 ELSE parents.session_version END
-				RETURNING id
-			), signed_out_devices AS (
-				DELETE FROM device_tokens WHERE $9::boolean AND parent_id = (SELECT id FROM upsert_parent)
-			)
-			UPDATE students
-			SET full_name = $4,
-			    rfid_tag = COALESCE(NULLIF($5::text, ''), rfid_tag),
-			    parent_id = (SELECT id FROM upsert_parent),
-			    grade = COALESCE($6, grade),
-			    section = COALESCE($7, section)
-			WHERE id = $8
-		`
-		result, err := app.DB.ExecContext(r.Context(), query, req.ParentName, req.ParentPhone, string(hashedPin), req.Name, req.RfidTag, req.Grade, req.Section, req.ID, pinProvided, nameProvided)
-		if err != nil {
-			respondInternalError(w, "Failed to update student", "AdminStudentsHandler: update failed", err, "student_id", req.ID)
-			return
-		}
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			respondInternalError(w, "Internal server error", "AdminStudentsHandler: rows affected failed", err, "student_id", req.ID)
-			return
-		}
-		if rowsAffected == 0 {
+		var errStudentNotFound = errors.New("student not found")
+		err := func() error {
+			tx, err := app.DB.BeginTx(r.Context(), nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			parentID, err := resolveParent(r.Context(), tx, req.ParentName, req.ParentPhone, req.ParentPin)
+			if err != nil {
+				return err
+			}
+			res, err := tx.ExecContext(r.Context(), `
+				UPDATE students
+				SET full_name = $1,
+				    rfid_tag = COALESCE(NULLIF($2::text, ''), rfid_tag),
+				    parent_id = $3,
+				    grade = COALESCE($4, grade),
+				    section = COALESCE($5, section)
+				WHERE id = $6`, req.Name, req.RfidTag, parentID, req.Grade, req.Section, req.ID)
+			if err != nil {
+				return err
+			}
+			if n, err := res.RowsAffected(); err != nil {
+				return err
+			} else if n == 0 {
+				return errStudentNotFound
+			}
+			return tx.Commit()
+		}()
+		if errors.Is(err, errStudentNotFound) {
 			respondError(w, http.StatusNotFound, "Student not found")
+			return
+		}
+		if err != nil {
+			respondStudentWriteError(w, "AdminStudentsHandler: update failed", err, "student_id", req.ID)
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Student updated"})
@@ -408,23 +505,34 @@ func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusBadRequest, "student_id and leave_date are required")
 		return
 	}
-	if _, err := time.Parse("2006-01-02", req.LeaveDate); err != nil {
+	if req.StudentID < 0 {
+		respondError(w, http.StatusBadRequest, "student_id must be a positive student id")
+		return
+	}
+	leaveDate, err := time.Parse("2006-01-02", req.LeaveDate)
+	if err != nil {
 		respondError(w, http.StatusBadRequest, "leave_date must be formatted as YYYY-MM-DD")
 		return
 	}
+	if !yearInRange(leaveDate) {
+		respondError(w, http.StatusBadRequest, "leave_date must have a year from 2000 to 2100")
+		return
+	}
 
-	// استخدام ON CONFLICT لتحديث الملاحظات إذا كانت الإجازة مسجلة مسبقاً لنفس اليوم
 	query := `
-		INSERT INTO student_leaves (student_id, leave_date, notes) 
-		VALUES ($1, $2, $3)
-		ON CONFLICT (student_id, leave_date) 
+		INSERT INTO student_leaves (student_id, leave_date, notes)
+		SELECT s.id, $2, $3 FROM students s WHERE s.id = $1 AND s.is_active = true
+		ON CONFLICT (student_id, leave_date)
 		DO UPDATE SET notes = EXCLUDED.notes
 		RETURNING id
 	`
 
 	var leaveID int
-	err := app.DB.QueryRowContext(r.Context(), query, req.StudentID, req.LeaveDate, req.Notes).Scan(&leaveID)
-
+	err = app.DB.QueryRowContext(r.Context(), query, req.StudentID, req.LeaveDate, req.Notes).Scan(&leaveID)
+	if err == sql.ErrNoRows {
+		respondError(w, http.StatusNotFound, "Student not found")
+		return
+	}
 	if err != nil {
 		respondInternalError(w, "Failed to create leave record", "AdminCreateLeaveHandler: insert failed", err, "student_id", req.StudentID, "leave_date", req.LeaveDate)
 		return
@@ -459,7 +567,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		FROM students s
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
 		WHERE s.is_active = true
-		ORDER BY st.status DESC, s.full_name ASC
+		ORDER BY st.status DESC, s.full_name ASC, s.id ASC
 	`
 
 	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
@@ -661,6 +769,10 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, "Invalid payload")
 			return
 		}
+		if msg := tooLong("key", req.Key, 100); msg != "" {
+			respondError(w, http.StatusBadRequest, msg)
+			return
+		}
 
 		query := `
 			INSERT INTO settings (setting_key, setting_value, updated_at) 
@@ -685,6 +797,20 @@ type DevicePayload struct {
 	LocationName string `json:"location_name"`
 	IsActive     bool   `json:"is_active"`
 	LastSync     string `json:"last_sync,omitempty"`
+}
+
+// DeviceCreateRequest registers a device; an omitted is_active means active.
+type DeviceCreateRequest struct {
+	SerialNumber string `json:"serial_number"`
+	LocationName string `json:"location_name"`
+	IsActive     *bool  `json:"is_active"`
+}
+
+// DeviceUpdateRequest changes the fields it carries and keeps the stored value of any omitted one.
+type DeviceUpdateRequest struct {
+	SerialNumber string  `json:"serial_number"`
+	LocationName *string `json:"location_name"`
+	IsActive     *bool   `json:"is_active"`
 }
 
 func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
@@ -717,7 +843,7 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": devices})
 
 	case http.MethodPost:
-		var req DevicePayload
+		var req DeviceCreateRequest
 		if !decodeJSONBody(w, r, &req, "Invalid payload or missing SN") {
 			return
 		}
@@ -725,9 +851,17 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "Invalid payload or missing SN")
 			return
 		}
+		if msg := firstProblem(tooLong("serial_number", req.SerialNumber, 50), tooLong("location_name", req.LocationName, 50)); msg != "" {
+			respondError(w, http.StatusBadRequest, msg)
+			return
+		}
+		active := true
+		if req.IsActive != nil {
+			active = *req.IsActive
+		}
 
 		query := `INSERT INTO devices (serial_number, location_name, is_active) VALUES ($1, $2, $3)`
-		_, err := app.DB.ExecContext(r.Context(), query, req.SerialNumber, req.LocationName, req.IsActive)
+		_, err := app.DB.ExecContext(r.Context(), query, req.SerialNumber, req.LocationName, active)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			respondError(w, http.StatusConflict, "Device SN already exists")
@@ -739,7 +873,7 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Device added successfully"})
 
 	case http.MethodPut:
-		var req DevicePayload
+		var req DeviceUpdateRequest
 		if !decodeJSONBody(w, r, &req, "Invalid payload") {
 			return
 		}
@@ -747,8 +881,20 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "Invalid payload")
 			return
 		}
+		if req.LocationName == nil && req.IsActive == nil {
+			respondError(w, http.StatusBadRequest, "location_name or is_active is required")
+			return
+		}
+		location := ""
+		if req.LocationName != nil {
+			location = *req.LocationName
+		}
+		if msg := firstProblem(tooLong("serial_number", req.SerialNumber, 50), tooLong("location_name", location, 50)); msg != "" {
+			respondError(w, http.StatusBadRequest, msg)
+			return
+		}
 
-		query := `UPDATE devices SET location_name = $1, is_active = $2 WHERE serial_number = $3`
+		query := `UPDATE devices SET location_name = COALESCE($1, location_name), is_active = COALESCE($2, is_active) WHERE serial_number = $3`
 		res, err := app.DB.ExecContext(r.Context(), query, req.LocationName, req.IsActive, req.SerialNumber)
 		if err != nil {
 			respondInternalError(w, "Failed to update device", "AdminDevicesHandler: update failed", err, "device_sn", req.SerialNumber)

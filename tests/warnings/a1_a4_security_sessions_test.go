@@ -372,7 +372,7 @@ func TestA2PhoneNormalisation(t *testing.T) {
 
 	t.Run("admin create stores the canonical number", func(t *testing.T) {
 		r := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"name": "A2 Student", "parent_name": "A2 Parent", "parent_phone": "٠٧٠٠ ٠٠٠ ٠٢٠١", "parent_pin": "4821", "rfid_tag": "A2-1",
+			"name": "A2 Student", "parent_name": "A2 Parent", "parent_phone": "٠٧٠٠ ٠٠٠ ٠٢٠١", "parent_pin": "482193", "rfid_tag": "A2-1",
 		})
 		if r.status != 200 {
 			t.Fatalf("HTTP %d: %s", r.status, r.body)
@@ -415,7 +415,7 @@ func TestA2PhoneNormalisation(t *testing.T) {
 	t.Run("every accepted format logs in as the same parent", func(t *testing.T) {
 		var want any
 		for _, in := range a14PhoneVariants {
-			r := a14Do(t, srv, "POST", "/api/mobile/login", nil, map[string]string{"phone": in, "pin": "4821"})
+			r := a14Do(t, srv, "POST", "/api/mobile/login", nil, map[string]string{"phone": in, "pin": "482193"})
 			if r.status != 200 {
 				t.Errorf("login with %q: HTTP %d %s", in, r.status, r.body)
 				continue
@@ -434,9 +434,9 @@ func TestA2PhoneNormalisation(t *testing.T) {
 	})
 
 	t.Run("invalid numbers get the unknown-phone 401", func(t *testing.T) {
-		unknown := a14Do(t, srv, "POST", "/api/mobile/login", nil, map[string]string{"phone": "07000000999", "pin": "4821"})
+		unknown := a14Do(t, srv, "POST", "/api/mobile/login", nil, map[string]string{"phone": "07000000999", "pin": "482193"})
 		for _, bad := range []string{"12345", "+15551234567", "abc", "06000000201"} {
-			r := a14Do(t, srv, "POST", "/api/mobile/login", nil, map[string]string{"phone": bad, "pin": "4821"})
+			r := a14Do(t, srv, "POST", "/api/mobile/login", nil, map[string]string{"phone": bad, "pin": "482193"})
 			if r.status != 401 || !bytes.Equal(r.body, unknown.body) {
 				t.Errorf("login with %q: HTTP %d %s, want the unknown-phone answer %d %s", bad, r.status, r.body, unknown.status, unknown.body)
 			}
@@ -445,7 +445,7 @@ func TestA2PhoneNormalisation(t *testing.T) {
 
 	t.Run("all formats share one rate-limit counter", func(t *testing.T) {
 		r := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"name": "A2 Limit", "parent_name": "A2 Limit Parent", "parent_phone": "+9647000000202", "parent_pin": "5930", "rfid_tag": "A2-3",
+			"name": "A2 Limit", "parent_name": "A2 Limit Parent", "parent_phone": "+9647000000202", "parent_pin": "593047", "rfid_tag": "A2-3",
 		})
 		if r.status != 200 {
 			t.Fatalf("HTTP %d: %s", r.status, r.body)
@@ -455,7 +455,7 @@ func TestA2PhoneNormalisation(t *testing.T) {
 				t.Fatalf("failure %d (%q): HTTP %d, want 401", i+1, in, r.status)
 			}
 		}
-		r = a14Do(t, srv, "POST", "/api/mobile/login", nil, map[string]string{"phone": "9647000000202", "pin": "5930"})
+		r = a14Do(t, srv, "POST", "/api/mobile/login", nil, map[string]string{"phone": "9647000000202", "pin": "593047"})
 		if r.status != 429 {
 			t.Fatalf("sixth attempt in a sixth format: HTTP %d, want 429", r.status)
 		}
@@ -639,7 +639,7 @@ func TestA3SignOutOnPINChange(t *testing.T) {
 	admin := a14AdminToken(t, srv)
 
 	create := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-		"name": "A3 Student", "parent_name": "A3 Parent", "parent_phone": "+9647000000601", "parent_pin": "4821", "rfid_tag": "A3-1",
+		"name": "A3 Student", "parent_name": "A3 Parent", "parent_phone": "+9647000000601", "parent_pin": "482193", "rfid_tag": "A3-1",
 	})
 	if create.status != 200 {
 		t.Fatalf("create: %d %s", create.status, create.body)
@@ -665,19 +665,19 @@ func TestA3SignOutOnPINChange(t *testing.T) {
 	}
 
 	t.Run("old token gets 401 after a PIN change; the new PIN works", func(t *testing.T) {
-		old, _ := login("4821")
+		old, _ := login("482193")
 		if r := students(old); r.status != 200 {
 			t.Fatalf("before the change: %d", r.status)
 		}
-		changePIN("5932")
+		changePIN("593265")
 		r := students(old)
 		if r.status != 401 || r.json(t)["message"] != "Invalid or expired token" {
 			t.Errorf("old token after the PIN change: %d %s, want 401 Invalid or expired token", r.status, r.body)
 		}
-		if _, code := login("4821"); code != 401 {
+		if _, code := login("482193"); code != 401 {
 			t.Errorf("old PIN: HTTP %d, want 401", code)
 		}
-		fresh, code := login("5932")
+		fresh, code := login("593265")
 		if code != 200 || students(fresh).status != 200 {
 			t.Errorf("new PIN: login %d, then %d; want both 200", code, students(fresh).status)
 		}
@@ -687,7 +687,7 @@ func TestA3SignOutOnPINChange(t *testing.T) {
 	})
 
 	t.Run("updating a student without a PIN keeps sessions", func(t *testing.T) {
-		tok, _ := login("5932")
+		tok, _ := login("593265")
 		r := a14Do(t, srv, "PUT", "/api/admin/students", a14Bearer(admin), map[string]any{
 			"id": studentID, "name": "A3 Student Renamed", "parent_name": "A3 Parent", "parent_phone": "+9647000000601",
 		})
@@ -703,8 +703,8 @@ func TestA3SignOutOnPINChange(t *testing.T) {
 			f, _ := c["iat"].(float64)
 			return int64(f)
 		}
-		pins := []string{"6040", "6041", "6042", "6043", "6044", "6045"}
-		current := "5932"
+		pins := []string{"604037", "604158", "604279", "604381", "604492", "604513"}
+		current := "593265"
 		for attempt := 0; attempt < len(pins)/2; attempt++ {
 			time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second + 20*time.Millisecond)))
 			before, _ := login(current)
@@ -952,7 +952,7 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 		args []any
 	}{
 		{`UPDATE admins SET password_hash = $1 WHERE username = 'admin'`, []any{string(adminHash)}},
-		{`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (701, 'Canonical Parent', '+9647000000701', $1), (702, 'Legacy Parent', '07000000702', $2)`, []any{a14Hash(t, "4821"), a14Hash(t, "5930")}},
+		{`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (701, 'Canonical Parent', '+9647000000701', $1), (702, 'Legacy Parent', '07000000702', $2)`, []any{a14Hash(t, "482193"), a14Hash(t, "593047")}},
 		{`INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (701, 'Canonical Child', 'V21-1', 701), (702, 'Legacy Child', 'V21-2', 702)`, nil},
 	} {
 		if _, err := db.Exec(q.sql, q.args...); err != nil {
@@ -971,7 +971,7 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 
 	t.Run("a canonical parent logs in with any format", func(t *testing.T) {
 		for _, in := range []string{"+9647000000701", "0700 000 0701", "٠٧٠٠٠٠٠٠٧٠١"} {
-			tok, code := login(in, "4821")
+			tok, code := login(in, "482193")
 			if code != 200 || a14Do(t, srv, "GET", "/api/mobile/students", a14Bearer(tok), nil).status != 200 {
 				t.Errorf("login with %q: %d", in, code)
 			}
@@ -979,9 +979,9 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 	})
 
 	t.Run("a PIN change signs the parent out", func(t *testing.T) {
-		old, _ := login("+9647000000701", "4821")
+		old, _ := login("+9647000000701", "482193")
 		r := a14Do(t, srv, "PUT", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"id": 701, "name": "Canonical Child", "parent_name": "Canonical Parent", "parent_phone": "+9647000000701", "parent_pin": "4822",
+			"id": 701, "name": "Canonical Child", "parent_name": "Canonical Parent", "parent_phone": "+9647000000701", "parent_pin": "482204",
 		})
 		if r.status != 200 {
 			t.Fatalf("PIN change: %d %s", r.status, r.body)
@@ -989,13 +989,13 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 		if got := a14Do(t, srv, "GET", "/api/mobile/students", a14Bearer(old), nil).status; got != 401 {
 			t.Errorf("old token: %d, want 401", got)
 		}
-		if _, code := login("07000000701", "4822"); code != 200 {
+		if _, code := login("07000000701", "482204"); code != 200 {
 			t.Errorf("new PIN: %d, want 200", code)
 		}
 	})
 
 	t.Run("device tokens register before phone normalisation", func(t *testing.T) {
-		tok, _ := login("+9647000000701", "4822")
+		tok, _ := login("+9647000000701", "482204")
 		r := a14Do(t, srv, "PUT", "/api/mobile/device-token", a14Bearer(tok), map[string]string{"token": "test-device-v22-000000000000"})
 		var n int
 		db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = 701`).Scan(&n)
@@ -1018,7 +1018,7 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 
 	t.Run("a parent stored in another format cannot log in until 000024 runs", func(t *testing.T) {
 		for _, in := range []string{"07000000702", "+9647000000702"} {
-			if _, code := login(in, "5930"); code != 401 {
+			if _, code := login(in, "593047"); code != 401 {
 				t.Errorf("legacy-format parent with %q: %d, want 401 until 000024 runs", in, code)
 			}
 		}
@@ -1026,7 +1026,7 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 
 	t.Run("adding a student for that parent creates a canonical duplicate that 000024 reports", func(t *testing.T) {
 		r := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"name": "Legacy Sibling", "parent_name": "Legacy Parent", "parent_phone": "07000000702", "rfid_tag": "V21-3",
+			"name": "Legacy Sibling", "parent_name": "Legacy Parent", "parent_phone": "07000000702", "parent_pin": "631874", "rfid_tag": "V21-3",
 		})
 		if r.status != 200 {
 			t.Fatalf("create: %d %s", r.status, r.body)
@@ -1055,7 +1055,7 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 			t.Fatalf("000024: %v", err)
 		}
 		for _, in := range []string{"07000000702", "+9647000000702", "009647000000702"} {
-			if _, code := login(in, "5930"); code != 200 {
+			if _, code := login(in, "593047"); code != 200 {
 				t.Errorf("login with %q after 000024: %d, want 200", in, code)
 			}
 		}

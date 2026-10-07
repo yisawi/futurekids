@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.5.0"
+  version: "1.7.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -29,6 +29,8 @@ info:
     - Dates and times are Asia/Baghdad (UTC+03:00, no daylight saving). Dates are `YYYY-MM-DD`,
       months `YYYY-MM`, punch times `hh:mm AM`/`hh:mm PM` (12-hour, zero-padded), and
       notification timestamps RFC 3339 with a `+03:00` offset.
+    - Every date and month parameter or field accepts years 2000 to 2100 only; any other year
+      returns 400.
     - IDs are integers. JSON request bodies are limited to 64 KiB (413). Request headers are
       limited to 64 KiB plus up to 8 KiB of read-buffer tolerance; beyond that the answer is
       431 in plain text. Unknown JSON fields in a request body are ignored.
@@ -139,7 +141,7 @@ components:
       in: query
       required: false
       description: |
-        Calendar day, `YYYY-MM-DD`, a real date with a year from 0001 to 9999. Defaults to today
+        Calendar day, `YYYY-MM-DD`, a real date with a year from 2000 to 2100. Defaults to today
         in Asia/Baghdad. Any other value returns 400.
       schema:
         type: string
@@ -151,7 +153,7 @@ components:
       in: query
       required: false
       description: |
-        Month, `YYYY-MM`, with a year from 0001 to 9999. Defaults to the current month in
+        Month, `YYYY-MM`, with a year from 2000 to 2100. Defaults to the current month in
         Asia/Baghdad. Any other value returns 400.
       schema:
         type: string
@@ -307,7 +309,10 @@ components:
         pin:
           type: string
           maxLength: 72
-          description: The parent's PIN, as a string. It is compared exactly (not trimmed).
+          description: |
+            The parent's PIN, as a string, compared exactly (not trimmed). New PINs are 6 digits,
+            but login checks no format, so a parent whose PIN was set before that rule keeps
+            logging in with it.
         fcm_token:
           type: string
           description: |
@@ -318,7 +323,7 @@ components:
       required: [phone, pin]
       example:
         phone: "+9647000000101"
-        pin: "4821"
+        pin: "482193"
         fcm_token: fcm-example-registration-token
 
     DeviceTokenRequest:
@@ -484,12 +489,12 @@ components:
           type: string
           minLength: 1
           maxLength: 100
-          description: Required and not blank (400).
+          description: Required and not blank (400). Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         parent_name:
           type: string
           minLength: 1
           maxLength: 255
-          description: Required and not blank (400). For a phone number that is already registered, it replaces that parent's name.
+          description: Required and not blank (400). For a phone number that is already registered, it replaces that parent's name. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         parent_phone:
           type: string
           minLength: 1
@@ -500,30 +505,40 @@ components:
             with this number, creating the parent when the number is new.
         parent_pin:
           type: string
-          maxLength: 72
+          minLength: 6
+          maxLength: 6
+          pattern: '^[0-9]{6}$'
           description: |
-            For a new parent: the PIN, or `1234` when empty or omitted. For an existing parent:
-            a non-empty value replaces the PIN and signs the parent out of every device: their
-            tokens get 401 and their registered push devices are removed. An empty one keeps
-            both. Never returned.
+            **Required when `parent_phone` is not registered yet** (a new parent): missing, empty
+            or only spaces returns 400. When set it must be exactly 6 ASCII digits `0-9` (any
+            other value returns 400; Arabic-Indic or Persian digits are rejected). The admin
+            dashboard generates it with a secure random source; the server never does, stores
+            only a hash and can never return it. For an already registered number it is
+            optional: a PIN replaces the current one and signs the parent out of every device
+            (their tokens get 401 and their registered push devices are removed); empty or
+            omitted keeps both.
         rfid_tag:
           type: string
           maxLength: 50
-          description: Device User ID; must be unique. Empty or omitted stores a placeholder `admin-<number>`.
+          description: |
+            Device User ID; must be unique (409 when another student has it). Empty or omitted
+            stores a placeholder `admin-<number>`. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         grade:
           type: string
           nullable: true
           maxLength: 50
+          description: Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         section:
           type: string
           nullable: true
           maxLength: 50
+          description: Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
       required: [name, parent_name, parent_phone]
       example:
         name: Sara Example
         parent_name: Omar Example
         parent_phone: "+9647000000101"
-        parent_pin: "4821"
+        parent_pin: "482193"
         rfid_tag: "1001"
         grade: G3
         section: A
@@ -540,12 +555,12 @@ components:
           type: string
           minLength: 1
           maxLength: 100
-          description: Required and not blank (400).
+          description: Required and not blank (400). Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         parent_name:
           type: string
           minLength: 1
           maxLength: 255
-          description: Required and not blank (400). Replaces the linked parent's name.
+          description: Required and not blank (400). Replaces the linked parent's name. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         parent_phone:
           type: string
           minLength: 1
@@ -553,28 +568,32 @@ components:
           description: |
             Required (400), an Iraqi mobile number in any format the parent login accepts (400
             otherwise). The student is re-linked to the parent with this number; a number that is
-            not registered yet creates a new parent (PIN `1234` unless `parent_pin` is sent).
+            not registered yet creates a new parent, which needs `parent_pin`.
         parent_pin:
           type: string
-          maxLength: 72
+          minLength: 6
+          maxLength: 6
+          pattern: '^[0-9]{6}$'
           description: |
-            Non-empty replaces the parent's PIN and signs the parent out of every device (tokens
-            get 401, registered push devices are removed); empty or omitted keeps it (a newly
-            created parent gets `1234`).
+            **Required when `parent_phone` is not registered yet** (missing, empty or only spaces
+            returns 400); the dashboard generates it. When set it must be exactly 6 ASCII digits
+            (400 otherwise). For a registered number, a PIN replaces the current one and signs
+            the parent out of every device (tokens get 401, registered push devices are
+            removed); empty or omitted keeps it.
         rfid_tag:
           type: string
           maxLength: 50
-          description: Empty or omitted keeps the stored tag.
+          description: Empty or omitted keeps the stored tag. Another student's tag returns 409. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         grade:
           type: string
           nullable: true
           maxLength: 50
-          description: Omitted or null keeps the stored value.
+          description: Omitted or null keeps the stored value. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         section:
           type: string
           nullable: true
           maxLength: 50
-          description: Omitted or null keeps the stored value.
+          description: Omitted or null keeps the stored value. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
       required: [id, name, parent_name, parent_phone]
       example:
         id: 42
@@ -702,12 +721,12 @@ components:
           type: integer
           format: int32
           minimum: 1
-          description: Required (400 when missing or 0). An id with no student currently returns 500.
+          description: Required (400 when missing, 0 or negative). An id with no active student returns 404.
         leave_date:
           type: string
           format: date
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-          description: Required, `YYYY-MM-DD` (400 otherwise).
+          description: Required, `YYYY-MM-DD` with a year from 2000 to 2100 (400 otherwise).
         notes:
           type: string
           description: Internal note, never shown to parents. Omitted stores an empty note.
@@ -772,15 +791,16 @@ components:
           type: string
           minLength: 1
           maxLength: 50
-          description: Required (400). An existing serial number returns 409.
+          description: Required (400). An existing serial number returns 409. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         location_name:
           type: string
           maxLength: 50
           default: ""
+          description: Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         is_active:
           type: boolean
-          default: false
-          description: '**Omitted means false**: the device is created disabled and its punches are ignored.'
+          default: true
+          description: Omitted means true (active).
       required: [serial_number]
       example:
         serial_number: TEST-SN-0001
@@ -790,20 +810,22 @@ components:
     DeviceUpdateRequest:
       type: object
       description: |
-        Replaces the device's location and active flag. Send both fields: the server does not
-        reject a request without them, but an omitted `location_name` is cleared and an
-        omitted `is_active` disables the device.
+        Changes only the fields it carries: an omitted `location_name` or `is_active` keeps its
+        stored value. At least one of them is required (400 otherwise). A present empty
+        `location_name` clears the location.
       properties:
         serial_number:
           type: string
           minLength: 1
+          maxLength: 50
           description: Required (400). A serial number with no device returns 404.
         location_name:
           type: string
           maxLength: 50
+          description: Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         is_active:
           type: boolean
-      required: [serial_number, location_name, is_active]
+      required: [serial_number]
       example:
         serial_number: TEST-SN-0001
         location_name: Side Gate
@@ -874,11 +896,11 @@ components:
           type: string
           minLength: 1
           maxLength: 100
-          description: Required and non-empty (400).
+          description: Required and non-empty (400). Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
         value:
           type: string
           default: ""
-          description: Omitted stores an empty value.
+          description: Omitted stores an empty value. No length limit beyond the 64 KiB body.
       required: [key]
       example:
         key: whatsapp_number
@@ -1383,6 +1405,50 @@ components:
               value:
                 status: error
                 message: Invalid request body
+    StudentWriteBadRequest:
+      description: |
+        Malformed JSON; `id` (update) missing or 0; `name`, `parent_name` or `parent_phone`
+        missing or blank; `parent_phone` not an Iraqi mobile number; `parent_pin` missing for a
+        new parent or not exactly 6 digits; or a field longer than its `maxLength`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            pinRequired:
+              summary: New parent without a PIN
+              value:
+                status: error
+                message: parent_pin is required for a new parent (parent_phone is not registered yet)
+            pinFormat:
+              summary: PIN that is not 6 digits
+              value:
+                status: error
+                message: parent_pin must be exactly 6 digits (0-9)
+            tooLong:
+              summary: A field longer than its limit
+              value:
+                status: error
+                message: name must be at most 100 characters
+            invalidPhone:
+              summary: Not an Iraqi mobile number
+              value:
+                status: error
+                message: parent_phone must be an Iraqi mobile number, for example 07XXXXXXXXX or +9647XXXXXXXXX
+            missing:
+              summary: Required field missing
+              value:
+                status: error
+                message: parent_phone is required
+    RFIDTagTaken:
+      description: Another student already has this `rfid_tag`. Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: rfid_tag is already used by another student
     TooManyLoginAttempts:
       description: Too many failed login attempts; see the operation's rate limit.
       headers:
@@ -1586,8 +1652,8 @@ paths:
       operationId: getTodayAttendance
       summary: Today's attendance for the parent's children
       description: |
-        One DailyAttendanceDTO per active child for today in Asia/Baghdad (`date`). The order of
-        the children is not guaranteed; sort by `student_id` if it matters.
+        One DailyAttendanceDTO per active child for today in Asia/Baghdad (`date`), ordered by
+        `student_id` ascending like the other parent lists.
       security:
         - ParentJWT: []
       responses:
@@ -2037,8 +2103,9 @@ paths:
       summary: Create a student
       description: |
         Creates the student and creates or updates the parent with `parent_phone` in one
-        statement. Responds 200 (not 201) with the stored student; `parent_pin` is never
-        returned.
+        transaction: on any error nothing is written. A `parent_phone` that is not registered
+        yet needs `parent_pin` (generated by the dashboard). Responds 200 (not 201) with the
+        stored student; `parent_pin` is never returned.
       security:
         - AdminJWT: []
       requestBody:
@@ -2055,47 +2122,28 @@ paths:
               schema:
                 $ref: '#/components/schemas/StudentCreatedResponse'
         '400':
-          description: Malformed JSON, `name`, `parent_name` or `parent_phone` missing or blank, or `parent_phone` not an Iraqi mobile number.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                missing:
-                  summary: Required field missing
-                  value:
-                    status: error
-                    message: parent_phone is required
-                invalidPhone:
-                  summary: Not an Iraqi mobile number
-                  value:
-                    status: error
-                    message: parent_phone must be an Iraqi mobile number, for example 07XXXXXXXXX or +9647XXXXXXXXX
+          $ref: '#/components/responses/StudentWriteBadRequest'
         '401':
           $ref: '#/components/responses/AdminUnauthorized'
         '403':
           $ref: '#/components/responses/AdminForbidden'
+        '409':
+          $ref: '#/components/responses/RFIDTagTaken'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
-          description: |
-            Database error, including an `rfid_tag` that another student already has and a value
-            longer than the documented `maxLength`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                status: error
-                message: Failed to create student and parent
+          $ref: '#/components/responses/InternalError'
 
     put:
       tags: [Admin Dashboard]
       operationId: updateStudent
       summary: Update a student
-      description: Updates the student with `id` and creates or updates the parent with `parent_phone`.
+      description: |
+        Updates the student with `id` and creates or updates the parent with `parent_phone`, in
+        one transaction: on any error, including 404, nothing is written. A `parent_phone` that
+        is not registered yet needs `parent_pin`.
       security:
         - AdminJWT: []
       requestBody:
@@ -2115,14 +2163,7 @@ paths:
                 status: success
                 message: Student updated
         '400':
-          description: Malformed JSON, `id` missing or 0, `name`, `parent_name` or `parent_phone` missing or blank, or `parent_phone` not an Iraqi mobile number.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                status: error
-                message: Invalid request body or missing ID
+          $ref: '#/components/responses/StudentWriteBadRequest'
         '401':
           $ref: '#/components/responses/AdminUnauthorized'
         '403':
@@ -2136,19 +2177,14 @@ paths:
               example:
                 status: error
                 message: Student not found
+        '409':
+          $ref: '#/components/responses/RFIDTagTaken'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
-          description: Database error, including an `rfid_tag` that another student already has and a value longer than the documented `maxLength`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                status: error
-                message: Failed to update student
+          $ref: '#/components/responses/InternalError'
 
     delete:
       tags: [Admin Dashboard]
@@ -2202,8 +2238,8 @@ paths:
       operationId: getDailyAttendance
       summary: Daily attendance report
       description: |
-        Every active student for the day, ordered Present, then Excused, then Absent, and by
-        name within each status.
+        Every active student for the day, ordered Present, then Excused, then Absent, by name
+        within each status, and by `student_id` for equal names.
       security:
         - AdminJWT: []
       parameters:
@@ -2269,7 +2305,9 @@ paths:
       tags: [Admin Dashboard]
       operationId: createLeave
       summary: Record an excused absence
-      description: Records a leave for a student and day. Re-submitting the same student and day updates the notes.
+      description: |
+        Records a leave for an active student and a day. Re-submitting the same student and day
+        updates the notes. A student id with no active student (unknown or deactivated) returns 404.
       security:
         - AdminJWT: []
       requestBody:
@@ -2286,7 +2324,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/LeaveResponse'
         '400':
-          description: Malformed JSON, `student_id` or `leave_date` missing, or `leave_date` not `YYYY-MM-DD`.
+          description: Malformed JSON; `student_id` missing, 0 or negative; `leave_date` missing, not `YYYY-MM-DD`, or with a year outside 2000 to 2100.
           content:
             application/json:
               schema:
@@ -2302,8 +2340,17 @@ paths:
           $ref: '#/components/responses/PayloadTooLarge'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
+        '404':
+          description: No active student has this `student_id` (unknown or deactivated).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Student not found
         '500':
-          description: Database error, including a `student_id` with no student.
+          description: Database error.
           content:
             application/json:
               schema:
@@ -2359,7 +2406,7 @@ paths:
                 status: success
                 message: Setting saved
         '400':
-          description: Malformed JSON or an empty `key`.
+          description: Malformed JSON, an empty `key`, or a `key` longer than 100 characters.
           content:
             application/json:
               schema:
@@ -2406,6 +2453,7 @@ paths:
       tags: [Admin Dashboard]
       operationId: createDevice
       summary: Register a device
+      description: A device registered without `is_active` is active.
       security:
         - AdminJWT: []
       requestBody:
@@ -2425,14 +2473,22 @@ paths:
                 status: success
                 message: Device added successfully
         '400':
-          description: Malformed JSON or a missing `serial_number`.
+          description: Malformed JSON, a missing `serial_number`, or a field longer than its `maxLength`.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                status: error
-                message: Invalid payload or missing SN
+              examples:
+                missing:
+                  summary: serial_number missing
+                  value:
+                    status: error
+                    message: Invalid payload or missing SN
+                tooLong:
+                  summary: A field longer than its limit
+                  value:
+                    status: error
+                    message: location_name must be at most 50 characters
         '401':
           $ref: '#/components/responses/AdminUnauthorized'
         '403':
@@ -2456,7 +2512,10 @@ paths:
     put:
       tags: [Admin Dashboard]
       operationId: updateDevice
-      summary: Update a device's location and active flag
+      summary: Update a device's location or active flag
+      description: |
+        Changes only the fields sent; an omitted `location_name` or `is_active` keeps its stored
+        value. Send at least one of them.
       security:
         - AdminJWT: []
       requestBody:
@@ -2476,14 +2535,22 @@ paths:
                 status: success
                 message: Device updated successfully
         '400':
-          description: Malformed JSON or a missing `serial_number`.
+          description: Malformed JSON, a missing `serial_number`, neither `location_name` nor `is_active` sent, or a field longer than its `maxLength`.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                status: error
-                message: Invalid payload
+              examples:
+                nothingToChange:
+                  summary: Neither field sent
+                  value:
+                    status: error
+                    message: location_name or is_active is required
+                missing:
+                  summary: serial_number missing
+                  value:
+                    status: error
+                    message: Invalid payload
         '401':
           $ref: '#/components/responses/AdminUnauthorized'
         '403':

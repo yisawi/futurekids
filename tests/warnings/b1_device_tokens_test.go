@@ -165,8 +165,8 @@ func TestB1DeviceTokenEndpoints(t *testing.T) {
 		}
 	}
 
-	p1 := newParent("B1 Parent One", "+9647000000811", "4821", "B1-1")
-	p2 := newParent("B1 Parent Two", "+9647000000812", "5930", "B1-2")
+	p1 := newParent("B1 Parent One", "+9647000000811", "482193", "B1-1")
+	p2 := newParent("B1 Parent Two", "+9647000000812", "593047", "B1-2")
 	_, p1.token = login(p1, nil)
 	_, p2.token = login(p2, nil)
 	a, b := b1Token("phone-a"), b1Token("phone-b")
@@ -264,7 +264,7 @@ func TestB1DeviceTokenEndpoints(t *testing.T) {
 		ok(t, register(p1.token, other), "parent 1 registers")
 		before := tokensOf(p1.id)
 		r := a14Do(t, srv, "PUT", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"id": p2.student, "name": "B1 Parent Two Child", "parent_name": "B1 Parent Two", "parent_phone": p2.phone, "parent_pin": "6041",
+			"id": p2.student, "name": "B1 Parent Two Child", "parent_name": "B1 Parent Two", "parent_phone": p2.phone, "parent_pin": "604158",
 		})
 		if r.status != 200 {
 			t.Fatalf("change PIN: %d %s", r.status, r.body)
@@ -274,7 +274,7 @@ func TestB1DeviceTokenEndpoints(t *testing.T) {
 		if r := register(p2.token, a); r.status != 401 {
 			t.Errorf("register with the signed-out token: %d, want 401", r.status)
 		}
-		p2.pin = "6041"
+		p2.pin = "604158"
 		_, p2.token = login(p2, nil)
 		ok(t, register(p2.token, a), "register after logging in again")
 		expect(t, "parent 2 tokens after logging in again", tokensOf(p2.id), a)

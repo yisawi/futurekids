@@ -57,7 +57,7 @@ migrate -path db/migrations -database "$DATABASE_URL" up         # 000024, after
 6. **Before 000024, check the stored numbers** with the read-only `db/scripts/check_phone_formats.sql`. It prints number shapes and counts but no phone numbers, and lists the parent ids 000024 would abort on.
 7. **While 000024 is not applied,** the new code normalises what users type but compares it with the stored strings:
    - A parent whose number is stored in another format, such as `07XXXXXXXXX`, cannot log in.
-   - Creating a student with that parent's number makes a second parent in canonical form, which 000024 then reports as a collision.
+   - Creating a student with that parent's number and a `parent_pin` makes a second parent in canonical form, which 000024 then reports as a collision; without a `parent_pin` the request is refused with 400, because the server treats the number as a new parent.
    - The check script's `would change` count is the number of parents affected; when it is 0, nothing is affected.
 8. **000024 normalises stored phone numbers,** including `notifications.parent_phone`, which keeps history matching for any code that still reads it (a rolled-back deploy, or 000023's trigger). It aborts without changing anything if a parent's number is not an Iraqi mobile number, or if two parents hold the same number in different formats; the error lists the parent ids. Because the whole file runs as one transaction, the schema stays at version 23, but golang-migrate records version 24 as dirty. Fix the listed parents, run `migrate force 23`, then `migrate up` again.
 9. **A later migration, after this deploy,** drops `students.fcm_token`, `notifications.parent_phone` and the 000023 trigger, which the new code does not use.

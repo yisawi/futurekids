@@ -154,7 +154,7 @@ func TestGroup2Cleanup(t *testing.T) {
 		}
 
 		existing, _ := bcrypt.GenerateFromPassword([]byte("2468"), bcrypt.MinCost)
-		exec_(t, `INSERT INTO parents (full_name, phone_number, pin_code) VALUES ('Plain A', '+9647000000701', '1234'), ('Plain B', '+9647000000702', '98765'), ('Hashed', '+9647000000703', '`+string(existing)+`')`)
+		exec_(t, `INSERT INTO parents (full_name, phone_number, pin_code) VALUES ('Plain A', '+9647000000701', '5824'), ('Plain B', '+9647000000702', '98765'), ('Hashed', '+9647000000703', '`+string(existing)+`')`)
 		bin := buildBin(t, "cmd/migrate-pins")
 		run := func() string {
 			cmd := exec.Command(bin)
@@ -174,7 +174,7 @@ func TestGroup2Cleanup(t *testing.T) {
 			pins[phone] = pin
 		}
 		rows.Close()
-		for phone, plain := range map[string]string{"+9647000000701": "1234", "+9647000000702": "98765", "+9647000000703": "2468"} {
+		for phone, plain := range map[string]string{"+9647000000701": "5824", "+9647000000702": "98765", "+9647000000703": "2468"} {
 			if bcrypt.CompareHashAndPassword([]byte(pins[phone]), []byte(plain)) != nil {
 				t.Errorf("%s: stored PIN no longer verifies against %q", phone, plain)
 			}

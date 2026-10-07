@@ -91,6 +91,7 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 		FROM students s
 		CROSS JOIN LATERAL get_student_status(s.id, $2::DATE) st
 		WHERE s.parent_id = $1 AND s.is_active = true
+		ORDER BY s.id ASC
 	`
 
 	rows, err := app.DB.QueryContext(r.Context(), query, parentID, today)
@@ -172,8 +173,13 @@ func requestedMonth(w http.ResponseWriter, r *http.Request, now time.Time) (mont
 	if m == "" {
 		return now.Format("2006-01"), true
 	}
-	if _, err := time.Parse("2006-01", m); err != nil {
+	t, err := time.Parse("2006-01", m)
+	if err != nil {
 		respondError(w, http.StatusBadRequest, "month must be formatted as YYYY-MM")
+		return "", false
+	}
+	if !yearInRange(t) {
+		respondError(w, http.StatusBadRequest, "month must have a year from 2000 to 2100")
 		return "", false
 	}
 	return m, true

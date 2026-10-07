@@ -303,7 +303,9 @@ func (r *runner) scenario() {
 
 	// ── Devices ────────────────────────────────────────────────────────────────
 	r.call("POST /api/admin/devices", "active device", "", admin, map[string]any{"serial_number": "TEST-SN-0001", "location_name": "Main Gate", "is_active": true}, 200)
-	r.call("POST /api/admin/devices", "is_active omitted", "", admin, map[string]any{"serial_number": "TEST-SN-0002"}, 200)
+	r.call("POST /api/admin/devices", "disabled device", "", admin, map[string]any{"serial_number": "TEST-SN-0002", "is_active": false}, 200)
+	r.call("POST /api/admin/devices", "is_active omitted means active", "", admin, map[string]any{"serial_number": "TEST-SN-0004", "location_name": "Annex"}, 200)
+	r.call("POST /api/admin/devices", "location_name too long", "", admin, map[string]any{"serial_number": "TEST-SN-0005", "location_name": strings.Repeat("L", 51)}, 400)
 	r.call("POST /api/admin/devices", "spare device", "", admin, map[string]any{"serial_number": "TEST-SN-0003", "location_name": "Side Gate", "is_active": true}, 200)
 	r.call("POST /api/admin/devices", "duplicate serial", "", admin, map[string]any{"serial_number": "TEST-SN-0001"}, 409)
 	r.call("POST /api/admin/devices", "missing serial", "", admin, map[string]any{"location_name": "Nowhere"}, 400)
@@ -321,7 +323,7 @@ func (r *runner) scenario() {
 		}
 		return id, d
 	}
-	idA, d := create("every field", map[string]any{"name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": "4821", "rfid_tag": "9001", "grade": "G3", "section": "A"})
+	idA, d := create("every field", map[string]any{"name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": "482193", "rfid_tag": "9001", "grade": "G3", "section": "A"})
 	r.expect("created student echoes grade", at(d, "data", "grade"), "G3")
 	idB, d := create("required fields only", map[string]any{"name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1})
 	r.expect("omitted grade is null", at(d, "data", "grade"), nil)
@@ -329,14 +331,23 @@ func (r *runner) scenario() {
 		t.Errorf("omitted rfid_tag: got %q, want an admin-<number> placeholder", tag)
 	}
 	idC, _ := create("second child", map[string]any{"name": "Maryam Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9003", "grade": "G1", "section": "B"})
-	idD, _ := create("other parent", map[string]any{"name": "Hadi Example", "parent_name": "Layla Example", "parent_phone": phone2, "parent_pin": "5930", "rfid_tag": "9004", "grade": "G3", "section": "A"})
-	idE, _ := create("to deactivate", map[string]any{"name": "Temp Example", "parent_name": "Nour Example", "parent_phone": phone3, "parent_pin": "6041", "rfid_tag": "9005"})
+	idD, _ := create("other parent", map[string]any{"name": "Hadi Example", "parent_name": "Layla Example", "parent_phone": phone2, "parent_pin": "593047", "rfid_tag": "9004", "grade": "G3", "section": "A"})
+	idE, _ := create("to deactivate", map[string]any{"name": "Temp Example", "parent_name": "Nour Example", "parent_phone": phone3, "parent_pin": "604158", "rfid_tag": "9005"})
 	r.call("POST /api/admin/students", "missing name", "", admin, map[string]any{"parent_name": "Omar Example", "parent_phone": phone1}, 400)
 	r.call("POST /api/admin/students", "blank parent_phone", "", admin, map[string]any{"name": "Blank Example", "parent_name": "Omar Example", "parent_phone": "   "}, 400)
 	_, d = r.call("POST /api/admin/students", "parent_phone not an Iraqi mobile number", "", admin, map[string]any{"name": "Bad Example", "parent_name": "Omar Example", "parent_phone": "+15551234567"}, 400)
 	r.expect("invalid phone message", at(d, "message"), "parent_phone must be an Iraqi mobile number, for example 07XXXXXXXXX or +9647XXXXXXXXX")
 	r.call("POST /api/admin/students", "malformed JSON", "", admin, "{", 400)
-	r.call("POST /api/admin/students", "duplicate rfid_tag", "", admin, map[string]any{"name": "Dup Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 500)
+	r.call("POST /api/admin/students", "duplicate rfid_tag", "", admin, map[string]any{"name": "Dup Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 409)
+	r.call("POST /api/admin/students", "new parent without parent_pin", "", admin, map[string]any{"name": "New Example", "parent_name": "New Parent", "parent_phone": "+9647000000606", "rfid_tag": "9006"}, 400)
+	r.call("POST /api/admin/students", "new parent with a blank parent_pin", "", admin, map[string]any{"name": "New Example", "parent_name": "New Parent", "parent_phone": "+9647000000606", "parent_pin": "   ", "rfid_tag": "9006"}, 400)
+	for _, bad := range []string{"48219", "4821937", "48a193", "٤٨٢١٩٣"} {
+		r.call("POST /api/admin/students", "parent_pin "+bad+" is not 6 digits", "", admin, map[string]any{"name": "Pin Example", "parent_name": "Pin Parent", "parent_phone": "+9647000000607", "parent_pin": bad, "rfid_tag": "9007"}, 400)
+	}
+	r.call("POST /api/admin/students", "name too long", "", admin, map[string]any{"name": strings.Repeat("n", 101), "parent_name": "Omar Example", "parent_phone": phone1}, 400)
+	var pinless int
+	r.db.QueryRow(`SELECT COUNT(*) FROM parents WHERE phone_number = '+9647000000606'`).Scan(&pinless)
+	r.expect("no parent created without a PIN", pinless, 0)
 	r.call("POST /api/admin/students", "oversized body", "", admin, oversized(), 413)
 	adminDenied("POST /api/admin/students", "", map[string]any{"name": "X", "parent_name": "X", "parent_phone": phone1})
 
@@ -346,7 +357,10 @@ func (r *runner) scenario() {
 	r.call("PUT /api/admin/students", "parent_phone not an Iraqi mobile number", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": "12345"}, 400)
 	r.call("PUT /api/admin/students", "blank name", "", admin, map[string]any{"id": idA, "name": " ", "parent_name": "Omar Example", "parent_phone": phone1}, 400)
 	r.call("PUT /api/admin/students", "malformed JSON", "", admin, "{", 400)
-	r.call("PUT /api/admin/students", "rfid_tag taken by another student", "", admin, map[string]any{"id": idB, "name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 500)
+	r.call("PUT /api/admin/students", "rfid_tag taken by another student", "", admin, map[string]any{"id": idB, "name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 409)
+	r.call("PUT /api/admin/students", "parent_pin of 4 digits", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": "4821"}, 400)
+	r.call("PUT /api/admin/students", "keeps its own rfid_tag", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 200)
+	r.call("PUT /api/admin/students", "new parent without parent_pin", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "New Parent", "parent_phone": "+9647000000606"}, 400)
 	r.call("PUT /api/admin/students", "oversized body", "", admin, oversized(), 413)
 	adminDenied("PUT /api/admin/students", "", map[string]any{"id": idA})
 
@@ -364,7 +378,12 @@ func (r *runner) scenario() {
 	r.call("POST /api/admin/leaves", "leave_date missing", "", admin, map[string]any{"student_id": idC}, 400)
 	r.call("POST /api/admin/leaves", "leave_date not YYYY-MM-DD", "", admin, map[string]any{"student_id": idC, "leave_date": "21-09-2026"}, 400)
 	r.call("POST /api/admin/leaves", "malformed JSON", "", admin, "{", 400)
-	r.call("POST /api/admin/leaves", "unknown student", "", admin, map[string]any{"student_id": 999999, "leave_date": today}, 500)
+	r.call("POST /api/admin/leaves", "unknown student", "", admin, map[string]any{"student_id": 999999, "leave_date": today}, 404)
+	r.call("POST /api/admin/leaves", "deactivated student", "", admin, map[string]any{"student_id": idE, "leave_date": today}, 404)
+	r.call("POST /api/admin/leaves", "negative student_id", "", admin, map[string]any{"student_id": -1, "leave_date": today}, 400)
+	for _, bad := range []string{"0000-01-01", "1999-12-31", "2101-01-01"} {
+		r.call("POST /api/admin/leaves", "leave_date year "+bad, "", admin, map[string]any{"student_id": idC, "leave_date": bad}, 400)
+	}
 	r.call("POST /api/admin/leaves", "oversized body", "", admin, oversized(), 413)
 	adminDenied("POST /api/admin/leaves", "", map[string]any{"student_id": idC, "leave_date": today})
 
@@ -372,6 +391,7 @@ func (r *runner) scenario() {
 	r.call("PUT /api/admin/settings", "public setting", "", admin, map[string]string{"key": "whatsapp_number", "value": "+9647000000999"}, 200)
 	r.call("PUT /api/admin/settings", "internal setting", "", admin, map[string]string{"key": "internal_note", "value": "staff only"}, 200)
 	r.call("PUT /api/admin/settings", "empty key", "", admin, map[string]string{"key": "", "value": "x"}, 400)
+	r.call("PUT /api/admin/settings", "key too long", "", admin, map[string]string{"key": strings.Repeat("k", 101), "value": "x"}, 400)
 	r.call("PUT /api/admin/settings", "malformed JSON", "", admin, "{", 400)
 	r.call("PUT /api/admin/settings", "oversized body", "", admin, oversized(), 413)
 	adminDenied("PUT /api/admin/settings", "", map[string]string{"key": "internal_note", "value": "x"})
@@ -420,9 +440,9 @@ func (r *runner) scenario() {
 
 	// ── Parent login ───────────────────────────────────────────────────────────
 	r.call("POST /api/mobile/login", "wrong PIN", "", "", map[string]string{"phone": phone1, "pin": "0000"}, 401)
-	r.call("POST /api/mobile/login", "unregistered phone", "", "", map[string]string{"phone": unknownPhone, "pin": "4821"}, 401)
-	r.call("POST /api/mobile/login", "not an Iraqi mobile number", "", "", map[string]string{"phone": "12345", "pin": "4821"}, 401)
-	_, d = r.call("POST /api/mobile/login", "valid PIN with FCM token", "", "", map[string]string{"phone": "0700 000 0101", "pin": "4821", "fcm_token": "fcm-contract-token-0001"}, 200)
+	r.call("POST /api/mobile/login", "unregistered phone", "", "", map[string]string{"phone": unknownPhone, "pin": "482193"}, 401)
+	r.call("POST /api/mobile/login", "not an Iraqi mobile number", "", "", map[string]string{"phone": "12345", "pin": "482193"}, 401)
+	_, d = r.call("POST /api/mobile/login", "valid PIN with FCM token", "", "", map[string]string{"phone": "0700 000 0101", "pin": "482193", "fcm_token": "fcm-contract-token-0001"}, 200)
 	r.parent = str(at(d, "data", "token"))
 	r.parentID = toInt(at(d, "data", "parent", "id"))
 	if r.parent == "" || r.parentID == 0 {
@@ -434,20 +454,20 @@ func (r *runner) scenario() {
 		t.Fatalf("notification fixture: %v", err)
 	}
 	for _, format := range []string{phone1, "009647000000101", "٠٧٠٠٠٠٠٠١٠١", "(0700) 000-0101"} {
-		_, d := r.call("POST /api/mobile/login", "phone written as "+format, "", "", map[string]string{"phone": format, "pin": "4821"}, 200)
+		_, d := r.call("POST /api/mobile/login", "phone written as "+format, "", "", map[string]string{"phone": format, "pin": "482193"}, 200)
 		r.expect("same parent for "+format, toInt(at(d, "data", "parent", "id")), r.parentID)
 	}
 	r.expect("login returns the parent name", at(d, "data", "parent", "name"), "Omar Example")
 	var tokens int
 	r.db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = $1 AND token = 'fcm-contract-token-0001'`, r.parentID).Scan(&tokens)
 	r.expect("login fcm_token registered as a device token", tokens, 1)
-	r.call("POST /api/mobile/login", "valid PIN without FCM token", "", "", map[string]string{"phone": phone1, "pin": "4821"}, 200)
+	r.call("POST /api/mobile/login", "valid PIN without FCM token", "", "", map[string]string{"phone": phone1, "pin": "482193"}, 200)
 	r.db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = $1`, r.parentID).Scan(&tokens)
 	r.expect("login without fcm_token keeps the registered device", tokens, 1)
 	r.call("POST /api/mobile/login", "pin missing", "", "", map[string]string{"phone": phone1}, 400)
 	r.call("POST /api/mobile/login", "malformed JSON", "", "", "{", 400)
 	r.call("POST /api/mobile/login", "oversized body", "", "", oversized(), 413)
-	_, d = r.call("POST /api/mobile/login", "parent with no active child", "", "", map[string]string{"phone": phone3, "pin": "6041"}, 200)
+	_, d = r.call("POST /api/mobile/login", "parent with no active child", "", "", map[string]string{"phone": phone3, "pin": "604158"}, 200)
 	childless := str(at(d, "data", "token"))
 	parent := r.parent
 	expiredParent := signToken(t, claims("parent", r.parentID, earlier), contractSecret)
@@ -495,9 +515,12 @@ func (r *runner) scenario() {
 	_, d = r.call("GET /api/mobile/attendance/today", "today", "", parent, nil, 200)
 	r.expect("today is the Asia/Baghdad date", at(d, "date"), today)
 	byID := map[int]any{}
+	var todayOrder []int
 	for _, rec := range list(at(d, "data")) {
 		byID[toInt(at(rec, "student_id"))] = rec
+		todayOrder = append(todayOrder, toInt(at(rec, "student_id")))
 	}
+	r.expect("today ordered by student_id", todayOrder, []int{idA, idB, idC})
 	r.expect("today: one record per active child", len(byID), 3)
 	r.expect("present child", []any{at(byID[idA], "status"), at(byID[idA], "check_in_time"), at(byID[idA], "check_out_time")}, []any{"Present", "07:15 AM", "12:30 PM"})
 	r.expect("absent child", []any{at(byID[idB], "status"), at(byID[idB], "check_in_time"), at(byID[idB], "check_out_time")}, []any{"Absent", nil, nil})
@@ -555,7 +578,7 @@ func (r *runner) scenario() {
 	for _, op := range []string{"GET /api/mobile/attendance/summary", "GET /api/mobile/attendance/monthly"} {
 		_, d = r.call(op, "future month", "?month=2099-01", parent, nil, 200)
 		r.expect("future month has no rows", len(list(at(d, "data"))), 0)
-		for _, bad := range []string{"2026-13", "09-2026", "2026-9", "abc"} {
+		for _, bad := range []string{"2026-13", "09-2026", "2026-9", "abc", "0000-01", "1999-12", "2101-01"} {
 			r.call(op, "invalid month "+bad, "?month="+bad, parent, nil, 400)
 		}
 		parentDenied(op, "")
@@ -667,10 +690,10 @@ func (r *runner) scenario() {
 	r.call("PUT /api/mobile/device-token", "register before the PIN change", "", parent, device, 200)
 
 	// ── PIN change signs the parent out ────────────────────────────────────────
-	r.call("PUT /api/admin/students", "change the parent's PIN", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": "4822"}, 200)
+	r.call("PUT /api/admin/students", "change the parent's PIN", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": "482204"}, 200)
 	r.call("GET /api/mobile/students", "token issued before the PIN change", "", parent, nil, 401)
-	r.call("POST /api/mobile/login", "old PIN after the change", "", "", map[string]string{"phone": phone1, "pin": "4821"}, 401)
-	_, d = r.call("POST /api/mobile/login", "new PIN", "", "", map[string]string{"phone": phone1, "pin": "4822"}, 200)
+	r.call("POST /api/mobile/login", "old PIN after the change", "", "", map[string]string{"phone": phone1, "pin": "482193"}, 401)
+	_, d = r.call("POST /api/mobile/login", "new PIN", "", "", map[string]string{"phone": phone1, "pin": "482204"}, 200)
 	r.parent = str(at(d, "data", "token"))
 	r.call("GET /api/mobile/students", "token issued after the PIN change", "", r.parent, nil, 200)
 	r.db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = $1`, r.parentID).Scan(&tokens)
@@ -701,7 +724,7 @@ func (r *runner) scenario() {
 		}
 		r.expect("Present, Excused, Absent, then by name", ids, []int{idD, idA, idC, idB})
 	}
-	for _, bad := range []string{"2026-02-30", "21-09-2026", "today"} {
+	for _, bad := range []string{"2026-02-30", "21-09-2026", "today", "0000-01-01", "1999-12-31", "2101-01-01"} {
 		r.call("GET /api/admin/attendance", "invalid date "+bad, "?date="+bad, admin, nil, 400)
 		r.call("GET /api/admin/export/excel", "invalid date "+bad, "?date="+bad, admin, nil, 400)
 	}
@@ -725,7 +748,7 @@ func (r *runner) scenario() {
 		devs = append(devs, fmt.Sprintf("%v %q %v %v", at(dv, "serial_number"), at(dv, "location_name"), at(dv, "is_active"), hasSync))
 	}
 	r.expect("devices by location, last_sync only once synced", devs, []string{
-		`TEST-SN-0002 "" false false`, `TEST-SN-0001 "Main Gate" true true`, `TEST-SN-0003 "Side Gate" true false`,
+		`TEST-SN-0002 "" false false`, `TEST-SN-0004 "Annex" true false`, `TEST-SN-0001 "Main Gate" true true`, `TEST-SN-0003 "Side Gate" true false`,
 	})
 	adminDenied("GET /api/admin/devices", "", nil)
 
@@ -736,11 +759,13 @@ func (r *runner) scenario() {
 	r.call("PUT /api/admin/devices", "oversized body", "", admin, oversized(), 413)
 	adminDenied("PUT /api/admin/devices", "", map[string]any{"serial_number": "TEST-SN-0003", "location_name": "X", "is_active": true})
 
-	r.call("PUT /api/admin/devices", "only serial_number", "", admin, map[string]any{"serial_number": "TEST-SN-0003"}, 200)
+	r.call("PUT /api/admin/devices", "only serial_number", "", admin, map[string]any{"serial_number": "TEST-SN-0003"}, 400)
+	r.call("PUT /api/admin/devices", "location_name too long", "", admin, map[string]any{"serial_number": "TEST-SN-0003", "location_name": strings.Repeat("L", 51)}, 400)
+	r.call("PUT /api/admin/devices", "only location_name", "", admin, map[string]any{"serial_number": "TEST-SN-0003", "location_name": "Rear Gate"}, 200)
 	var location string
 	var active bool
 	r.db.QueryRow(`SELECT location_name, is_active FROM devices WHERE serial_number = 'TEST-SN-0003'`).Scan(&location, &active)
-	r.expect("PUT without location_name and is_active clears and disables", fmt.Sprintf("%q %v", location, active), `"" false`)
+	r.expect("PUT with only location_name keeps is_active", fmt.Sprintf("%q %v", location, active), `"Rear Gate" true`)
 	r.call("DELETE /api/admin/devices", "disable", "?sn=TEST-SN-0003", admin, nil, 200)
 	r.call("DELETE /api/admin/devices", "unknown device still 200", "?sn=TEST-SN-NONE", admin, nil, 200)
 	r.call("DELETE /api/admin/devices", "sn missing", "", admin, nil, 400)
@@ -757,7 +782,7 @@ func (r *runner) scenario() {
 	if n, err := strconv.Atoi(x.header.Get("Retry-After")); err != nil || n < 1 || n > 900 {
 		t.Errorf("admin Retry-After %q: want whole seconds in 1..900", x.header.Get("Retry-After"))
 	}
-	for _, tc := range []struct{ phone, pin string }{{phone2, "5930"}, {limitedPhone, "1234"}} {
+	for _, tc := range []struct{ phone, pin string }{{phone2, "593047"}, {limitedPhone, "2580"}} {
 		for i := 1; i <= 5; i++ {
 			r.call("POST /api/mobile/login", fmt.Sprintf("failed attempt %d", i), "", "", map[string]string{"phone": tc.phone, "pin": "0000"}, 401)
 		}
@@ -809,7 +834,7 @@ func (r *runner) databaseFailures() {
 	r.call("GET /api/mobile/settings", "database error", "", "", nil, 500)
 	r.call("PUT /api/mobile/device-token", "database error", "", parent, map[string]string{"token": "contract-device-token-0002"}, 500)
 	r.call("DELETE /api/mobile/device-token", "database error", "", parent, map[string]string{"token": "contract-device-token-0002"}, 500)
-	r.call("POST /api/mobile/login", "database error", "", "", map[string]string{"phone": phone1, "pin": "4821"}, 500)
+	r.call("POST /api/mobile/login", "database error", "", "", map[string]string{"phone": phone1, "pin": "482193"}, 500)
 	r.call("POST /api/admin/login", "database error", "", "", map[string]string{"username": "admin", "password": adminPassword}, 500)
 	for _, op := range []string{
 		"GET /api/admin/dashboard", "GET /api/admin/students", "GET /api/admin/attendance",
@@ -821,6 +846,7 @@ func (r *runner) databaseFailures() {
 	r.call("PUT /api/admin/students", "database error", "", admin, map[string]any{"id": 1, "name": "Down Example", "parent_name": "Omar Example", "parent_phone": phone1}, 500)
 	r.call("DELETE /api/admin/students", "database error", "?id=1", admin, nil, 500)
 	r.call("PUT /api/admin/settings", "database error", "", admin, map[string]string{"key": "internal_note", "value": "x"}, 500)
+	r.call("POST /api/admin/leaves", "database error", "", admin, map[string]any{"student_id": 1, "leave_date": today}, 500)
 	r.call("POST /api/admin/devices", "database error", "", admin, map[string]any{"serial_number": "TEST-SN-0100"}, 500)
 	r.call("PUT /api/admin/devices", "database error", "", admin, map[string]any{"serial_number": "TEST-SN-0001", "location_name": "Main Gate", "is_active": true}, 500)
 	r.call("DELETE /api/admin/devices", "database error", "?sn=TEST-SN-0100", admin, nil, 500)
@@ -1330,6 +1356,9 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 			props["check_time"] = props["check_in_time"]
 			delete(props, "check_in_time")
 			rec["required"] = []any{"date", "status", "check_time", "check_out_time"}
+		}},
+		{"createStudent no longer documents 409", []string{"responses"}, func(root map[string]any) {
+			delete(node(root, "paths", "/api/admin/students", "post", "responses"), "409")
 		}},
 		{"production is listed as a server", []string{"hygiene"}, func(root map[string]any) {
 			root["servers"] = append(list(root["servers"]), map[string]any{"url": "https://futurekids-production.up.railway.app"})
