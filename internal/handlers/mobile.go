@@ -161,7 +161,7 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 type MonthlyRecord struct {
 	Date         string  `json:"date"`
 	Status       string  `json:"status"` // Present, Absent, Excused
-	CheckTime    *string `json:"check_time"`
+	CheckInTime  *string `json:"check_in_time"`
 	CheckOutTime *string `json:"check_out_time"`
 }
 
@@ -295,7 +295,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 			s.full_name,
 			TO_CHAR(md.m_date, 'YYYY-MM-DD') as record_date,
 			st.status,
-			st.first_check AS check_time,
+			st.first_check AS check_in_time,
 			st.last_check AS check_out_time
 		FROM students s
 		CROSS JOIN month_dates md
@@ -320,9 +320,9 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 	for rows.Next() {
 		var studentID int
 		var fullName, recordDate, status string
-		var checkTime, checkOutTime *string
+		var checkInTime, checkOutTime *string
 
-		if err := rows.Scan(&studentID, &fullName, &recordDate, &status, &checkTime, &checkOutTime); err != nil {
+		if err := rows.Scan(&studentID, &fullName, &recordDate, &status, &checkInTime, &checkOutTime); err != nil {
 			respondInternalError(w, "Database error", "MobileMonthlyAttendanceHandler: scan failed", err, "parent_id", parentID, "month", monthParam)
 			return
 		}
@@ -339,7 +339,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		reportMap[studentID].Records = append(reportMap[studentID].Records, MonthlyRecord{
 			Date:         recordDate,
 			Status:       status,
-			CheckTime:    checkTime,
+			CheckInTime:  checkInTime,
 			CheckOutTime: checkOutTime,
 		})
 	}

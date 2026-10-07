@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.4.0"
+  version: "1.5.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -1027,7 +1027,7 @@ components:
 
     MonthlyRecord:
       type: object
-      description: One school day. `check_time` has the same meaning as `check_in_time` in DailyAttendanceDTO.
+      description: One school day. `check_in_time` and `check_out_time` mean the same as in DailyAttendanceDTO.
       properties:
         date:
           type: string
@@ -1036,7 +1036,7 @@ components:
         status:
           type: string
           enum: [Present, Excused, Absent]
-        check_time:
+        check_in_time:
           type: string
           nullable: true
           pattern: '^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$'
@@ -1046,11 +1046,11 @@ components:
           nullable: true
           pattern: '^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$'
           description: Earliest punch in the check-out window (11:30–13:30); null when there is none.
-      required: [date, status, check_time, check_out_time]
+      required: [date, status, check_in_time, check_out_time]
       example:
         date: "2026-09-21"
         status: Present
-        check_time: "07:15 AM"
+        check_in_time: "07:15 AM"
         check_out_time: "12:30 PM"
 
     StudentMonthlyReport:
@@ -1074,11 +1074,11 @@ components:
         records:
           - date: "2026-09-21"
             status: Present
-            check_time: "07:15 AM"
+            check_in_time: "07:15 AM"
             check_out_time: "12:30 PM"
           - date: "2026-09-20"
             status: Absent
-            check_time: null
+            check_in_time: null
             check_out_time: null
 
     MonthlyAttendanceResponse:
@@ -1104,7 +1104,7 @@ components:
             records:
               - date: "2026-09-21"
                 status: Present
-                check_time: "07:15 AM"
+                check_in_time: "07:15 AM"
                 check_out_time: "12:30 PM"
 
     ScheduleEntry:

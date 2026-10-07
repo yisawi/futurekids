@@ -68,7 +68,7 @@ func TestW4OpenAPICompliance(t *testing.T) {
 		checkDaily(t, decodeData(t, rec, http.StatusOK))
 	})
 
-	t.Run("MonthlyRecord check_time always present", func(t *testing.T) {
+	t.Run("MonthlyRecord check_in_time always present", func(t *testing.T) {
 		rec := serve(t, app.AuthMiddleware(app.MobileMonthlyAttendanceHandler), http.MethodGet, "/api/mobile/attendance/monthly", parentToken, "")
 		data := decodeData(t, rec, http.StatusOK)
 		schoolDay := now.Weekday() != time.Friday && now.Weekday() != time.Saturday
@@ -81,7 +81,7 @@ func TestW4OpenAPICompliance(t *testing.T) {
 				if report["full_name"] == "W4 Present" && record["date"] == today {
 					want = "07:15 AM"
 				}
-				assertField(t, record, "check_time", want)
+				assertField(t, record, "check_in_time", want)
 				checked++
 			}
 		}

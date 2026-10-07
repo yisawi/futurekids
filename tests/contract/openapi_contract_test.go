@@ -541,12 +541,15 @@ func (r *runner) scenario() {
 			var dates []string
 			for _, rec := range list(at(rep, "records")) {
 				dates = append(dates, str(at(rec, "date")))
+				if _, old := obj(rec)["check_time"]; old {
+					t.Errorf("monthly record %v still has the old check_time key", at(rec, "date"))
+				}
 			}
 			r.expect(fmt.Sprintf("student %v: school days newest first", at(rep, "student_id")), dates, days)
 		}
 		r.expect("monthly children by ascending id", got, children)
 		if todayIsSchoolDay {
-			r.expect("monthly today", []any{at(reports, 0, "records", 0, "status"), at(reports, 0, "records", 0, "check_time"), at(reports, 0, "records", 0, "check_out_time")}, []any{"Present", "07:15 AM", "12:30 PM"})
+			r.expect("monthly today", []any{at(reports, 0, "records", 0, "status"), at(reports, 0, "records", 0, "check_in_time"), at(reports, 0, "records", 0, "check_out_time")}, []any{"Present", "07:15 AM", "12:30 PM"})
 		}
 	}
 	for _, op := range []string{"GET /api/mobile/attendance/summary", "GET /api/mobile/attendance/monthly"} {
@@ -1320,6 +1323,13 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 			page := node(schemas(root), "NotificationPage")
 			delete(obj(page["properties"]), "unread_count")
 			page["required"] = []any{"status", "data", "has_more", "next_before"}
+		}},
+		{"MonthlyRecord documents check_time again", []string{"responses"}, func(root map[string]any) {
+			rec := node(schemas(root), "MonthlyRecord")
+			props := obj(rec["properties"])
+			props["check_time"] = props["check_in_time"]
+			delete(props, "check_in_time")
+			rec["required"] = []any{"date", "status", "check_time", "check_out_time"}
 		}},
 		{"production is listed as a server", []string{"hygiene"}, func(root map[string]any) {
 			root["servers"] = append(list(root["servers"]), map[string]any{"url": "https://futurekids-production.up.railway.app"})

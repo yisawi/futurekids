@@ -379,7 +379,7 @@ func TestGroup2Cleanup(t *testing.T) {
 				if _, has := r["check_out_time"]; !has {
 					t.Fatalf("monthly record without check_out_time key: %v", r)
 				}
-				if r["date"] == "2026-04-01" && r["check_time"] == "07:20 AM" && r["check_out_time"] == "12:10 PM" {
+				if r["date"] == "2026-04-01" && r["check_in_time"] == "07:20 AM" && r["check_out_time"] == "12:10 PM" {
 					ok = true
 				}
 			}
