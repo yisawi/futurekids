@@ -130,10 +130,11 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	rows, err := app.DB.QueryContext(r.Context(), `
-		SELECT id, COALESCE(title, ''), image_url, COALESCE(action_link, '')
-		FROM banners
-		WHERE is_active = true
-		ORDER BY created_at DESC;
+		SELECT b.id, COALESCE(b.title, ''), b.image_url, COALESCE(b.action_link, ''), bi.banner_id IS NOT NULL
+		FROM banners b
+		LEFT JOIN banner_images bi ON bi.banner_id = b.id
+		WHERE b.is_active = true
+		ORDER BY b.created_at DESC;
 	`)
 	if err != nil {
 		respondInternalError(w, "Internal server error", "GetActiveBannersHandler: query failed", err)
@@ -144,10 +145,12 @@ func (app *AppEnv) GetActiveBannersHandler(w http.ResponseWriter, r *http.Reques
 	banners := make([]Banner, 0)
 	for rows.Next() {
 		var banner Banner
-		if err := rows.Scan(&banner.ID, &banner.Title, &banner.ImageURL, &banner.ActionLink); err != nil {
+		var uploaded bool
+		if err := rows.Scan(&banner.ID, &banner.Title, &banner.ImageURL, &banner.ActionLink, &uploaded); err != nil {
 			respondInternalError(w, "Internal server error", "GetActiveBannersHandler: scan failed", err)
 			return
 		}
+		banner.ImageURL = bannerImageURL(banner.ID, uploaded, banner.ImageURL)
 		banners = append(banners, banner)
 	}
 

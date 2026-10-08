@@ -2,6 +2,7 @@ package warnings
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,6 +141,65 @@ func TestW6RequestLimits(t *testing.T) {
 				}
 				if !warned {
 					t.Errorf("%s: 413 without a WARN log (logs: %v)", ep.name, logs)
+				}
+			}
+		}
+	})
+
+	banners := admin(app.AdminBannersHandler)
+	sendBanner := func(method, target string, parts ...f1Part) (*httptest.ResponseRecorder, []w10Log) {
+		ct, body := f1Form(parts...)
+		req := httptest.NewRequest(method, target, bytes.NewReader(body))
+		req.Header.Set("Content-Type", ct)
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		before := len(capture.snapshot())
+		rec := httptest.NewRecorder()
+		banners(rec, req)
+		return rec, capture.snapshot()[before:]
+	}
+	var bannerID int
+
+	t.Run("multipart/banner picture of exactly 2 MiB passes", func(t *testing.T) {
+		rec, _ := sendBanner("POST", "/api/admin/banners", f1Image(f1Padded(t, int(handlers.MaxBannerImageBytes))))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST: HTTP %d: %.300s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Data struct {
+				ID int `json:"id"`
+			} `json:"data"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &resp)
+		bannerID = resp.Data.ID
+		if rec, _ := sendBanner("PUT", fmt.Sprintf("/api/admin/banners?id=%d", bannerID), f1Image(f1Padded(t, int(handlers.MaxBannerImageBytes)))); rec.Code != http.StatusOK {
+			t.Errorf("PUT: HTTP %d: %.300s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("multipart/oversized banner uploads get 413 with a WARN log", func(t *testing.T) {
+		for _, method := range []string{"POST", "PUT"} {
+			target := fmt.Sprintf("/api/admin/banners?id=%d", bannerID)
+			for _, tc := range []struct {
+				name, msg, warn string
+				parts           []f1Part
+			}{
+				{"body over the limit", "Request body too large", "Request body too large", []f1Part{f1Image(f1JPEG(t, 1)), {name: "padding", data: bytes.Repeat([]byte("p"), int(handlers.MaxBannerBodyBytes))}}},
+				{"picture over 2 MiB", "image must be at most 2 MiB (2097152 bytes)", "Banner image too large", []f1Part{f1Image(f1Padded(t, int(handlers.MaxBannerImageBytes)+1))}},
+			} {
+				rec, logs := sendBanner(method, target, tc.parts...)
+				var resp map[string]string
+				json.Unmarshal(rec.Body.Bytes(), &resp)
+				if rec.Code != http.StatusRequestEntityTooLarge || resp["status"] != "error" || resp["message"] != tc.msg {
+					t.Errorf("%s %s: HTTP %d %s, want 413 %q", method, tc.name, rec.Code, rec.Body.String(), tc.msg)
+				}
+				warned := false
+				for _, l := range logs {
+					if l.Level == slog.LevelWarn && l.Msg == tc.warn && l.Attrs["path"] == "/api/admin/banners" {
+						warned = true
+					}
+				}
+				if !warned {
+					t.Errorf("%s %s: 413 without a WARN %q log (logs: %v)", method, tc.name, tc.warn, logs)
 				}
 			}
 		}

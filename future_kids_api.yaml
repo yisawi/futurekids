@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.8.0"
+  version: "1.9.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -41,6 +41,7 @@ info:
       header, before authentication. `/health` and `/iclock/*` keep the HTTP server's plain-text
       404 and 405 (RULES.md §5); `/api/attendance/push` answers every method like POST.
     - A request still running after 30 seconds has its connection closed without a response.
+      Banner uploads (`POST`/`PUT /api/admin/banners`) get 2 minutes.
     - While the service is deploying or down, the Railway edge proxy may answer `502` or `503`
       with its own body. Treat both as "try again later".
 
@@ -135,6 +136,31 @@ components:
         minimum: 1
       example: 30
 
+    BannerETag:
+      description: Strong validator of the picture (SHA-256 of its bytes, in quotes). Send it back in `If-None-Match` to get 304 while the picture is unchanged.
+      schema:
+        type: string
+        pattern: '^"[0-9a-f]{64}"$'
+      example: '"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"'
+    NoSniff:
+      description: Always `nosniff`; the picture is only ever its declared type.
+      schema:
+        type: string
+        enum: [nosniff]
+      example: nosniff
+    PublicImageCacheControl:
+      description: The picture may be reused for 5 minutes, then revalidated with `If-None-Match`.
+      schema:
+        type: string
+        enum: ['public, max-age=300']
+      example: public, max-age=300
+    AdminImageCacheControl:
+      description: The dashboard revalidates the picture on every use (cheap with `If-None-Match`).
+      schema:
+        type: string
+        enum: ['private, no-cache']
+      example: private, no-cache
+
   parameters:
     Date:
       name: date
@@ -226,6 +252,16 @@ components:
         minLength: 1
         maxLength: 50
       example: A
+    BannerIdQuery:
+      name: id
+      in: query
+      required: true
+      description: Banner id. Missing, zero or not an integer returns 400; an id with no banner returns 404.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+      example: 5
     AdmsSerial:
       name: SN
       in: query
@@ -1361,6 +1397,178 @@ components:
             subject_name: Reading
             teacher_name: Teacher Sample
 
+    AdminBanner:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        title:
+          type: string
+          nullable: true
+          maxLength: 255
+          description: Null when not set.
+        action_link:
+          type: string
+          nullable: true
+          maxLength: 2048
+          description: Absolute `http`/`https` link opened on tap; null when not set.
+        is_active:
+          type: boolean
+          description: Only active banners reach parents (`GET /api/mobile/banners`).
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: RFC 3339 in Asia/Baghdad (`+03:00`). Null only for rows entered by hand without a date.
+        image_url:
+          type: string
+          description: |
+            The same value parents receive: `/api/mobile/banners/image?id=<id>` (relative to the API
+            base URL) for an uploaded picture, otherwise the URL stored for an older banner. To
+            preview any banner, active or not, use `GET /api/admin/banners/image?id=<id>` with the
+            admin token.
+        image_content_type:
+          type: string
+          nullable: true
+          enum: [image/jpeg, image/png, image/webp, null]
+          description: Type detected from the uploaded bytes; null for a banner without an uploaded picture.
+        image_size_bytes:
+          type: integer
+          format: int32
+          nullable: true
+          minimum: 1
+          maximum: 2097152
+          description: Size of the uploaded picture; null without one.
+      required: [id, title, action_link, is_active, created_at, image_url, image_content_type, image_size_bytes]
+      example:
+        id: 5
+        title: Open day
+        action_link: https://example.com/open-day
+        is_active: true
+        created_at: "2026-09-21T09:30:00+03:00"
+        image_url: /api/mobile/banners/image?id=5
+        image_content_type: image/jpeg
+        image_size_bytes: 284113
+
+    AdminBannerResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          $ref: '#/components/schemas/AdminBanner'
+      required: [status, data]
+      example:
+        status: success
+        data:
+          id: 5
+          title: Open day
+          action_link: https://example.com/open-day
+          is_active: true
+          created_at: "2026-09-21T09:30:00+03:00"
+          image_url: /api/mobile/banners/image?id=5
+          image_content_type: image/jpeg
+          image_size_bytes: 284113
+
+    AdminBannerListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: array
+          description: Every banner, active or not, newest first (by `created_at`, then `id`). Never picture bytes.
+          items:
+            $ref: '#/components/schemas/AdminBanner'
+      required: [status, data]
+      example:
+        status: success
+        data:
+          - id: 5
+            title: Open day
+            action_link: null
+            is_active: false
+            created_at: "2026-09-21T09:30:00+03:00"
+            image_url: /api/mobile/banners/image?id=5
+            image_content_type: image/png
+            image_size_bytes: 91230
+          - id: 2
+            title: null
+            action_link: https://example.com/sports
+            is_active: true
+            created_at: "2026-01-03T10:00:00+03:00"
+            image_url: https://example.com/banners/sports.jpg
+            image_content_type: null
+            image_size_bytes: null
+
+    BannerCreateRequest:
+      type: object
+      description: |
+        `multipart/form-data`. Each field is sent at most once (400 otherwise); unknown parts are
+        ignored.
+      properties:
+        image:
+          type: string
+          format: binary
+          description: |
+            Required. The picture, at most 2 MiB (2,097,152 bytes; larger returns 413). Its type
+            is detected from its bytes and must be JPEG, PNG or WebP; anything else (SVG, GIF,
+            BMP, text) returns 400 whatever the file name or the part's Content-Type say. An
+            empty file returns 400. Resize and compress it before uploading.
+        title:
+          type: string
+          maxLength: 255
+          description: Optional. Surrounding spaces are removed; blank stores null. Longer than 255 characters returns 400.
+        action_link:
+          type: string
+          maxLength: 2048
+          description: |
+            Optional. Surrounding spaces are removed; blank stores null. Otherwise it must be an
+            absolute `http` or `https` URL with a host (`javascript:`, `data:`, `intent:`,
+            relative links and other schemes return 400). Longer than 2048 characters returns 400.
+        is_active:
+          type: string
+          enum: ['true', 'false']
+          default: 'true'
+          description: Optional, exactly `true` or `false` (anything else returns 400). Defaults to `true`.
+      required: [image]
+      example:
+        image: (binary JPEG, PNG or WebP)
+        title: Open day
+        action_link: https://example.com/open-day
+        is_active: 'true'
+
+    BannerUpdateRequest:
+      type: object
+      description: |
+        `multipart/form-data`. Every part is optional; a part that is sent replaces that value and
+        an omitted part keeps it. Sending none of `image`, `title`, `action_link`, `is_active`
+        returns 400. Each field is sent at most once.
+      properties:
+        image:
+          type: string
+          format: binary
+          description: Replaces the stored picture. Same rules as on create.
+        title:
+          type: string
+          maxLength: 255
+          description: Same rules as on create; blank clears the title.
+        action_link:
+          type: string
+          maxLength: 2048
+          description: Same rules as on create; blank clears the link.
+        is_active:
+          type: string
+          enum: ['true', 'false']
+          description: '`false` hides the banner from parents without deleting it; `true` shows it again.'
+      example:
+        title: Open day (updated)
+        is_active: 'false'
+
     Notification:
       type: object
       properties:
@@ -1463,7 +1671,11 @@ components:
           description: Empty string when not set.
         image_url:
           type: string
-          description: Image URL as stored by the school (not validated by the server).
+          description: |
+            Where to load the picture. For a picture uploaded from the admin dashboard it is a
+            path **relative to the API base URL** that starts with `/`, for example
+            `/api/mobile/banners/image?id=5` (`GET /api/mobile/banners/image`, no token needed).
+            Banners entered before uploads existed keep the full URL the school stored.
         action_link:
           type: string
           description: Link to open on tap; empty string when not set.
@@ -1661,6 +1873,82 @@ components:
               value:
                 status: error
                 message: grade is required
+    BannerWriteBadRequest:
+      description: |
+        Not `multipart/form-data` or a malformed body; a field sent twice; `image` missing (create),
+        empty or not a JPEG, PNG or WebP picture; `title` or `action_link` too long or not text;
+        `action_link` not an absolute http/https URL; `is_active` not `true`/`false`; an update
+        with no field; or an invalid `id`. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            notAPicture:
+              summary: SVG, GIF, text or anything but JPEG, PNG and WebP
+              value:
+                status: error
+                message: image must be a JPEG, PNG or WebP picture
+            missingImage:
+              summary: Create without a picture
+              value:
+                status: error
+                message: image is required
+            badLink:
+              summary: action_link that is not an absolute http/https URL
+              value:
+                status: error
+                message: action_link must be an absolute http or https URL
+            badIsActive:
+              summary: is_active other than true or false
+              value:
+                status: error
+                message: is_active must be "true" or "false"
+            nothingToUpdate:
+              summary: Update without any field
+              value:
+                status: error
+                message: send at least one of image, title, action_link or is_active
+            notMultipart:
+              summary: Not multipart/form-data
+              value:
+                status: error
+                message: Request must be multipart/form-data
+    BannerTooLarge:
+      description: The picture is larger than 2 MiB, or the whole request is larger than 2 MiB + 64 KiB. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            image:
+              summary: Picture over 2 MiB
+              value:
+                status: error
+                message: image must be at most 2 MiB (2097152 bytes)
+            body:
+              summary: Request over the limit
+              value:
+                status: error
+                message: Request body too large
+    BannerNotFound:
+      description: No banner has this id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Banner not found
+    BannerIdBadRequest:
+      description: '`id` is missing, zero or not an integer.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Invalid banner ID
     TooManyLoginAttempts:
       description: Too many failed login attempts; see the operation's rate limit.
       headers:
@@ -2113,6 +2401,72 @@ paths:
           $ref: '#/components/responses/ParentUnauthorized'
         '403':
           $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/mobile/banners/image:
+    get:
+      tags: [Parent App]
+      operationId: getBannerImage
+      summary: Picture of an active banner
+      description: |
+        The uploaded picture of an **active** banner, exactly as uploaded. **No token needed**:
+        banners are announcements for every parent, so `Image.network(baseUrl + image_url)` works
+        as is. Reached through a banner's relative `image_url`. An inactive or unknown banner, or
+        one without an uploaded picture, returns 404.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/BannerIdQuery'
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The `ETag` of a copy you already have; 304 when it is still current.
+          schema:
+            type: string
+          example: '"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"'
+      responses:
+        '200':
+          description: The picture.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BannerETag'
+            Cache-Control:
+              $ref: '#/components/headers/PublicImageCacheControl'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/NoSniff'
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: Not modified; the copy whose `ETag` was sent in `If-None-Match` is current. No body.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BannerETag'
+            Cache-Control:
+              $ref: '#/components/headers/PublicImageCacheControl'
+        '400':
+          $ref: '#/components/responses/BannerIdBadRequest'
+        '404':
+          description: No active banner with this id has an uploaded picture.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Banner image not found
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
@@ -2705,6 +3059,212 @@ paths:
           $ref: '#/components/responses/AdminForbidden'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/banners:
+    get:
+      tags: [Admin Dashboard]
+      operationId: listAdminBanners
+      summary: All banners
+      description: Every banner, active or not, newest first, with its picture's metadata but never its bytes.
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: Banners.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminBannerListResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Admin Dashboard]
+      operationId: createBanner
+      summary: Upload a new banner
+      description: |
+        Creates a banner and stores its picture, in one transaction: a request that fails
+        creates nothing. Parents see it in `GET /api/mobile/banners` while it is active.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BannerCreateRequest'
+            encoding:
+              image:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: Created; the banner as now stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminBannerResponse'
+        '400':
+          $ref: '#/components/responses/BannerWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '413':
+          $ref: '#/components/responses/BannerTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags: [Admin Dashboard]
+      operationId: updateBanner
+      summary: Change a banner
+      description: |
+        Changes only the parts sent; omitted parts keep their value. An `image` part replaces the
+        picture (and its ETag). One transaction: a request that fails changes nothing.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/BannerIdQuery'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BannerUpdateRequest'
+            encoding:
+              image:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: Updated; the banner as now stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminBannerResponse'
+        '400':
+          $ref: '#/components/responses/BannerWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/BannerNotFound'
+        '413':
+          $ref: '#/components/responses/BannerTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [Admin Dashboard]
+      operationId: deleteBanner
+      summary: Delete a banner and its picture
+      description: Permanent. To hide a banner but keep it, send `is_active=false` with `PUT` instead.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/BannerIdQuery'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Banner deleted
+        '400':
+          $ref: '#/components/responses/BannerIdBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/BannerNotFound'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/banners/image:
+    get:
+      tags: [Admin Dashboard]
+      operationId: getAdminBannerImage
+      summary: Preview a banner's picture
+      description: |
+        The uploaded picture of any banner, active or not, exactly as uploaded. Needs the admin
+        token (send the `Authorization` header with the image request). Banners without an
+        uploaded picture return 404; their picture is at their stored `image_url`.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/BannerIdQuery'
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The `ETag` of a copy you already have; 304 when it is still current.
+          schema:
+            type: string
+          example: '"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"'
+      responses:
+        '200':
+          description: The picture.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BannerETag'
+            Cache-Control:
+              $ref: '#/components/headers/AdminImageCacheControl'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/NoSniff'
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: Not modified; the copy whose `ETag` was sent in `If-None-Match` is current. No body.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BannerETag'
+            Cache-Control:
+              $ref: '#/components/headers/AdminImageCacheControl'
+        '400':
+          $ref: '#/components/responses/BannerIdBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          description: No banner with this id has an uploaded picture.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Banner image not found
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':

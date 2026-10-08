@@ -133,6 +133,7 @@ func run() int {
 	mux.HandleFunc("PUT /api/mobile/notifications/read", appEnv.AuthMiddleware(appEnv.MarkNotificationReadHandler))
 	mux.HandleFunc("PUT /api/mobile/notifications/read-all", appEnv.AuthMiddleware(appEnv.MarkAllNotificationsReadHandler))
 	mux.HandleFunc("GET /api/mobile/banners", appEnv.AuthMiddleware(appEnv.GetActiveBannersHandler))
+	mux.HandleFunc("GET /api/mobile/banners/image", appEnv.MobileBannerImageHandler)
 	mux.HandleFunc("PUT /api/mobile/device-token", appEnv.AuthMiddleware(appEnv.RegisterDeviceTokenHandler))
 	mux.HandleFunc("DELETE /api/mobile/device-token", appEnv.AuthMiddleware(appEnv.RemoveDeviceTokenHandler))
 
@@ -154,6 +155,11 @@ func run() int {
 	mux.HandleFunc("PUT /api/admin/settings", appEnv.AdminMiddleware(appEnv.AdminSettingsHandler))
 	mux.HandleFunc("GET /api/admin/schedule", appEnv.AdminMiddleware(appEnv.AdminScheduleHandler))
 	mux.HandleFunc("PUT /api/admin/schedule", appEnv.AdminMiddleware(appEnv.AdminScheduleHandler))
+	mux.HandleFunc("GET /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
+	mux.HandleFunc("POST /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
+	mux.HandleFunc("PUT /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
+	mux.HandleFunc("DELETE /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
+	mux.HandleFunc("GET /api/admin/banners/image", appEnv.AdminMiddleware(appEnv.AdminBannerImageHandler))
 
 	if tz.FromTZDatabase {
 		slog.Info("Timezone loaded", "location", tz.Baghdad.String())

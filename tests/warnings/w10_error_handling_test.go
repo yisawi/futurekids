@@ -175,6 +175,12 @@ func (ep w10Endpoint) failStatus() int {
 	return http.StatusInternalServerError
 }
 
+// Multipart bodies for the banner endpoints; call() sends them with boundary w10.
+const (
+	w10BannerImage = "--w10\r\nContent-Disposition: form-data; name=\"image\"; filename=\"b.png\"\r\nContent-Type: image/png\r\n\r\n\x89PNG\r\n\x1a\nw10\r\n--w10--\r\n"
+	w10BannerTitle = "--w10\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nW10\r\n--w10--\r\n"
+)
+
 func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 	admin, parent := app.AdminMiddleware, app.AuthMiddleware
 	return []w10Endpoint{
@@ -184,6 +190,7 @@ func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 		{"admin settings list", "AdminSettingsHandler:", "GET", "/api/admin/settings", "", admin(app.AdminSettingsHandler), true},
 		{"admin devices list", "AdminDevicesHandler:", "GET", "/api/admin/devices", "", admin(app.AdminDevicesHandler), true},
 		{"admin schedule", "AdminScheduleHandler:", "GET", "/api/admin/schedule?grade=G3&section=A", "", admin(app.AdminScheduleHandler), true},
+		{"admin banners list", "AdminBannersHandler:", "GET", "/api/admin/banners", "", admin(app.AdminBannersHandler), true},
 		{"mobile today", "MobileTodayAttendanceHandler:", "GET", "/api/mobile/attendance/today", "", parent(app.MobileTodayAttendanceHandler), true},
 		{"mobile banners", "GetActiveBannersHandler:", "GET", "/api/mobile/banners", "", parent(app.GetActiveBannersHandler), true},
 		{"mobile summary", "MobileAttendanceSummaryHandler:", "GET", "/api/mobile/attendance/summary", "", parent(app.MobileAttendanceSummaryHandler), true},
@@ -201,6 +208,11 @@ func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 		{"admin student delete", "AdminStudentsHandler:", "DELETE", "/api/admin/students?id=1", "", admin(app.AdminStudentsHandler), false},
 		{"admin leave create", "AdminCreateLeaveHandler:", "POST", "/api/admin/leaves", `{"student_id":1,"leave_date":"2026-09-24"}`, admin(app.AdminCreateLeaveHandler), false},
 		{"admin setting save", "AdminSettingsHandler:", "PUT", "/api/admin/settings", `{"key":"k","value":"v"}`, admin(app.AdminSettingsHandler), false},
+		{"admin banner create", "AdminBannersHandler:", "POST", "/api/admin/banners", w10BannerImage, admin(app.AdminBannersHandler), false},
+		{"admin banner update", "AdminBannersHandler:", "PUT", "/api/admin/banners?id=1", w10BannerTitle, admin(app.AdminBannersHandler), false},
+		{"admin banner delete", "AdminBannersHandler:", "DELETE", "/api/admin/banners?id=1", "", admin(app.AdminBannersHandler), false},
+		{"admin banner image", "AdminBannersHandler:", "GET", "/api/admin/banners/image?id=1", "", admin(app.AdminBannerImageHandler), false},
+		{"mobile banner image", "MobileBannerImageHandler:", "GET", "/api/mobile/banners/image?id=1", "", app.MobileBannerImageHandler, false},
 		{"admin schedule save", "AdminScheduleHandler:", "PUT", "/api/admin/schedule", `{"grade":"G3","section":"A","periods":[{"day_of_week":"Sunday","period_number":1,"subject_name":"Mathematics"}]}`, admin(app.AdminScheduleHandler), false},
 		{"admin device create", "AdminDevicesHandler:", "POST", "/api/admin/devices", `{"serial_number":"SN1","location_name":"Gate","is_active":true}`, admin(app.AdminDevicesHandler), false},
 		{"admin device update", "AdminDevicesHandler:", "PUT", "/api/admin/devices", `{"serial_number":"SN1","location_name":"Gate","is_active":true}`, admin(app.AdminDevicesHandler), false},
@@ -234,6 +246,9 @@ func TestW10ErrorHandling(t *testing.T) {
 
 	call := func(ep w10Endpoint) (*orderRecorder, []w10Log) {
 		req := httptest.NewRequest(ep.method, ep.target, strings.NewReader(ep.body))
+		if strings.HasPrefix(ep.body, "--w10\r\n") {
+			req.Header.Set("Content-Type", "multipart/form-data; boundary=w10")
+		}
 		if strings.HasPrefix(ep.target, "/api/admin/") && ep.target != "/api/admin/login" {
 			req.Header.Set("Authorization", "Bearer "+adminToken)
 		} else if strings.HasPrefix(ep.target, "/api/mobile/") && ep.target != "/api/mobile/login" && ep.target != "/api/mobile/settings" {
@@ -385,6 +400,9 @@ func TestW10ErrorHandling(t *testing.T) {
 					go func(ep w10Endpoint) {
 						defer wg.Done()
 						req := httptest.NewRequest(ep.method, ep.target, strings.NewReader(ep.body))
+						if strings.HasPrefix(ep.body, "--w10\r\n") {
+							req.Header.Set("Content-Type", "multipart/form-data; boundary=w10")
+						}
 						if strings.HasPrefix(ep.target, "/api/admin/") && ep.target != "/api/admin/login" {
 							req.Header.Set("Authorization", "Bearer "+adminToken)
 						} else if strings.HasPrefix(ep.target, "/api/mobile/") && ep.target != "/api/mobile/login" && ep.target != "/api/mobile/settings" {

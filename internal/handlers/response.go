@@ -48,12 +48,17 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, badRequestM
 	case err == nil:
 		return true
 	case errors.As(err, &tooLarge):
-		slog.Warn("Request body too large", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "limit_bytes", tooLarge.Limit)
-		respondError(w, http.StatusRequestEntityTooLarge, "Request body too large")
+		respondBodyTooLarge(w, r, tooLarge.Limit)
 	default:
 		respondError(w, http.StatusBadRequest, badRequestMsg)
 	}
 	return false
+}
+
+// respondBodyTooLarge logs an oversized request body as WARN and writes 413.
+func respondBodyTooLarge(w http.ResponseWriter, r *http.Request, limit int64) {
+	slog.Warn("Request body too large", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "limit_bytes", limit)
+	respondError(w, http.StatusRequestEntityTooLarge, "Request body too large")
 }
 
 // respondRetry logs a transient failure and writes 503 with Retry-After, telling a client

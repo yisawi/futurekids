@@ -1,0 +1,3581 @@
+openapi: 3.0.3
+info:
+  title: Future Kids Attendance System API
+  version: 1.9.0
+  license:
+    name: Proprietary (all rights reserved)
+  description: |
+    Backend API for the Future Kids school attendance system. This file is the contract
+    (RULES.md §4); `tests/contract` checks every operation against the running server.
+
+    **Clients**
+    - **Parent App** (Flutter): operations tagged `Parent App`. Start with `POST /api/mobile/login`.
+    - **Admin Dashboard**: operations tagged `Admin Dashboard`. Start with `POST /api/admin/login`.
+    - **Hardware (internal)**: called only by the school's ZKTeco attendance devices. These
+      operations are marked `x-internal: true` and are not for app clients.
+
+    **Conventions**
+    - JSON responses carry `"status": "success"` or `"status": "error"`. Every JSON error is
+      `{"status": "error", "message": "..."}`. Branch on the HTTP status code, not on `message`.
+    - Authenticate with `Authorization: Bearer <token>`: the word `Bearer` exactly, one space.
+      Parent tokens last 30 days and admin tokens 7 days; there is no refresh endpoint. A 401
+      means "log in again"; a 403 means the token belongs to the other app (parent vs admin).
+      Changing a parent's PIN, or rotating the admin password, ends every session issued before
+      the change: those tokens get 401.
+    - Phone numbers are Iraqi mobile numbers. The server stores and returns them only as
+      `+9647XXXXXXXXX`; it accepts `07XXXXXXXXX`, `+9647…`, `009647…` or `9647…`, with spaces,
+      dashes, parentheses and Arabic-Indic or Persian digits (RULES.md §4).
+    - Dates and times are Asia/Baghdad (UTC+03:00, no daylight saving). Dates are `YYYY-MM-DD`,
+      months `YYYY-MM`, punch times `hh:mm AM`/`hh:mm PM` (12-hour, zero-padded), and
+      notification timestamps RFC 3339 with a `+03:00` offset.
+    - Every date and month parameter or field accepts years 2000 to 2100 only; any other year
+      returns 400.
+    - IDs are integers. JSON request bodies are limited to 64 KiB (413). Request headers are
+      limited to 64 KiB plus up to 8 KiB of read-buffer tolerance; beyond that the answer is
+      431 in plain text. Unknown JSON fields in a request body are ignored.
+
+    **Responses not listed per operation** (schemas in `x-transport-responses`)
+    - An unknown path returns `404` with the JSON error envelope.
+    - A method a path does not support returns `405` with the JSON error envelope and an `Allow`
+      header, before authentication. `/health` and `/iclock/*` keep the HTTP server's plain-text
+      404 and 405 (RULES.md §5); `/api/attendance/push` answers every method like POST.
+    - A request still running after 30 seconds has its connection closed without a response.
+      Banner uploads (`POST`/`PUT /api/admin/banners`) get 2 minutes.
+    - While the service is deploying or down, the Railway edge proxy may answer `502` or `503`
+      with its own body. Treat both as "try again later".
+servers:
+  - url: https://futurekids-staging.up.railway.app
+    description: Staging (Railway)
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: Parent App
+    description: |
+      Used by the Flutter parent app. `POST /api/mobile/login` and `GET /api/mobile/settings`
+      are public; every other parent operation needs the parent token.
+  - name: Admin Dashboard
+    description: Used by the school's admin dashboard. Every operation except login needs the admin token.
+  - name: System
+    description: Liveness check for monitoring.
+  - name: Hardware (internal)
+    description: |
+      Called only by the ZKTeco attendance devices. **Not for app clients.** These operations
+      stay in this file because it is the single contract for every route the server registers
+      (RULES.md §4). To produce a copy without them, run
+      `npx @redocly/cli bundle flutter -o flutter_api.yaml` (see `redocly.yaml`).
+paths:
+  /health:
+    get:
+      tags:
+        - System
+      operationId: getHealth
+      summary: Liveness check
+      description: Reports that the process is up. It does not check the database.
+      security: []
+      responses:
+        '200':
+          description: The server is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Server is healthy and running!
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+  /api/mobile/login:
+    post:
+      tags:
+        - Parent App
+      operationId: parentLogin
+      summary: Parent login (phone and PIN)
+      description: |
+        Returns a parent token valid for 30 days. Optionally registers this device's FCM token
+        for push notifications (see `fcm_token`).
+
+        **Rate limit:** after 5 failed attempts (wrong PIN or unregistered number) for a phone
+        number within 15 minutes of that number's first attempt, every attempt for the number
+        returns 429 until the window ends, even with the correct PIN. Every format of a number
+        counts as the same number. `Retry-After` gives the seconds left. A successful login
+        clears the count. Show the parent a wait message and do not retry automatically.
+
+        Each login returns a token for the parent's current session; it stops working when the
+        school changes the PIN.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MobileLoginRequest'
+      responses:
+        '200':
+          description: Logged in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileLoginResponse'
+        '400':
+          description: Malformed JSON, or `phone` or `pin` missing or empty.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingFields:
+                  summary: phone or pin missing
+                  value:
+                    status: error
+                    message: Phone and PIN are required
+                malformed:
+                  summary: Body is not valid JSON
+                  value:
+                    status: error
+                    message: Invalid request
+        '401':
+          description: Unknown phone number or wrong PIN (the same answer for both).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Invalid phone number or PIN
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyLoginAttempts'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/settings:
+    get:
+      tags:
+        - Parent App
+      operationId: getPublicSettings
+      summary: Public app settings
+      description: |
+        Public on purpose, so the app can load it before login. Returns only `whatsapp_number`
+        and `school_name`, each only when set; internal settings are never exposed here.
+      security: []
+      responses:
+        '200':
+          description: The public settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSettingsResponse'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/students:
+    get:
+      tags:
+        - Parent App
+      operationId: listParentStudents
+      summary: The parent's children
+      description: Active students linked to this parent, by ascending id. Empty when there are none.
+      security:
+        - ParentJWT: []
+      responses:
+        '200':
+          description: The parent's active children.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileStudentListResponse'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/attendance/today:
+    get:
+      tags:
+        - Parent App
+      operationId: getTodayAttendance
+      summary: Today's attendance for the parent's children
+      description: |
+        One DailyAttendanceDTO per active child for today in Asia/Baghdad (`date`), ordered by
+        `student_id` ascending like the other parent lists.
+      security:
+        - ParentJWT: []
+      responses:
+        '200':
+          description: Today's attendance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyAttendanceResponse'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/attendance/summary:
+    get:
+      tags:
+        - Parent App
+      operationId: getAttendanceSummary
+      summary: Monthly attendance totals per child
+      description: |
+        Present, Excused and Absent counts per active child over the month's school days
+        (Sunday–Thursday) up to today. Children by ascending id. A month with no school day up
+        to today (a future month, or the first days of a month that fall on Friday and
+        Saturday) returns an empty `data` array, not zero counts.
+      security:
+        - ParentJWT: []
+      parameters:
+        - $ref: '#/components/parameters/Month'
+      responses:
+        '200':
+          description: Totals per child.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceSummaryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/attendance/monthly:
+    get:
+      tags:
+        - Parent App
+      operationId: getMonthlyAttendance
+      summary: Day-by-day attendance per child for a month
+      description: |
+        One record per school day (Sunday–Thursday) of the month up to today, newest first,
+        grouped by child in ascending id. A month with no school day up to today returns an
+        empty `data` array.
+      security:
+        - ParentJWT: []
+      parameters:
+        - $ref: '#/components/parameters/Month'
+      responses:
+        '200':
+          description: Records per child.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MonthlyAttendanceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/schedule:
+    get:
+      tags:
+        - Parent App
+      operationId: getWeeklySchedule
+      summary: Weekly class schedule for the parent's children
+      description: |
+        Ordered by child (ascending id), then school week: Sunday, Monday, Tuesday, Wednesday,
+        Thursday, then Friday and Saturday, then `period_number`. `day_of_week` is returned
+        exactly as stored; Arabic names (الأحد … الخميس, with or without hamza) and English
+        names in any case are recognized. Unrecognized names sort after all real days,
+        alphabetically. A child without a grade and section has no entries. Schedules saved with
+        `PUT /api/admin/schedule` use only `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس`.
+      security:
+        - ParentJWT: []
+      responses:
+        '200':
+          description: Schedule entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleResponse'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/notifications:
+    get:
+      tags:
+        - Parent App
+      operationId: listNotifications
+      summary: The parent's notification history (paginated)
+      description: |
+        This parent's notifications, newest first, at most 100 per page. When `has_more` is true,
+        request the next (older) page with `?before=<next_before>`. History belongs to the parent
+        account: it survives a change of the parent's phone number. It is stored for every
+        notification even when no push could be delivered. `unread_count` is the total of unread
+        notifications, for a badge.
+      security:
+        - ParentJWT: []
+      parameters:
+        - $ref: '#/components/parameters/Before'
+      responses:
+        '200':
+          description: One page of notifications.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPage'
+        '400':
+          description: '`before` is not a positive integer.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: before must be a positive notification id
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/notifications/read:
+    put:
+      tags:
+        - Parent App
+      operationId: markNotificationRead
+      summary: Mark one notification as read
+      description: |
+        Marks the notification with `id` as read. Idempotent: marking a read notification again
+        also answers 200. An id that belongs to another parent gets the same 404 as an id that
+        does not exist. No request body.
+      security:
+        - ParentJWT: []
+      parameters:
+        - $ref: '#/components/parameters/NotificationIdQuery'
+      responses:
+        '200':
+          description: The notification is read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Notification marked as read
+        '400':
+          description: '`id` missing, zero or not an integer.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: id must be a positive notification id
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '404':
+          description: This parent has no notification with this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Notification not found
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/notifications/read-all:
+    put:
+      tags:
+        - Parent App
+      operationId: markAllNotificationsRead
+      summary: Mark all notifications as read
+      description: |
+        Marks every unread notification of this parent as read and reports how many changed.
+        Idempotent: a second call reports 0. Notifications that arrive afterwards are unread.
+        No request body.
+      security:
+        - ParentJWT: []
+      responses:
+        '200':
+          description: All of the parent's notifications are read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarkAllReadResponse'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/banners:
+    get:
+      tags:
+        - Parent App
+      operationId: listBanners
+      summary: Active announcement banners
+      description: Active banners, newest first, for the home-screen carousel.
+      security:
+        - ParentJWT: []
+      responses:
+        '200':
+          description: Active banners.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BannerListResponse'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/banners/image:
+    get:
+      tags:
+        - Parent App
+      operationId: getBannerImage
+      summary: Picture of an active banner
+      description: |
+        The uploaded picture of an **active** banner, exactly as uploaded. **No token needed**:
+        banners are announcements for every parent, so `Image.network(baseUrl + image_url)` works
+        as is. Reached through a banner's relative `image_url`. An inactive or unknown banner, or
+        one without an uploaded picture, returns 404.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/BannerIdQuery'
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The `ETag` of a copy you already have; 304 when it is still current.
+          schema:
+            type: string
+          example: '"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"'
+      responses:
+        '200':
+          description: The picture.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BannerETag'
+            Cache-Control:
+              $ref: '#/components/headers/PublicImageCacheControl'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/NoSniff'
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: Not modified; the copy whose `ETag` was sent in `If-None-Match` is current. No body.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BannerETag'
+            Cache-Control:
+              $ref: '#/components/headers/PublicImageCacheControl'
+        '400':
+          $ref: '#/components/responses/BannerIdBadRequest'
+        '404':
+          description: No active banner with this id has an uploaded picture.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Banner image not found
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/device-token:
+    put:
+      tags:
+        - Parent App
+      operationId: registerDeviceToken
+      summary: Register or refresh this phone's push token
+      description: |
+        Stores this phone's FCM token for the signed-in parent. Call it after every login, at
+        every app start, and whenever Firebase gives the app a new token. It is idempotent.
+
+        Every push for any of the parent's children goes to all of the parent's registered
+        phones, including children added later. A token belongs to one parent at a time: when
+        another parent registers the same token (the phone changed hands), it moves to that
+        parent. A parent keeps at most 10 tokens; registering an 11th removes the one seen
+        least recently. A token FCM reports as no longer registered is removed automatically,
+        and changing the parent's PIN removes all of the parent's tokens.
+      security:
+        - ParentJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTokenRequest'
+      responses:
+        '200':
+          description: Registered (or refreshed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Device token registered
+        '400':
+          $ref: '#/components/responses/InvalidDeviceToken'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags:
+        - Parent App
+      operationId: removeDeviceToken
+      summary: Remove this phone's push token (logout)
+      description: |
+        Stops pushes to this phone. Call it on logout, before discarding the parent token. The
+        token travels in the JSON body so it never appears in URLs or request logs. It only
+        removes the caller's own token and answers 200 whether or not the token was registered
+        to this parent, so a retried logout succeeds and nothing is revealed about other
+        parents.
+      security:
+        - ParentJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTokenRequest'
+      responses:
+        '200':
+          description: Removed, or was not registered to this parent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Device token removed
+        '400':
+          $ref: '#/components/responses/InvalidDeviceToken'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/login:
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: adminLogin
+      summary: Admin login
+      description: |
+        Returns an admin token valid for 7 days. Unknown usernames and wrong passwords get the
+        same answer in the same time.
+
+        **Rate limit:** only failed attempts count, in fixed 15-minute windows. After 5 failures
+        for one username from one client IP, that username is refused from that IP; after 20
+        failures from one client IP across all usernames, that IP is refused. Both answer 429
+        with `Retry-After` (seconds) until their window ends, even for the right password. The
+        admin can still log in from any other IP, so attackers cannot lock the admin out. Behind
+        a proxy the client IP comes from `X-Real-IP` or `X-Forwarded-For` only when the
+        connection is from a trusted proxy (`TRUSTED_PROXY_CIDRS`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminLoginRequest'
+      responses:
+        '200':
+          description: Logged in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminLoginResponse'
+        '400':
+          description: The body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Invalid request
+        '401':
+          description: Unknown username or wrong password (the message is Arabic for "invalid login details").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: بيانات الدخول غير صحيحة
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyLoginAttempts'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/dashboard:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: getDashboard
+      summary: Today's totals
+      description: Student, parent and attendance totals for today in Asia/Baghdad.
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: Today's totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/students:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listStudents
+      summary: List active students
+      description: Every active student with the linked parent, newest (highest id) first.
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: Active students.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentListResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: createStudent
+      summary: Create a student
+      description: |
+        Creates the student and creates or updates the parent with `parent_phone` in one
+        transaction: on any error nothing is written. A `parent_phone` that is not registered
+        yet needs `parent_pin` (generated by the dashboard). Responds 200 (not 201) with the
+        stored student; `parent_pin` is never returned.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentCreateRequest'
+      responses:
+        '200':
+          description: Student created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentCreatedResponse'
+        '400':
+          $ref: '#/components/responses/StudentWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '409':
+          $ref: '#/components/responses/RFIDTagTaken'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags:
+        - Admin Dashboard
+      operationId: updateStudent
+      summary: Update a student
+      description: |
+        Updates the student with `id` and creates or updates the parent with `parent_phone`, in
+        one transaction: on any error, including 404, nothing is written. A `parent_phone` that
+        is not registered yet needs `parent_pin`.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentUpdateRequest'
+      responses:
+        '200':
+          description: Student updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Student updated
+        '400':
+          $ref: '#/components/responses/StudentWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          description: No student has this `id`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Student not found
+        '409':
+          $ref: '#/components/responses/RFIDTagTaken'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags:
+        - Admin Dashboard
+      operationId: deleteStudent
+      summary: Deactivate a student
+      description: Sets `is_active = false`. Attendance history and the parent account are kept.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/StudentIdQuery'
+      responses:
+        '200':
+          description: Student deactivated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Student deleted
+        '400':
+          description: '`id` missing, 0 or not an integer.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Invalid student ID
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          description: No student has this `id`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Student not found
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/attendance:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: getDailyAttendance
+      summary: Daily attendance report
+      description: |
+        Every active student for the day, ordered Present, then Excused, then Absent, by name
+        within each status, and by `student_id` for equal names.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/Date'
+      responses:
+        '200':
+          description: The day's attendance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyAttendanceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/export/excel:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: exportDailyAttendanceExcel
+      summary: Daily attendance as an Excel file
+      description: |
+        A right-to-left `.xlsx` report (Arabic headers) with student, parent, status and
+        check-in/check-out times for every active student, including students without a
+        linked parent. The header shows the `school_name` setting.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/Date'
+      responses:
+        '200':
+          description: The Excel file.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename=attendance_<date>.xlsx`'
+              schema:
+                type: string
+              example: attachment; filename=attendance_2026-09-21.xlsx
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/leaves:
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: createLeave
+      summary: Record an excused absence
+      description: |
+        Records a leave for an active student and a day. Re-submitting the same student and day
+        updates the notes. A student id with no active student (unknown or deactivated) returns 404.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeavePayload'
+      responses:
+        '200':
+          description: Leave recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaveResponse'
+        '400':
+          description: Malformed JSON; `student_id` missing, 0 or negative; `leave_date` missing, not `YYYY-MM-DD`, or with a year outside 2000 to 2100.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: leave_date must be formatted as YYYY-MM-DD
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          description: No active student has this `student_id` (unknown or deactivated).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Student not found
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          description: Database error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Failed to create leave record
+  /api/admin/settings:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listSettings
+      summary: All settings
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: Every stored setting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags:
+        - Admin Dashboard
+      operationId: upsertSetting
+      summary: Create or replace a setting
+      description: Only `whatsapp_number` and `school_name` are visible to parents (`GET /api/mobile/settings`).
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingPayload'
+      responses:
+        '200':
+          description: Setting saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Setting saved
+        '400':
+          description: Malformed JSON, an empty `key`, or a `key` longer than 100 characters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Invalid payload
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/schedule:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: getAdminSchedule
+      summary: One class's weekly schedule
+      description: |
+        The schedule of the class `grade` + `section`, Sunday to Thursday, then by
+        `period_number`. A class with no schedule returns 200 with an empty `data`. Take the
+        available grade and section values from `GET /api/admin/students`; there is no class list.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/ScheduleGrade'
+        - $ref: '#/components/parameters/ScheduleSection'
+      responses:
+        '200':
+          description: The class's schedule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminScheduleResponse'
+        '400':
+          $ref: '#/components/responses/ScheduleBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags:
+        - Admin Dashboard
+      operationId: replaceAdminSchedule
+      summary: Replace one class's weekly schedule
+      description: |
+        Replaces the whole schedule of one class in a single transaction: every stored period of
+        that class is removed and `periods` is stored instead. **An empty `periods` array clears
+        the class.** Other classes are never changed. A request that fails (400 or 500) changes
+        nothing. Saves of schedules run one at a time, so two saves for the same class at once
+        leave exactly one of them. The response is the saved schedule, as `GET` returns it.
+        Parents see it in `GET /api/mobile/schedule` for every active child whose `grade` and
+        `section` are equal to the saved ones.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminScheduleRequest'
+      responses:
+        '200':
+          description: Saved; the class's schedule as now stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminScheduleResponse'
+        '400':
+          $ref: '#/components/responses/ScheduleBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/banners:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listAdminBanners
+      summary: All banners
+      description: Every banner, active or not, newest first, with its picture's metadata but never its bytes.
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: Banners.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminBannerListResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: createBanner
+      summary: Upload a new banner
+      description: |
+        Creates a banner and stores its picture, in one transaction: a request that fails
+        creates nothing. Parents see it in `GET /api/mobile/banners` while it is active.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BannerCreateRequest'
+            encoding:
+              image:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: Created; the banner as now stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminBannerResponse'
+        '400':
+          $ref: '#/components/responses/BannerWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '413':
+          $ref: '#/components/responses/BannerTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags:
+        - Admin Dashboard
+      operationId: updateBanner
+      summary: Change a banner
+      description: |
+        Changes only the parts sent; omitted parts keep their value. An `image` part replaces the
+        picture (and its ETag). One transaction: a request that fails changes nothing.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/BannerIdQuery'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BannerUpdateRequest'
+            encoding:
+              image:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: Updated; the banner as now stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminBannerResponse'
+        '400':
+          $ref: '#/components/responses/BannerWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/BannerNotFound'
+        '413':
+          $ref: '#/components/responses/BannerTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags:
+        - Admin Dashboard
+      operationId: deleteBanner
+      summary: Delete a banner and its picture
+      description: Permanent. To hide a banner but keep it, send `is_active=false` with `PUT` instead.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/BannerIdQuery'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Banner deleted
+        '400':
+          $ref: '#/components/responses/BannerIdBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/BannerNotFound'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/banners/image:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: getAdminBannerImage
+      summary: Preview a banner's picture
+      description: |
+        The uploaded picture of any banner, active or not, exactly as uploaded. Needs the admin
+        token (send the `Authorization` header with the image request). Banners without an
+        uploaded picture return 404; their picture is at their stored `image_url`.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/BannerIdQuery'
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The `ETag` of a copy you already have; 304 when it is still current.
+          schema:
+            type: string
+          example: '"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"'
+      responses:
+        '200':
+          description: The picture.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BannerETag'
+            Cache-Control:
+              $ref: '#/components/headers/AdminImageCacheControl'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/NoSniff'
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: Not modified; the copy whose `ETag` was sent in `If-None-Match` is current. No body.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BannerETag'
+            Cache-Control:
+              $ref: '#/components/headers/AdminImageCacheControl'
+        '400':
+          $ref: '#/components/responses/BannerIdBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          description: No banner with this id has an uploaded picture.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Banner image not found
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/devices:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listDevices
+      summary: All registered devices
+      description: Every device, active or not, ordered by `location_name`.
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: Devices.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceListResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: createDevice
+      summary: Register a device
+      description: A device registered without `is_active` is active.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceCreateRequest'
+      responses:
+        '200':
+          description: Device registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Device added successfully
+        '400':
+          description: Malformed JSON, a missing `serial_number`, or a field longer than its `maxLength`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing:
+                  summary: serial_number missing
+                  value:
+                    status: error
+                    message: Invalid payload or missing SN
+                tooLong:
+                  summary: A field longer than its limit
+                  value:
+                    status: error
+                    message: location_name must be at most 50 characters
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '409':
+          description: A device with this serial number already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Device SN already exists
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags:
+        - Admin Dashboard
+      operationId: updateDevice
+      summary: Update a device's location or active flag
+      description: |
+        Changes only the fields sent; an omitted `location_name` or `is_active` keeps its stored
+        value. Send at least one of them.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceUpdateRequest'
+      responses:
+        '200':
+          description: Device updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Device updated successfully
+        '400':
+          description: Malformed JSON, a missing `serial_number`, neither `location_name` nor `is_active` sent, or a field longer than its `maxLength`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                nothingToChange:
+                  summary: Neither field sent
+                  value:
+                    status: error
+                    message: location_name or is_active is required
+                missing:
+                  summary: serial_number missing
+                  value:
+                    status: error
+                    message: Invalid payload
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          description: No device has this serial number.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Device not found
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags:
+        - Admin Dashboard
+      operationId: disableDevice
+      summary: Disable a device
+      description: |
+        Sets `is_active = false`; the device and its attendance history are kept. Answers 200
+        even when no device has this serial number.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/DeviceSnQuery'
+      responses:
+        '200':
+          description: Device disabled (or no such device).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Device disabled logically
+        '400':
+          description: '`sn` missing or empty.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: error
+                message: Missing device SN
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    ParentJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Parent token from `POST /api/mobile/login` (role `parent`, valid 30 days).
+    AdminJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Admin token from `POST /api/admin/login` (role `admin`, valid 7 days).
+    DeviceSerial:
+      type: apiKey
+      in: query
+      name: SN
+      description: Serial number of a device registered with `POST /api/admin/devices`; it is the device's only credential.
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+        minimum: 1
+      example: 30
+    BannerETag:
+      description: Strong validator of the picture (SHA-256 of its bytes, in quotes). Send it back in `If-None-Match` to get 304 while the picture is unchanged.
+      schema:
+        type: string
+        pattern: ^"[0-9a-f]{64}"$
+      example: '"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"'
+    NoSniff:
+      description: Always `nosniff`; the picture is only ever its declared type.
+      schema:
+        type: string
+        enum:
+          - nosniff
+      example: nosniff
+    PublicImageCacheControl:
+      description: The picture may be reused for 5 minutes, then revalidated with `If-None-Match`.
+      schema:
+        type: string
+        enum:
+          - public, max-age=300
+      example: public, max-age=300
+    AdminImageCacheControl:
+      description: The dashboard revalidates the picture on every use (cheap with `If-None-Match`).
+      schema:
+        type: string
+        enum:
+          - private, no-cache
+      example: private, no-cache
+  parameters:
+    Date:
+      name: date
+      in: query
+      required: false
+      description: |
+        Calendar day, `YYYY-MM-DD`, a real date with a year from 2000 to 2100. Defaults to today
+        in Asia/Baghdad. Any other value returns 400.
+      schema:
+        type: string
+        format: date
+        pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+      example: '2026-09-21'
+    Month:
+      name: month
+      in: query
+      required: false
+      description: |
+        Month, `YYYY-MM`, with a year from 2000 to 2100. Defaults to the current month in
+        Asia/Baghdad. Any other value returns 400.
+      schema:
+        type: string
+        pattern: ^[0-9]{4}-(0[1-9]|1[0-2])$
+      example: 2026-09
+    Before:
+      name: before
+      in: query
+      required: false
+      description: |
+        Cursor: return only notifications with an id lower than this. Pass the `next_before` of
+        the previous page. Omit it for the newest page. Not a positive integer: 400.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 1402
+    NotificationIdQuery:
+      name: id
+      in: query
+      required: true
+      description: Notification id from the list. Missing, zero or not an integer returns 400.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 1502
+    StudentIdQuery:
+      name: id
+      in: query
+      required: true
+      description: Student id. Missing, zero or not an integer returns 400; an id with no student returns 404.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+      example: 42
+    DeviceSnQuery:
+      name: sn
+      in: query
+      required: true
+      description: Serial number of the device to disable. Missing or empty returns 400.
+      schema:
+        type: string
+        minLength: 1
+      example: TEST-SN-0001
+    ScheduleGrade:
+      name: grade
+      in: query
+      required: true
+      description: |
+        The class's grade, as stored on its students (`Student.grade`). Surrounding spaces are
+        ignored; otherwise it must match exactly (case-sensitive). Missing or blank returns 400,
+        and so does a value longer than 50 characters.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 50
+      example: G3
+    ScheduleSection:
+      name: section
+      in: query
+      required: true
+      description: |
+        The class's section, as stored on its students (`Student.section`). Surrounding spaces
+        are ignored; otherwise it must match exactly (case-sensitive). Missing or blank returns
+        400, and so does a value longer than 50 characters.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 50
+      example: A
+    BannerIdQuery:
+      name: id
+      in: query
+      required: true
+      description: Banner id. Missing, zero or not an integer returns 400; an id with no banner returns 404.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+      example: 5
+    AdmsSerial:
+      name: SN
+      in: query
+      required: false
+      description: Device serial number. Logged only; the server answers `OK` with or without it.
+      schema:
+        type: string
+      example: TEST-SN-0001
+    AdmsOptions:
+      name: options
+      in: query
+      required: false
+      description: Sent by the device on boot (for example `all`). Logged only.
+      schema:
+        type: string
+      example: all
+    AdmsTable:
+      name: table
+      in: query
+      required: false
+      description: |
+        The kind of data in the body. Only `ATTLOG` (attendance punches) is processed; any other
+        value, or none, is acknowledged with `OK` without reading the body. Other ADMS query
+        parameters (`Stamp`, `c`, ...) are accepted and ignored.
+      schema:
+        type: string
+      example: ATTLOG
+  schemas:
+    ErrorResponse:
+      type: object
+      description: |
+        The body of every JSON error. `message` is human-readable (English, except admin login,
+        which answers in Arabic) and may change; branch on the HTTP status code.
+      properties:
+        status:
+          type: string
+          enum:
+            - error
+        message:
+          type: string
+      required:
+        - status
+        - message
+      example:
+        status: error
+        message: Invalid or expired token
+    MessageResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+      required:
+        - status
+        - message
+      example:
+        status: success
+        message: Setting saved
+    AdminLoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
+      description: A wrong or missing username or password returns 401, not 400.
+      example:
+        username: admin
+        password: example-password
+    AdminLoginResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: object
+          properties:
+            token:
+              type: string
+              description: |
+                Admin JWT (role `admin`), valid for 7 days. Send it as
+                `Authorization: Bearer <token>`.
+          required:
+            - token
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.EXAMPLE-ADMIN-PAYLOAD.EXAMPLE-SIGNATURE
+    MobileLoginRequest:
+      type: object
+      properties:
+        phone:
+          type: string
+          description: |
+            The parent's Iraqi mobile number in any accepted format: `07XXXXXXXXX`,
+            `+9647XXXXXXXXX`, `009647XXXXXXXXX` or `9647XXXXXXXXX` (a 0 after the country code is
+            tolerated), with spaces, dashes, dots, parentheses and Arabic-Indic or Persian digits.
+            All formats are the same number and share one rate-limit count. Anything else gets the
+            same 401 as an unregistered number.
+        pin:
+          type: string
+          maxLength: 72
+          description: |
+            The parent's PIN, as a string, compared exactly (not trimmed). New PINs are 6 digits,
+            but login checks no format, so a parent whose PIN was set before that rule keeps
+            logging in with it.
+        fcm_token:
+          type: string
+          description: |
+            Optional, kept for compatibility: a valid FCM registration token here is registered
+            exactly as `PUT /api/mobile/device-token` would (an invalid one is ignored and the
+            login still succeeds). Use `PUT` and `DELETE /api/mobile/device-token` for refresh and
+            logout; they are the contract.
+      required:
+        - phone
+        - pin
+      example:
+        phone: '+9647000000101'
+        pin: '482193'
+        fcm_token: fcm-example-registration-token
+    DeviceTokenRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 20
+          maxLength: 1024
+          pattern: ^[A-Za-z0-9:_.-]+$
+          description: The FCM registration token of this phone, from `FirebaseMessaging.instance.getToken()`.
+      required:
+        - token
+      example:
+        token: example-fcm-registration-token-0001
+    ParentProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        name:
+          type: string
+        phone:
+          type: string
+          pattern: ^\+9647[0-9]{9}$
+          description: The registered number in canonical form.
+      required:
+        - id
+        - name
+        - phone
+      example:
+        id: 7
+        name: Omar Example
+        phone: '+9647000000101'
+    MobileLoginResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: object
+          properties:
+            token:
+              type: string
+              description: |
+                Parent JWT (role `parent`), valid for 30 days. Send it as
+                `Authorization: Bearer <token>`. Treat it as opaque; when a request returns 401,
+                ask the parent to log in again.
+            parent:
+              $ref: '#/components/schemas/ParentProfile'
+          required:
+            - token
+            - parent
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.EXAMPLE-PARENT-PAYLOAD.EXAMPLE-SIGNATURE
+          parent:
+            id: 7
+            name: Omar Example
+            phone: '+9647000000101'
+    DashboardStats:
+      type: object
+      properties:
+        total_students:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Active students.
+        total_parents:
+          type: integer
+          format: int64
+          minimum: 0
+          description: All parent accounts, including parents with no active student.
+        present_today:
+          type: integer
+          format: int64
+          minimum: 0
+        excused_today:
+          type: integer
+          format: int64
+          minimum: 0
+        absent_today:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+        - total_students
+        - total_parents
+        - present_today
+        - excused_today
+        - absent_today
+      example:
+        total_students: 150
+        total_parents: 80
+        present_today: 120
+        excused_today: 10
+        absent_today: 20
+    DashboardResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        date:
+          type: string
+          format: date
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+          description: Today in Asia/Baghdad.
+        data:
+          $ref: '#/components/schemas/DashboardStats'
+      required:
+        - status
+        - date
+        - data
+      example:
+        status: success
+        date: '2026-09-21'
+        data:
+          total_students: 150
+          total_parents: 80
+          present_today: 120
+          excused_today: 10
+          absent_today: 20
+    Student:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        name:
+          type: string
+        parent_name:
+          type: string
+          description: Empty string when no parent is linked.
+        parent_phone:
+          type: string
+          pattern: ^(\+9647[0-9]{9})?$
+          description: Canonical `+9647XXXXXXXXX`; empty string when no parent is linked.
+        rfid_tag:
+          type: string
+          description: |
+            The User ID the student is enrolled under on the ZKTeco device. A student created
+            without one gets a placeholder `admin-<number>`.
+        grade:
+          type: string
+          nullable: true
+        section:
+          type: string
+          nullable: true
+      required:
+        - id
+        - name
+        - parent_name
+        - parent_phone
+        - rfid_tag
+        - grade
+        - section
+      example:
+        id: 42
+        name: Sara Example
+        parent_name: Omar Example
+        parent_phone: '+9647000000101'
+        rfid_tag: '1001'
+        grade: G3
+        section: A
+    StudentCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required and not blank (400). Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        parent_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Required and not blank (400). For a phone number that is already registered, it replaces that parent's name. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        parent_phone:
+          type: string
+          minLength: 1
+          maxLength: 20
+          description: |
+            Required (400). An Iraqi mobile number in any format the parent login accepts; it is
+            stored as `+9647XXXXXXXXX`, and anything else is 400. Links the student to the parent
+            with this number, creating the parent when the number is new.
+        parent_pin:
+          type: string
+          minLength: 6
+          maxLength: 6
+          pattern: ^[0-9]{6}$
+          description: |
+            **Required when `parent_phone` is not registered yet** (a new parent): missing, empty
+            or only spaces returns 400. When set it must be exactly 6 ASCII digits `0-9` (any
+            other value returns 400; Arabic-Indic or Persian digits are rejected). The admin
+            dashboard generates it with a secure random source; the server never does, stores
+            only a hash and can never return it. For an already registered number it is
+            optional: a PIN replaces the current one and signs the parent out of every device
+            (their tokens get 401 and their registered push devices are removed); empty or
+            omitted keeps both.
+        rfid_tag:
+          type: string
+          maxLength: 50
+          description: |
+            Device User ID; must be unique (409 when another student has it). Empty or omitted
+            stores a placeholder `admin-<number>`. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        grade:
+          type: string
+          nullable: true
+          maxLength: 50
+          description: Surrounding spaces are removed before it is stored (the weekly schedule matches it exactly). Longer values return 400 naming the field and the limit.
+        section:
+          type: string
+          nullable: true
+          maxLength: 50
+          description: Surrounding spaces are removed before it is stored (the weekly schedule matches it exactly). Longer values return 400 naming the field and the limit.
+      required:
+        - name
+        - parent_name
+        - parent_phone
+      example:
+        name: Sara Example
+        parent_name: Omar Example
+        parent_phone: '+9647000000101'
+        parent_pin: '482193'
+        rfid_tag: '1001'
+        grade: G3
+        section: A
+    StudentUpdateRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Required (400 when missing or 0). An id with no student returns 404.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required and not blank (400). Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        parent_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Required and not blank (400). Replaces the linked parent's name. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        parent_phone:
+          type: string
+          minLength: 1
+          maxLength: 20
+          description: |
+            Required (400), an Iraqi mobile number in any format the parent login accepts (400
+            otherwise). The student is re-linked to the parent with this number; a number that is
+            not registered yet creates a new parent, which needs `parent_pin`.
+        parent_pin:
+          type: string
+          minLength: 6
+          maxLength: 6
+          pattern: ^[0-9]{6}$
+          description: |
+            **Required when `parent_phone` is not registered yet** (missing, empty or only spaces
+            returns 400); the dashboard generates it. When set it must be exactly 6 ASCII digits
+            (400 otherwise). For a registered number, a PIN replaces the current one and signs
+            the parent out of every device (tokens get 401, registered push devices are
+            removed); empty or omitted keeps it.
+        rfid_tag:
+          type: string
+          maxLength: 50
+          description: Empty or omitted keeps the stored tag. Another student's tag returns 409. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        grade:
+          type: string
+          nullable: true
+          maxLength: 50
+          description: Omitted or null keeps the stored value. Otherwise surrounding spaces are removed before it is stored (the weekly schedule matches it exactly). Longer values return 400 naming the field and the limit.
+        section:
+          type: string
+          nullable: true
+          maxLength: 50
+          description: Omitted or null keeps the stored value. Otherwise surrounding spaces are removed before it is stored (the weekly schedule matches it exactly). Longer values return 400 naming the field and the limit.
+      required:
+        - id
+        - name
+        - parent_name
+        - parent_phone
+      example:
+        id: 42
+        name: Sara Example
+        parent_name: Omar Example
+        parent_phone: '+9647000000101'
+        grade: G4
+    StudentListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Student'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          - id: 42
+            name: Sara Example
+            parent_name: Omar Example
+            parent_phone: '+9647000000101'
+            rfid_tag: '1001'
+            grade: G3
+            section: A
+    StudentCreatedResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+        data:
+          $ref: '#/components/schemas/Student'
+      required:
+        - status
+        - message
+        - data
+      example:
+        status: success
+        message: Student created
+        data:
+          id: 42
+          name: Sara Example
+          parent_name: Omar Example
+          parent_phone: '+9647000000101'
+          rfid_tag: '1001'
+          grade: G3
+          section: A
+    DailyAttendanceDTO:
+      type: object
+      description: One student's attendance for one day. Shared by the admin daily report and the parent's today view.
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        full_name:
+          type: string
+        status:
+          type: string
+          enum:
+            - Present
+            - Excused
+            - Absent
+          description: |
+            `Present`: at least one punch in the check-in window (06:30–09:30) or the check-out
+            window (11:30–13:30). `Excused`: no such punch and a leave recorded for the day.
+            `Absent`: neither, which includes a student who has not arrived yet today.
+        check_in_time:
+          type: string
+          nullable: true
+          pattern: ^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$
+          description: Earliest punch in the check-in window (06:30–09:30), Asia/Baghdad; null when there is none.
+        check_out_time:
+          type: string
+          nullable: true
+          pattern: ^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$
+          description: Earliest punch in the check-out window (11:30–13:30), Asia/Baghdad; null when there is none.
+      required:
+        - student_id
+        - full_name
+        - status
+        - check_in_time
+        - check_out_time
+      example:
+        student_id: 42
+        full_name: Sara Example
+        status: Present
+        check_in_time: 07:15 AM
+        check_out_time: null
+    DailyAttendanceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        date:
+          type: string
+          format: date
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyAttendanceDTO'
+      required:
+        - status
+        - date
+        - data
+      example:
+        status: success
+        date: '2026-09-21'
+        data:
+          - student_id: 42
+            full_name: Sara Example
+            status: Present
+            check_in_time: 07:15 AM
+            check_out_time: 12:30 PM
+          - student_id: 43
+            full_name: Yousef Example
+            status: Absent
+            check_in_time: null
+            check_out_time: null
+    LeavePayload:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Required (400 when missing, 0 or negative). An id with no active student returns 404.
+        leave_date:
+          type: string
+          format: date
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+          description: Required, `YYYY-MM-DD` with a year from 2000 to 2100 (400 otherwise).
+        notes:
+          type: string
+          description: Internal note, never shown to parents. Omitted stores an empty note.
+      required:
+        - student_id
+        - leave_date
+      example:
+        student_id: 42
+        leave_date: '2026-09-22'
+        notes: Doctor appointment
+    LeaveResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            leave_id:
+              type: integer
+              format: int32
+              minimum: 1
+              description: Re-submitting the same student and date updates `notes` and returns the same id.
+          required:
+            - leave_id
+      required:
+        - status
+        - message
+        - data
+      example:
+        status: success
+        message: Leave recorded successfully
+        data:
+          leave_id: 311
+    Device:
+      type: object
+      properties:
+        serial_number:
+          type: string
+        location_name:
+          type: string
+          description: Empty string when not set.
+        is_active:
+          type: boolean
+        last_sync:
+          type: string
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$
+          description: |
+            When the device last reached the server, `YYYY-MM-DD HH:MM:SS` in Asia/Baghdad.
+            The field is omitted (not null) until the device first connects.
+      required:
+        - serial_number
+        - location_name
+        - is_active
+      example:
+        serial_number: TEST-SN-0001
+        location_name: Main Gate
+        is_active: true
+        last_sync: '2026-09-21 07:00:00'
+    DeviceCreateRequest:
+      type: object
+      properties:
+        serial_number:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Required (400). An existing serial number returns 409. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        location_name:
+          type: string
+          maxLength: 50
+          default: ''
+          description: Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        is_active:
+          type: boolean
+          default: true
+          description: Omitted means true (active).
+      required:
+        - serial_number
+      example:
+        serial_number: TEST-SN-0001
+        location_name: Main Gate
+        is_active: true
+    DeviceUpdateRequest:
+      type: object
+      description: |
+        Changes only the fields it carries: an omitted `location_name` or `is_active` keeps its
+        stored value. At least one of them is required (400 otherwise). A present empty
+        `location_name` clears the location.
+      properties:
+        serial_number:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Required (400). A serial number with no device returns 404.
+        location_name:
+          type: string
+          maxLength: 50
+          description: Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        is_active:
+          type: boolean
+      required:
+        - serial_number
+      example:
+        serial_number: TEST-SN-0001
+        location_name: Side Gate
+        is_active: true
+    DeviceListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Device'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          - serial_number: TEST-SN-0002
+            location_name: ''
+            is_active: false
+          - serial_number: TEST-SN-0001
+            location_name: Main Gate
+            is_active: true
+            last_sync: '2026-09-21 07:00:00'
+    HardwarePushPayload:
+      type: object
+      properties:
+        device_sn:
+          type: string
+          description: Must equal the `SN` query parameter the request was authenticated with (403 otherwise).
+        rfid_tag:
+          type: string
+          description: The student's device User ID. An unknown value is accepted and ignored.
+        push_time:
+          type: string
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$
+          description: Punch time, `YYYY-MM-DD HH:MM:SS`, Asia/Baghdad (400 otherwise).
+      required:
+        - device_sn
+        - rfid_tag
+        - push_time
+      example:
+        device_sn: TEST-SN-0001
+        rfid_tag: '1001'
+        push_time: '2026-09-21 07:32:11'
+    HardwarePushResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+          enum:
+            - Punched successfully
+            - Ignored or Duplicate
+          description: '`Ignored or Duplicate`: the punch was already stored, or `rfid_tag` matches no student.'
+      required:
+        - status
+        - message
+      example:
+        status: success
+        message: Punched successfully
+    SettingPayload:
+      type: object
+      properties:
+        key:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required and non-empty (400). Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+        value:
+          type: string
+          default: ''
+          description: Omitted stores an empty value. No length limit beyond the 64 KiB body.
+      required:
+        - key
+      example:
+        key: whatsapp_number
+        value: '+9647000000999'
+    SettingsResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: object
+          description: Every stored setting, key to value.
+          additionalProperties:
+            type: string
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          school_name: Example Primary School
+          whatsapp_number: '+9647000000999'
+    PublicSettingsResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: object
+          description: Only these keys are ever returned; a key that is not set is omitted.
+          properties:
+            whatsapp_number:
+              type: string
+              description: School contact number for WhatsApp.
+            school_name:
+              type: string
+          additionalProperties: false
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          school_name: Example Primary School
+          whatsapp_number: '+9647000000999'
+    MobileStudent:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        full_name:
+          type: string
+        grade:
+          type: string
+          description: Empty string when not set.
+        section:
+          type: string
+          description: Empty string when not set.
+        avatar_url:
+          type: string
+          description: Image URL as stored by the school; empty string when not set.
+      required:
+        - id
+        - full_name
+        - grade
+        - section
+        - avatar_url
+      example:
+        id: 42
+        full_name: Sara Example
+        grade: G3
+        section: A
+        avatar_url: ''
+    MobileStudentListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MobileStudent'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          - id: 42
+            full_name: Sara Example
+            grade: G3
+            section: A
+            avatar_url: ''
+    StudentSummary:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        full_name:
+          type: string
+        total_present:
+          type: integer
+          format: int64
+          minimum: 0
+        total_excused:
+          type: integer
+          format: int64
+          minimum: 0
+        total_absent:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+        - student_id
+        - full_name
+        - total_present
+        - total_excused
+        - total_absent
+      example:
+        student_id: 42
+        full_name: Sara Example
+        total_present: 14
+        total_excused: 1
+        total_absent: 0
+    AttendanceSummaryResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        month:
+          type: string
+          pattern: ^[0-9]{4}-(0[1-9]|1[0-2])$
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudentSummary'
+      required:
+        - status
+        - month
+        - data
+      example:
+        status: success
+        month: 2026-09
+        data:
+          - student_id: 42
+            full_name: Sara Example
+            total_present: 14
+            total_excused: 1
+            total_absent: 0
+    MonthlyRecord:
+      type: object
+      description: One school day. `check_in_time` and `check_out_time` mean the same as in DailyAttendanceDTO.
+      properties:
+        date:
+          type: string
+          format: date
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+        status:
+          type: string
+          enum:
+            - Present
+            - Excused
+            - Absent
+        check_in_time:
+          type: string
+          nullable: true
+          pattern: ^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$
+          description: Earliest punch in the check-in window (06:30–09:30); null when there is none.
+        check_out_time:
+          type: string
+          nullable: true
+          pattern: ^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$
+          description: Earliest punch in the check-out window (11:30–13:30); null when there is none.
+      required:
+        - date
+        - status
+        - check_in_time
+        - check_out_time
+      example:
+        date: '2026-09-21'
+        status: Present
+        check_in_time: 07:15 AM
+        check_out_time: 12:30 PM
+    StudentMonthlyReport:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        full_name:
+          type: string
+        records:
+          type: array
+          description: School days of the month up to today, newest first.
+          items:
+            $ref: '#/components/schemas/MonthlyRecord'
+      required:
+        - student_id
+        - full_name
+        - records
+      example:
+        student_id: 42
+        full_name: Sara Example
+        records:
+          - date: '2026-09-21'
+            status: Present
+            check_in_time: 07:15 AM
+            check_out_time: 12:30 PM
+          - date: '2026-09-20'
+            status: Absent
+            check_in_time: null
+            check_out_time: null
+    MonthlyAttendanceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        month:
+          type: string
+          pattern: ^[0-9]{4}-(0[1-9]|1[0-2])$
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudentMonthlyReport'
+      required:
+        - status
+        - month
+        - data
+      example:
+        status: success
+        month: 2026-09
+        data:
+          - student_id: 42
+            full_name: Sara Example
+            records:
+              - date: '2026-09-21'
+                status: Present
+                check_in_time: 07:15 AM
+                check_out_time: 12:30 PM
+    ScheduleEntry:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        student_name:
+          type: string
+        grade:
+          type: string
+        section:
+          type: string
+        day_of_week:
+          type: string
+          description: The day name exactly as the school stored it, usually Arabic (for example `الأحد`), sometimes English.
+        period_number:
+          type: integer
+          format: int32
+        subject_name:
+          type: string
+        teacher_name:
+          type: string
+          description: Empty string when not set.
+      required:
+        - student_id
+        - student_name
+        - grade
+        - section
+        - day_of_week
+        - period_number
+        - subject_name
+        - teacher_name
+      example:
+        student_id: 42
+        student_name: Sara Example
+        grade: G3
+        section: A
+        day_of_week: الأحد
+        period_number: 1
+        subject_name: Mathematics
+        teacher_name: Teacher Example
+    ScheduleResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleEntry'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          - student_id: 42
+            student_name: Sara Example
+            grade: G3
+            section: A
+            day_of_week: الأحد
+            period_number: 1
+            subject_name: Mathematics
+            teacher_name: Teacher Example
+          - student_id: 42
+            student_name: Sara Example
+            grade: G3
+            section: A
+            day_of_week: الأحد
+            period_number: 2
+            subject_name: Science
+            teacher_name: ''
+    AdminSchedulePeriod:
+      type: object
+      properties:
+        day_of_week:
+          type: string
+          description: |
+            A school day, Sunday to Thursday. Accepted: the Arabic names with or without hamza
+            (`الأحد`/`الاحد`, `الإثنين`/`الاثنين`, `الثلاثاء`, `الأربعاء`/`الاربعاء`, `الخميس`) and the
+            English names (`Sunday` … `Thursday`) in any case, with surrounding spaces ignored. They
+            are stored and returned as `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس`. Friday,
+            Saturday or anything else returns 400.
+        period_number:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 12
+          description: 1 to 12 (400 otherwise). Each day and period pair may appear only once per request (400).
+        subject_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required; surrounding spaces are removed, and blank returns 400. Longer than 100 characters returns 400.
+        teacher_name:
+          type: string
+          nullable: true
+          maxLength: 100
+          description: Optional. Surrounding spaces are removed; omitted, null or blank is stored as null. Longer than 100 characters returns 400.
+      required:
+        - day_of_week
+        - period_number
+        - subject_name
+      example:
+        day_of_week: الأحد
+        period_number: 1
+        subject_name: Mathematics
+        teacher_name: Teacher Example
+    AdminScheduleRequest:
+      type: object
+      properties:
+        grade:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: |
+            Required. Surrounding spaces are removed; otherwise stored exactly as sent (no case
+            folding). Use the grade exactly as the class's students have it: the parent app shows
+            the schedule to children whose grade and section are equal to these.
+        section:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Required. Same rules as `grade`.
+        periods:
+          type: array
+          maxItems: 60
+          description: |
+            The class's whole schedule (at most 5 days × 12 periods = 60). It replaces every stored
+            period of this class, including rows entered earlier in other spellings. **An empty
+            array clears the class's schedule.** Missing or null returns 400, so a client bug
+            cannot clear a class by accident.
+          items:
+            $ref: '#/components/schemas/AdminSchedulePeriod'
+      required:
+        - grade
+        - section
+        - periods
+      example:
+        grade: G3
+        section: A
+        periods:
+          - day_of_week: Sunday
+            period_number: 2
+            subject_name: Science
+            teacher_name: null
+          - day_of_week: الأحد
+            period_number: 1
+            subject_name: Mathematics
+            teacher_name: Teacher Example
+          - day_of_week: الاثنين
+            period_number: 1
+            subject_name: Reading
+            teacher_name: Teacher Sample
+    AdminScheduleEntry:
+      type: object
+      properties:
+        day_of_week:
+          type: string
+          description: |
+            One of `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس` for every period saved
+            through `PUT /api/admin/schedule`. Rows entered directly in the database before keep
+            their stored spelling until the class is saved once.
+        period_number:
+          type: integer
+          format: int32
+        subject_name:
+          type: string
+        teacher_name:
+          type: string
+          nullable: true
+          description: Null when not set.
+      required:
+        - day_of_week
+        - period_number
+        - subject_name
+        - teacher_name
+      example:
+        day_of_week: الأحد
+        period_number: 2
+        subject_name: Science
+        teacher_name: null
+    AdminScheduleResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        grade:
+          type: string
+          description: The class, with surrounding spaces removed.
+        section:
+          type: string
+        data:
+          type: array
+          description: |
+            The class's periods, Sunday to Thursday, then by `period_number` (the order
+            `GET /api/mobile/schedule` uses). Empty when the class has no schedule.
+          items:
+            $ref: '#/components/schemas/AdminScheduleEntry'
+      required:
+        - status
+        - grade
+        - section
+        - data
+      example:
+        status: success
+        grade: G3
+        section: A
+        data:
+          - day_of_week: الأحد
+            period_number: 1
+            subject_name: Mathematics
+            teacher_name: Teacher Example
+          - day_of_week: الأحد
+            period_number: 2
+            subject_name: Science
+            teacher_name: null
+          - day_of_week: الإثنين
+            period_number: 1
+            subject_name: Reading
+            teacher_name: Teacher Sample
+    AdminBanner:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        title:
+          type: string
+          nullable: true
+          maxLength: 255
+          description: Null when not set.
+        action_link:
+          type: string
+          nullable: true
+          maxLength: 2048
+          description: Absolute `http`/`https` link opened on tap; null when not set.
+        is_active:
+          type: boolean
+          description: Only active banners reach parents (`GET /api/mobile/banners`).
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: RFC 3339 in Asia/Baghdad (`+03:00`). Null only for rows entered by hand without a date.
+        image_url:
+          type: string
+          description: |
+            The same value parents receive: `/api/mobile/banners/image?id=<id>` (relative to the API
+            base URL) for an uploaded picture, otherwise the URL stored for an older banner. To
+            preview any banner, active or not, use `GET /api/admin/banners/image?id=<id>` with the
+            admin token.
+        image_content_type:
+          type: string
+          nullable: true
+          enum:
+            - image/jpeg
+            - image/png
+            - image/webp
+            - null
+          description: Type detected from the uploaded bytes; null for a banner without an uploaded picture.
+        image_size_bytes:
+          type: integer
+          format: int32
+          nullable: true
+          minimum: 1
+          maximum: 2097152
+          description: Size of the uploaded picture; null without one.
+      required:
+        - id
+        - title
+        - action_link
+        - is_active
+        - created_at
+        - image_url
+        - image_content_type
+        - image_size_bytes
+      example:
+        id: 5
+        title: Open day
+        action_link: https://example.com/open-day
+        is_active: true
+        created_at: '2026-09-21T09:30:00+03:00'
+        image_url: /api/mobile/banners/image?id=5
+        image_content_type: image/jpeg
+        image_size_bytes: 284113
+    AdminBannerResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          $ref: '#/components/schemas/AdminBanner'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          id: 5
+          title: Open day
+          action_link: https://example.com/open-day
+          is_active: true
+          created_at: '2026-09-21T09:30:00+03:00'
+          image_url: /api/mobile/banners/image?id=5
+          image_content_type: image/jpeg
+          image_size_bytes: 284113
+    AdminBannerListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          description: Every banner, active or not, newest first (by `created_at`, then `id`). Never picture bytes.
+          items:
+            $ref: '#/components/schemas/AdminBanner'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          - id: 5
+            title: Open day
+            action_link: null
+            is_active: false
+            created_at: '2026-09-21T09:30:00+03:00'
+            image_url: /api/mobile/banners/image?id=5
+            image_content_type: image/png
+            image_size_bytes: 91230
+          - id: 2
+            title: null
+            action_link: https://example.com/sports
+            is_active: true
+            created_at: '2026-01-03T10:00:00+03:00'
+            image_url: https://example.com/banners/sports.jpg
+            image_content_type: null
+            image_size_bytes: null
+    BannerCreateRequest:
+      type: object
+      description: |
+        `multipart/form-data`. Each field is sent at most once (400 otherwise); unknown parts are
+        ignored.
+      properties:
+        image:
+          type: string
+          format: binary
+          description: |
+            Required. The picture, at most 2 MiB (2,097,152 bytes; larger returns 413). Its type
+            is detected from its bytes and must be JPEG, PNG or WebP; anything else (SVG, GIF,
+            BMP, text) returns 400 whatever the file name or the part's Content-Type say. An
+            empty file returns 400. Resize and compress it before uploading.
+        title:
+          type: string
+          maxLength: 255
+          description: Optional. Surrounding spaces are removed; blank stores null. Longer than 255 characters returns 400.
+        action_link:
+          type: string
+          maxLength: 2048
+          description: |
+            Optional. Surrounding spaces are removed; blank stores null. Otherwise it must be an
+            absolute `http` or `https` URL with a host (`javascript:`, `data:`, `intent:`,
+            relative links and other schemes return 400). Longer than 2048 characters returns 400.
+        is_active:
+          type: string
+          enum:
+            - 'true'
+            - 'false'
+          default: 'true'
+          description: Optional, exactly `true` or `false` (anything else returns 400). Defaults to `true`.
+      required:
+        - image
+      example:
+        image: (binary JPEG, PNG or WebP)
+        title: Open day
+        action_link: https://example.com/open-day
+        is_active: 'true'
+    BannerUpdateRequest:
+      type: object
+      description: |
+        `multipart/form-data`. Every part is optional; a part that is sent replaces that value and
+        an omitted part keeps it. Sending none of `image`, `title`, `action_link`, `is_active`
+        returns 400. Each field is sent at most once.
+      properties:
+        image:
+          type: string
+          format: binary
+          description: Replaces the stored picture. Same rules as on create.
+        title:
+          type: string
+          maxLength: 255
+          description: Same rules as on create; blank clears the title.
+        action_link:
+          type: string
+          maxLength: 2048
+          description: Same rules as on create; blank clears the link.
+        is_active:
+          type: string
+          enum:
+            - 'true'
+            - 'false'
+          description: '`false` hides the banner from parents without deleting it; `true` shows it again.'
+      example:
+        title: Open day (updated)
+        is_active: 'false'
+    Notification:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        title:
+          type: string
+        body:
+          type: string
+        is_read:
+          type: boolean
+          description: |
+            False until the parent marks it read with `PUT /api/mobile/notifications/read?id=` or
+            `PUT /api/mobile/notifications/read-all`. New notifications always arrive unread.
+        created_at:
+          type: string
+          format: date-time
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+03:00$
+          description: RFC 3339 in Asia/Baghdad (always `+03:00`).
+      required:
+        - id
+        - title
+        - body
+        - is_read
+        - created_at
+      example:
+        id: 1502
+        title: إشعار دخول
+        body: تم تسجيل دخول الطالب Sara Example الساعة 07:15
+        is_read: false
+        created_at: '2026-09-21T07:15:04+03:00'
+    NotificationPage:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          maxItems: 100
+          description: Newest first (descending id).
+          items:
+            $ref: '#/components/schemas/Notification'
+        has_more:
+          type: boolean
+          description: True when older notifications exist.
+        next_before:
+          type: integer
+          format: int32
+          nullable: true
+          description: The id of the last item on this page. Pass it as `before` for the next page; null when `has_more` is false.
+        unread_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            How many of the parent's notifications are unread in total, across all pages (not just
+            this page). The same on every page; use it for the unread badge.
+      required:
+        - status
+        - data
+        - has_more
+        - next_before
+        - unread_count
+      example:
+        status: success
+        data:
+          - id: 1502
+            title: إشعار دخول
+            body: تم تسجيل دخول الطالب Sara Example الساعة 07:15
+            is_read: false
+            created_at: '2026-09-21T07:15:04+03:00'
+        has_more: false
+        next_before: null
+        unread_count: 1
+    MarkAllReadResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: object
+          properties:
+            updated:
+              type: integer
+              format: int64
+              minimum: 0
+              description: How many notifications changed from unread to read (0 when none were unread).
+          required:
+            - updated
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          updated: 3
+    Banner:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        title:
+          type: string
+          description: Empty string when not set.
+        image_url:
+          type: string
+          description: |
+            Where to load the picture. For a picture uploaded from the admin dashboard it is a
+            path **relative to the API base URL** that starts with `/`, for example
+            `/api/mobile/banners/image?id=5` (`GET /api/mobile/banners/image`, no token needed).
+            Banners entered before uploads existed keep the full URL the school stored.
+        action_link:
+          type: string
+          description: Link to open on tap; empty string when not set.
+      required:
+        - id
+        - title
+        - image_url
+        - action_link
+      example:
+        id: 3
+        title: Open day
+        image_url: https://example.com/banners/open-day.jpg
+        action_link: ''
+    BannerListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          description: Active banners, newest first.
+          items:
+            $ref: '#/components/schemas/Banner'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          - id: 3
+            title: Open day
+            image_url: https://example.com/banners/open-day.jpg
+            action_link: ''
+  responses:
+    BadRequest:
+      description: Malformed JSON, a missing required field, or a parameter in the wrong format. `message` names the problem.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: month must be formatted as YYYY-MM
+    ParentUnauthorized:
+      description: |
+        No usable parent token: the `Authorization` header is missing or not `Bearer <token>`;
+        the token is expired, malformed or signed with another key; it was issued before the
+        parent's PIN was changed (or before session versions existed); or the parent no longer
+        exists. Log in again.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            missing:
+              summary: No Authorization header
+              value:
+                status: error
+                message: Unauthorized
+            invalid:
+              summary: Expired or invalid token
+              value:
+                status: error
+                message: Invalid or expired token
+    ParentForbidden:
+      description: A valid token without the parent role (for example an admin token).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Access denied
+    AdminUnauthorized:
+      description: |
+        No usable admin token: missing, malformed, expired, signed with another key, issued before
+        the admin password was rotated, or for an admin that no longer exists. Log in again.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Unauthorized
+    AdminForbidden:
+      description: A valid token without the admin role (for example a parent token).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Forbidden
+    InvalidDeviceToken:
+      description: Malformed JSON, or `token` missing or not 20 to 1024 of the allowed characters.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalid:
+              summary: Token fails validation
+              value:
+                status: error
+                message: 'token must be 20 to 1024 characters: letters, digits, '':'', ''_'', ''.'' or ''-'''
+            malformed:
+              summary: Body is not valid JSON
+              value:
+                status: error
+                message: Invalid request body
+    StudentWriteBadRequest:
+      description: |
+        Malformed JSON; `id` (update) missing or 0; `name`, `parent_name` or `parent_phone`
+        missing or blank; `parent_phone` not an Iraqi mobile number; `parent_pin` missing for a
+        new parent or not exactly 6 digits; or a field longer than its `maxLength`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            pinRequired:
+              summary: New parent without a PIN
+              value:
+                status: error
+                message: parent_pin is required for a new parent (parent_phone is not registered yet)
+            pinFormat:
+              summary: PIN that is not 6 digits
+              value:
+                status: error
+                message: parent_pin must be exactly 6 digits (0-9)
+            tooLong:
+              summary: A field longer than its limit
+              value:
+                status: error
+                message: name must be at most 100 characters
+            invalidPhone:
+              summary: Not an Iraqi mobile number
+              value:
+                status: error
+                message: parent_phone must be an Iraqi mobile number, for example 07XXXXXXXXX or +9647XXXXXXXXX
+            missing:
+              summary: Required field missing
+              value:
+                status: error
+                message: parent_phone is required
+    RFIDTagTaken:
+      description: Another student already has this `rfid_tag`. Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: rfid_tag is already used by another student
+    ScheduleBadRequest:
+      description: |
+        Malformed JSON (including a `period_number` that is not an integer); `grade` or `section`
+        missing, blank or longer than 50 characters; `periods` missing or null, or longer than
+        60; or a period that breaks a rule. Period problems name the period by its 0-based
+        index. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            notASchoolDay:
+              summary: Friday, Saturday or an unknown day name
+              value:
+                status: error
+                message: periods[2].day_of_week must be a school day, Sunday to Thursday (Arabic or English)
+            periodNumber:
+              summary: period_number outside 1 to 12
+              value:
+                status: error
+                message: periods[0].period_number must be from 1 to 12
+            duplicate:
+              summary: The same day and period twice
+              value:
+                status: error
+                message: periods contain day_of_week الأحد with period_number 1 more than once
+            tooLong:
+              summary: A field longer than its limit
+              value:
+                status: error
+                message: periods[4].subject_name must be at most 100 characters
+            tooMany:
+              summary: More than 60 periods
+              value:
+                status: error
+                message: periods must contain at most 60 entries
+            missingPeriods:
+              summary: periods missing or null
+              value:
+                status: error
+                message: periods is required; send an empty array to clear the schedule
+            missingClass:
+              summary: grade or section missing or blank
+              value:
+                status: error
+                message: grade is required
+    BannerWriteBadRequest:
+      description: |
+        Not `multipart/form-data` or a malformed body; a field sent twice; `image` missing (create),
+        empty or not a JPEG, PNG or WebP picture; `title` or `action_link` too long or not text;
+        `action_link` not an absolute http/https URL; `is_active` not `true`/`false`; an update
+        with no field; or an invalid `id`. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            notAPicture:
+              summary: SVG, GIF, text or anything but JPEG, PNG and WebP
+              value:
+                status: error
+                message: image must be a JPEG, PNG or WebP picture
+            missingImage:
+              summary: Create without a picture
+              value:
+                status: error
+                message: image is required
+            badLink:
+              summary: action_link that is not an absolute http/https URL
+              value:
+                status: error
+                message: action_link must be an absolute http or https URL
+            badIsActive:
+              summary: is_active other than true or false
+              value:
+                status: error
+                message: is_active must be "true" or "false"
+            nothingToUpdate:
+              summary: Update without any field
+              value:
+                status: error
+                message: send at least one of image, title, action_link or is_active
+            notMultipart:
+              summary: Not multipart/form-data
+              value:
+                status: error
+                message: Request must be multipart/form-data
+    BannerTooLarge:
+      description: The picture is larger than 2 MiB, or the whole request is larger than 2 MiB + 64 KiB. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            image:
+              summary: Picture over 2 MiB
+              value:
+                status: error
+                message: image must be at most 2 MiB (2097152 bytes)
+            body:
+              summary: Request over the limit
+              value:
+                status: error
+                message: Request body too large
+    BannerNotFound:
+      description: No banner has this id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Banner not found
+    BannerIdBadRequest:
+      description: '`id` is missing, zero or not an integer.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Invalid banner ID
+    TooManyLoginAttempts:
+      description: Too many failed login attempts; see the operation's rate limit.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Too many failed login attempts. Try again later.
+    PayloadTooLarge:
+      description: The request body is larger than 64 KiB.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Request body too large
+    HeaderTooLarge:
+      description: |
+        The request line and headers exceed 64 KiB (plus up to 8 KiB of read-buffer tolerance).
+        Sent by the HTTP server before routing, as plain text.
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: 431 Request Header Fields Too Large
+    InternalError:
+      description: Unexpected server or database error. Details are only in the server log.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Database error
+    AdmsOK:
+      description: Acknowledged. The device clears what it sent.
+      content:
+        text/plain:
+          schema:
+            type: string
+            enum:
+              - OK
+          example: OK
+    AdmsRetry:
+      description: |
+        The database is temporarily unavailable. Nothing from this batch was stored; the device
+        keeps the batch and resends it (RULES.md §5).
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        text/plain:
+          schema:
+            type: string
+            enum:
+              - RETRY
+          example: RETRY
+x-tagGroups:
+  - name: Parent app (Flutter)
+    tags:
+      - Parent App
+  - name: Admin dashboard
+    tags:
+      - Admin Dashboard
+  - name: Operations
+    tags:
+      - System
+  - name: Internal
+    tags:
+      - Hardware (internal)
+x-transport-responses:
+  '404':
+    description: No route has this path (any method). Not sent for `/health` or `/iclock/*`.
+    content:
+      application/json:
+        schema:
+          $ref: '#/components/schemas/ErrorResponse'
+        example:
+          status: error
+          message: Not found
+  '405':
+    description: |
+      The path exists but not with this method. Sent before authentication, so a request with
+      the wrong method gets 405 even without a token. Not sent for `/health` or `/iclock/*`.
+    headers:
+      Allow:
+        description: The methods the path supports.
+        schema:
+          type: string
+        example: GET, HEAD
+    content:
+      application/json:
+        schema:
+          $ref: '#/components/schemas/ErrorResponse'
+        example:
+          status: error
+          message: Method not allowed

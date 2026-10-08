@@ -3,13 +3,21 @@ package contract
 import (
 	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	gotoken "go/token"
+	"image"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -39,6 +47,37 @@ type exchange struct {
 	status           int
 	header           http.Header
 	body             []byte
+	parts            []string
+}
+
+// formPart is one part of a multipart/form-data request; multipartBody is sent as one.
+type formPart struct {
+	name, filename, contentType string
+	data                        []byte
+}
+
+type multipartBody []formPart
+
+func (m multipartBody) encode() (string, []byte, []string) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	names := []string{}
+	for _, p := range m {
+		h := textproto.MIMEHeader{}
+		if p.filename != "" {
+			h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, p.name, p.filename))
+		} else {
+			h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"`, p.name))
+		}
+		if p.contentType != "" {
+			h.Set("Content-Type", p.contentType)
+		}
+		w, _ := mw.CreatePart(h)
+		w.Write(p.data)
+		names = append(names, p.name)
+	}
+	mw.Close()
+	return mw.FormDataContentType(), buf.Bytes(), names
 }
 
 type runner struct {
@@ -88,6 +127,7 @@ func TestOpenAPIContract(t *testing.T) {
 		report(t, routeProblems(s, served))
 	})
 	t.Run("every response matches the spec", func(t *testing.T) { report(t, exchangeProblems(s, r.xs)) })
+	t.Run("every accepted multipart request matches the spec", func(t *testing.T) { report(t, requestProblems(s, r.xs)) })
 	t.Run("every operation has a success and an error case", func(t *testing.T) {
 		report(t, coverageProblems(s, r.xs))
 		if u := untestedStatuses(s, r.xs); len(u) > 0 {
@@ -159,19 +199,24 @@ func (r *runner) callWith(op, name, query string, header map[string]string, body
 	method, path, _ := strings.Cut(op, " ")
 	h := http.Header{}
 	var raw []byte
+	var parts []string
 	switch b := body.(type) {
 	case nil:
 	case string:
 		raw = []byte(b)
 	case []byte:
 		raw = b
+	case multipartBody:
+		var ct string
+		ct, raw, parts = b.encode()
+		h.Set("Content-Type", ct)
 	default:
 		var err error
 		if raw, err = json.Marshal(b); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if raw != nil {
+	if raw != nil && parts == nil {
 		if strings.HasPrefix(path, "/iclock/") || path == "/api/attendance/push" {
 			h.Set("Content-Type", "text/plain")
 		} else {
@@ -185,7 +230,7 @@ func (r *runner) callWith(op, name, query string, header map[string]string, body
 	if err != nil {
 		t.Fatalf("%s [%s]: %v", op, name, err)
 	}
-	x := &exchange{name: name, op: op, target: path + query, status: status, header: respHeader, body: respBody}
+	x := &exchange{name: name, op: op, target: path + query, status: status, header: respHeader, body: respBody, parts: parts}
 	r.xs = append(r.xs, x)
 	if status != want {
 		t.Errorf("%s%s [%s]: status %d, want %d: %.300s", op, query, name, status, want, respBody)
@@ -248,6 +293,51 @@ func punch(deviceSN, rfid, at string) map[string]string {
 }
 
 func oversized() string { return `{"pad":"` + strings.Repeat("a", 70<<10) + `"}` }
+
+func contractPicture(seed int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, 12, 6))
+	for x := 0; x < 12; x++ {
+		for y := 0; y < 6; y++ {
+			img.Set(x, y, color.RGBA{uint8(seed * 41), uint8(x * 20), uint8(y * 40), 255})
+		}
+	}
+	return img
+}
+
+func contractJPEG(t *testing.T, seed int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, contractPicture(seed), nil); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func contractPNG(t *testing.T, seed int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, contractPicture(seed)); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func contractGIF(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := gif.Encode(&buf, contractPicture(1), nil); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// contractWebP is a RIFF/WEBP container with filler bytes: what content sniffing recognises.
+func contractWebP() []byte {
+	payload := bytes.Repeat([]byte{0x2f, 0x01}, 24)
+	chunk := append(append([]byte("VP8L"), binary.LittleEndian.AppendUint32(nil, uint32(len(payload)))...), payload...)
+	body := append([]byte("WEBP"), chunk...)
+	return append(append([]byte("RIFF"), binary.LittleEndian.AppendUint32(nil, uint32(len(body)))...), body...)
+}
 
 func weekdayRank(day string) int {
 	d := strings.NewReplacer("أ", "ا", "إ", "ا", "آ", "ا").Replace(strings.ToLower(strings.TrimSpace(day)))
@@ -441,6 +531,82 @@ func (r *runner) scenario() {
 	r.call("POST /api/attendance/push/json", "unregistered device", "?SN=TEST-SN-9999", "", punch("TEST-SN-9999", "9001", today+" 07:23:00"), 401)
 	r.call("POST /api/attendance/push/json", "disabled device", "?SN=TEST-SN-0002", "", punch("TEST-SN-0002", "9001", today+" 07:23:00"), 403)
 	r.call("POST /api/attendance/push/json", "device_sn differs from SN", "?SN=TEST-SN-0001", "", punch("TEST-SN-0003", "9001", today+" 07:23:00"), 403)
+
+	// ── Admin banners ──────────────────────────────────────────────────────────
+	picture := func(filename string, data []byte) formPart { return formPart{"image", filename, "image/jpeg", data} }
+	field := func(name, value string) formPart { return formPart{name: name, data: []byte(value)} }
+	jpg, pngPic, webp := contractJPEG(t, 1), contractPNG(t, 2), contractWebP()
+	_, d = r.call("POST /api/admin/banners", "JPEG picture with every field", "", admin, multipartBody{picture("open-day.jpg", jpg), field("title", "Open day 2026"), field("action_link", "https://example.com/open-day"), field("is_active", "true")}, 200)
+	bannerJPEG := toInt(at(d, "data", "id"))
+	r.expect("uploaded picture image_url", at(d, "data", "image_url"), fmt.Sprintf("/api/mobile/banners/image?id=%d", bannerJPEG))
+	_, d = r.call("POST /api/admin/banners", "PNG picture declared as text, inactive", "", admin, multipartBody{{"image", "notes.txt", "text/plain", pngPic}, field("is_active", "false")}, 200)
+	bannerPNG := toInt(at(d, "data", "id"))
+	r.expect("picture type comes from its bytes", at(d, "data", "image_content_type"), "image/png")
+	_, d = r.call("POST /api/admin/banners", "WebP picture without title", "", admin, multipartBody{picture("banner.webp", webp)}, 200)
+	bannerWebP := toInt(at(d, "data", "id"))
+	r.expect("omitted title is null", at(d, "data", "title"), nil)
+	r.expect("omitted is_active means active", at(d, "data", "is_active"), true)
+	notPicture := "image must be a JPEG, PNG or WebP picture"
+	for _, tc := range []struct {
+		name string
+		body any
+		msg  string
+	}{
+		{"SVG", multipartBody{{"image", "banner.svg", "image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>`)}}, notPicture},
+		{"GIF", multipartBody{{"image", "banner.gif", "image/gif", contractGIF(t)}}, notPicture},
+		{"text named .jpg", multipartBody{picture("banner.jpg", []byte("not a picture"))}, notPicture},
+		{"empty picture", multipartBody{picture("banner.jpg", nil)}, "image is empty"},
+		{"no picture", multipartBody{field("title", "No picture")}, "image is required"},
+		{"javascript: action_link", multipartBody{picture("banner.jpg", jpg), field("action_link", "javascript:alert(1)")}, "action_link must be an absolute http or https URL"},
+		{"relative action_link", multipartBody{picture("banner.jpg", jpg), field("action_link", "/news")}, "action_link must be an absolute http or https URL"},
+		{"title too long", multipartBody{picture("banner.jpg", jpg), field("title", strings.Repeat("t", 256))}, "title must be at most 255 characters"},
+		{"is_active not true or false", multipartBody{picture("banner.jpg", jpg), field("is_active", "yes")}, `is_active must be "true" or "false"`},
+		{"not multipart", map[string]any{"title": "JSON"}, "Request must be multipart/form-data"},
+	} {
+		_, d = r.call("POST /api/admin/banners", tc.name, "", admin, tc.body, 400)
+		r.expect("message for "+tc.name, at(d, "message"), tc.msg)
+	}
+	tooBig := append(append([]byte{}, jpg...), make([]byte, 2<<20)...)
+	r.call("POST /api/admin/banners", "picture over 2 MiB", "", admin, multipartBody{picture("big.jpg", tooBig)}, 413)
+	r.call("POST /api/admin/banners", "body over the limit", "", admin, multipartBody{picture("banner.jpg", jpg), {name: "padding", data: bytes.Repeat([]byte("p"), 3<<20)}}, 413)
+	adminDenied("POST /api/admin/banners", "", multipartBody{picture("banner.jpg", jpg)})
+
+	jpegQuery := fmt.Sprintf("?id=%d", bannerJPEG)
+	_, d = r.call("PUT /api/admin/banners", "title only", jpegQuery, admin, multipartBody{field("title", "Open day")}, 200)
+	r.expect("title-only update keeps the picture", at(d, "data", "image_content_type"), "image/jpeg")
+	r.expect("title-only update keeps action_link", at(d, "data", "action_link"), "https://example.com/open-day")
+	jpg2 := contractJPEG(t, 3)
+	_, d = r.call("PUT /api/admin/banners", "replace the picture", jpegQuery, admin, multipartBody{picture("new.jpg", jpg2)}, 200)
+	r.expect("replaced picture size", toInt(at(d, "data", "image_size_bytes")), len(jpg2))
+	r.call("PUT /api/admin/banners", "no field", jpegQuery, admin, multipartBody{}, 400)
+	r.call("PUT /api/admin/banners", "id not an integer", "?id=abc", admin, multipartBody{field("title", "x")}, 400)
+	r.call("PUT /api/admin/banners", "unknown banner", "?id=999999", admin, multipartBody{field("title", "Ghost")}, 404)
+	r.call("PUT /api/admin/banners", "picture over 2 MiB", jpegQuery, admin, multipartBody{picture("big.jpg", tooBig)}, 413)
+	adminDenied("PUT /api/admin/banners", jpegQuery, multipartBody{field("title", "x")})
+
+	_, d = r.call("GET /api/admin/banners", "every banner", "", admin, nil, 200)
+	r.expect("admin list has active, inactive and legacy banners", len(list(at(d, "data"))), 6)
+	r.expect("admin list is newest first", toInt(at(d, "data", 0, "id")), bannerWebP)
+	r.expect("legacy banner has no picture type", at(d, "data", 5, "image_content_type"), nil)
+	adminDenied("GET /api/admin/banners", "", nil)
+
+	pngQuery := fmt.Sprintf("?id=%d", bannerPNG)
+	x, _ = r.call("GET /api/admin/banners/image", "preview of an inactive banner", pngQuery, admin, nil, 200)
+	r.expect("preview is the uploaded bytes", bytes.Equal(x.body, pngPic), true)
+	r.callWith("GET /api/admin/banners/image", "preview unchanged", pngQuery, map[string]string{"Authorization": "Bearer " + admin, "If-None-Match": x.header.Get("ETag")}, nil, 304)
+	r.call("GET /api/admin/banners/image", "unknown banner", "?id=999999", admin, nil, 404)
+	r.call("GET /api/admin/banners/image", "id not an integer", "?id=x", admin, nil, 400)
+	adminDenied("GET /api/admin/banners/image", pngQuery, nil)
+
+	_, d = r.call("POST /api/admin/banners", "banner to delete", "", admin, multipartBody{picture("banner.jpg", jpg)}, 200)
+	doomed := fmt.Sprintf("?id=%d", toInt(at(d, "data", "id")))
+	r.call("DELETE /api/admin/banners", "delete", doomed, admin, nil, 200)
+	r.call("DELETE /api/admin/banners", "already deleted", doomed, admin, nil, 404)
+	r.call("DELETE /api/admin/banners", "id missing", "", admin, nil, 400)
+	adminDenied("DELETE /api/admin/banners", doomed, nil)
+	var leftovers int
+	r.db.QueryRow(`SELECT COUNT(*) FROM banner_images WHERE banner_id NOT IN (SELECT id FROM banners)`).Scan(&leftovers)
+	r.expect("no picture outlives its banner", leftovers, 0)
 
 	// ── Parent login ───────────────────────────────────────────────────────────
 	r.call("POST /api/mobile/login", "wrong PIN", "", "", map[string]string{"phone": phone1, "pin": "0000"}, 401)
@@ -673,7 +839,17 @@ func (r *runner) scenario() {
 	for _, b := range list(at(d, "data")) {
 		banners = append(banners, fmt.Sprintf("%q %q", at(b, "title"), at(b, "action_link")))
 	}
-	r.expect("active banners newest first", banners, []string{`"" "https://example.com/sports"`, `"Open day" ""`})
+	r.expect("active banners newest first", banners, []string{`"" ""`, `"Open day" "https://example.com/open-day"`, `"" "https://example.com/sports"`, `"Open day" ""`})
+	r.expect("legacy banner keeps its stored image_url", at(d, "data", 2, "image_url"), "https://example.com/banners/sports.jpg")
+	imageURL := str(at(d, "data", 1, "image_url"))
+	imagePath, imageQuery, _ := strings.Cut(imageURL, "?")
+	r.expect("uploaded banner image_url is the public picture route", imagePath, "/api/mobile/banners/image")
+	x, _ = r.call("GET /api/mobile/banners/image", "picture of an active banner, no token", "?"+imageQuery, "", nil, 200)
+	r.expect("public picture is the uploaded bytes", bytes.Equal(x.body, jpg2), true)
+	r.callWith("GET /api/mobile/banners/image", "picture unchanged", "?"+imageQuery, map[string]string{"If-None-Match": x.header.Get("ETag")}, nil, 304)
+	r.call("GET /api/mobile/banners/image", "inactive banner", pngQuery, "", nil, 404)
+	r.call("GET /api/mobile/banners/image", "unknown banner", "?id=999999", "", nil, 404)
+	r.call("GET /api/mobile/banners/image", "id not an integer", "?id=x", "", nil, 400)
 	parentDenied("GET /api/mobile/banners", "")
 	parentDenied("GET /api/mobile/students", "")
 
@@ -918,7 +1094,7 @@ func (r *runner) databaseFailures() {
 	r.call("POST /api/admin/login", "database error", "", "", map[string]string{"username": "admin", "password": adminPassword}, 500)
 	for _, op := range []string{
 		"GET /api/admin/dashboard", "GET /api/admin/students", "GET /api/admin/attendance",
-		"GET /api/admin/export/excel", "GET /api/admin/settings", "GET /api/admin/devices",
+		"GET /api/admin/export/excel", "GET /api/admin/settings", "GET /api/admin/devices", "GET /api/admin/banners",
 	} {
 		r.call(op, "database error", "", admin, nil, 500)
 	}
@@ -927,6 +1103,12 @@ func (r *runner) databaseFailures() {
 	r.call("DELETE /api/admin/students", "database error", "?id=1", admin, nil, 500)
 	r.call("PUT /api/admin/settings", "database error", "", admin, map[string]string{"key": "internal_note", "value": "x"}, 500)
 	r.call("GET /api/admin/schedule", "database error", "?grade=G4&section=C", admin, nil, 500)
+	bannerPicture := multipartBody{{"image", "banner.jpg", "image/jpeg", contractJPEG(t, 4)}}
+	r.call("POST /api/admin/banners", "database error", "", admin, bannerPicture, 500)
+	r.call("PUT /api/admin/banners", "database error", "?id=1", admin, multipartBody{{name: "title", data: []byte("Down")}}, 500)
+	r.call("DELETE /api/admin/banners", "database error", "?id=1", admin, nil, 500)
+	r.call("GET /api/admin/banners/image", "database error", "?id=1", admin, nil, 500)
+	r.call("GET /api/mobile/banners/image", "database error", "?id=1", "", nil, 500)
 	r.call("PUT /api/admin/schedule", "database error", "", admin, map[string]any{"grade": "G4", "section": "C", "periods": []any{}}, 500)
 	r.call("POST /api/admin/leaves", "database error", "", admin, map[string]any{"student_id": 1, "leave_date": today}, 500)
 	r.call("POST /api/admin/devices", "database error", "", admin, map[string]any{"serial_number": "TEST-SN-0100"}, 500)
@@ -990,6 +1172,7 @@ func (r *runner) transport(t *testing.T) {
 	record("wrong method with a valid token", "PUT", "/api/mobile/students", authHeader(r.parent), 405, "GET, HEAD")
 	record("wrong method on an admin route", "PATCH", "/api/admin/devices", nil, 405, "DELETE, GET, HEAD, POST, PUT")
 	record("wrong method on the schedule route", "DELETE", "/api/admin/schedule", nil, 405, "GET, HEAD, PUT")
+	record("wrong method on the banner picture route", "DELETE", "/api/mobile/banners/image", nil, 405, "GET, HEAD")
 	record("wrong method on a login route", "GET", "/api/admin/login", nil, 405, "POST")
 
 	plain := func(name, method, target string, wantStatus int, wantBody string) {
@@ -1275,6 +1458,10 @@ func responseProblems(s *apiSpec, where string, resp map[string]any, x *exchange
 		case str(resolved["format"]) == "binary":
 			if len(x.body) == 0 {
 				bad("%s: empty file", where)
+			} else if strings.HasPrefix(mt, "image/") {
+				if got := http.DetectContentType(x.body); got != mt {
+					bad("%s: the body is %s, not the declared %s", where, got, mt)
+				}
 			}
 		case mt == "application/json":
 			v, err := decodeJSON(x.body)
@@ -1309,6 +1496,57 @@ func responseProblems(s *apiSpec, where string, resp map[string]any, x *exchange
 			hv = json.Number(v)
 		}
 		problems = append(problems, s.validate(obj(hd["schema"]), hv, where+" header "+name)...)
+	}
+	return problems
+}
+
+// requestProblems checks every multipart request the server accepted against the operation's
+// documented multipart/form-data schema: each part sent is a documented property and every
+// required property was sent.
+func requestProblems(s *apiSpec, xs []*exchange) []string {
+	ops := map[string]operation{}
+	for _, o := range s.operations() {
+		ops[o.key()] = o
+	}
+	var problems []string
+	for _, x := range xs {
+		if x.parts == nil || x.status < 200 || x.status > 299 {
+			continue
+		}
+		where := fmt.Sprintf("%s [%s] request", x.op, x.name)
+		o, ok := ops[x.op]
+		if !ok {
+			problems = append(problems, where+": the operation is not in the spec")
+			continue
+		}
+		rb, err := s.deref(obj(o.op["requestBody"]))
+		if err != nil {
+			problems = append(problems, where+": "+err.Error())
+			continue
+		}
+		media := obj(obj(rb["content"])["multipart/form-data"])
+		if media == nil {
+			problems = append(problems, where+": multipart/form-data is not documented")
+			continue
+		}
+		schema, err := s.deref(obj(media["schema"]))
+		if err != nil {
+			problems = append(problems, where+": "+err.Error())
+			continue
+		}
+		props := obj(schema["properties"])
+		sent := map[string]bool{}
+		for _, p := range x.parts {
+			sent[p] = true
+			if props[p] == nil {
+				problems = append(problems, fmt.Sprintf("%s: part %q is not a documented field (documented: %v)", where, p, sortedKeys(props)))
+			}
+		}
+		for _, req := range list(schema["required"]) {
+			if !sent[str(req)] {
+				problems = append(problems, fmt.Sprintf("%s: accepted without the required field %q", where, str(req)))
+			}
+		}
 	}
 	return problems
 }
@@ -1368,6 +1606,7 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		"hygiene":   hygieneProblems,
 		"routes":    func(sp *apiSpec) []string { return routeProblems(sp, served) },
 		"responses": func(sp *apiSpec) []string { return exchangeProblems(sp, xs) },
+		"requests":  func(sp *apiSpec) []string { return requestProblems(sp, xs) },
 		"coverage":  func(sp *apiSpec) []string { return coverageProblems(sp, xs) },
 	}
 	for name, check := range checkers {
@@ -1445,6 +1684,15 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		}},
 		{"admin schedule teacher_name is no longer nullable", []string{"responses"}, func(root map[string]any) {
 			delete(node(schemas(root), "AdminScheduleEntry", "properties", "teacher_name"), "nullable")
+		}},
+		{"createBanner renames its image part", []string{"requests"}, func(root map[string]any) {
+			props := node(schemas(root), "BannerCreateRequest", "properties")
+			props["file"] = props["image"]
+			delete(props, "image")
+			node(schemas(root), "BannerCreateRequest")["required"] = []any{"file"}
+		}},
+		{"the public banner picture no longer documents image/jpeg", []string{"responses"}, func(root map[string]any) {
+			delete(node(root, "paths", "/api/mobile/banners/image", "get", "responses", "200", "content"), "image/jpeg")
 		}},
 		{"production is listed as a server", []string{"hygiene"}, func(root map[string]any) {
 			root["servers"] = append(list(root["servers"]), map[string]any{"url": "https://futurekids-production.up.railway.app"})
