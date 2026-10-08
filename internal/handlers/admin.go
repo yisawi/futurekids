@@ -243,10 +243,12 @@ func validateStudentPayload(req *StudentPayload) string {
 	}
 	grade, section := "", ""
 	if req.Grade != nil {
-		grade = *req.Grade
+		grade = strings.TrimSpace(*req.Grade)
+		req.Grade = &grade
 	}
 	if req.Section != nil {
-		section = *req.Section
+		section = strings.TrimSpace(*req.Section)
+		req.Section = &section
 	}
 	return firstProblem(
 		tooLong("name", req.Name, 100),
@@ -923,6 +925,202 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Device disabled logically"})
+
+	default:
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
+// SchedulePeriod is one lesson in a class's weekly schedule. A nil TeacherName is stored as NULL.
+type SchedulePeriod struct {
+	DayOfWeek    string  `json:"day_of_week"`
+	PeriodNumber int     `json:"period_number"`
+	SubjectName  string  `json:"subject_name"`
+	TeacherName  *string `json:"teacher_name"`
+}
+
+// ScheduleRequest replaces the whole weekly schedule of one class. Periods must be present;
+// an empty array clears the class.
+type ScheduleRequest struct {
+	Grade   string            `json:"grade"`
+	Section string            `json:"section"`
+	Periods *[]SchedulePeriod `json:"periods"`
+}
+
+// A class has at most MaxPeriodNumber periods on each of the five school days.
+const (
+	MaxPeriodNumber    = 12
+	MaxSchedulePeriods = 5 * MaxPeriodNumber
+)
+
+// schoolDays maps a folded day name (see canonicalSchoolDay) to the form stored in
+// weekly_schedules. Friday and Saturday are not school days.
+var schoolDays = map[string]string{
+	"sunday": "الأحد", "الاحد": "الأحد",
+	"monday": "الإثنين", "الاثنين": "الإثنين",
+	"tuesday": "الثلاثاء", "الثلاثاء": "الثلاثاء",
+	"wednesday": "الأربعاء", "الاربعاء": "الأربعاء",
+	"thursday": "الخميس", "الخميس": "الخميس",
+}
+
+var hamzaFold = strings.NewReplacer("أ", "ا", "إ", "ا", "آ", "ا")
+
+// canonicalSchoolDay folds day the way weekdayRankSQL does (trimmed, lower-cased, أ/إ/آ as ا)
+// and returns its stored Arabic form, or false when it is not Sunday to Thursday.
+func canonicalSchoolDay(day string) (string, bool) {
+	c, ok := schoolDays[hamzaFold.Replace(strings.ToLower(strings.TrimSpace(day)))]
+	return c, ok
+}
+
+func scheduleClassProblem(grade, section string) string {
+	switch {
+	case grade == "":
+		return "grade is required"
+	case section == "":
+		return "section is required"
+	}
+	return firstProblem(tooLong("grade", grade, 50), tooLong("section", section, 50))
+}
+
+// validateScheduleRequest trims the class and every period in place, stores canonical day
+// names and blank teachers as nil, and returns the first problem, or "" when the request is valid.
+func validateScheduleRequest(req *ScheduleRequest) string {
+	req.Grade = strings.TrimSpace(req.Grade)
+	req.Section = strings.TrimSpace(req.Section)
+	if msg := scheduleClassProblem(req.Grade, req.Section); msg != "" {
+		return msg
+	}
+	if req.Periods == nil {
+		return "periods is required; send an empty array to clear the schedule"
+	}
+	periods := *req.Periods
+	if len(periods) > MaxSchedulePeriods {
+		return fmt.Sprintf("periods must contain at most %d entries", MaxSchedulePeriods)
+	}
+	seen := map[string]bool{}
+	for i := range periods {
+		p := &periods[i]
+		field := func(name string) string { return fmt.Sprintf("periods[%d].%s", i, name) }
+		day, ok := canonicalSchoolDay(p.DayOfWeek)
+		if !ok {
+			return field("day_of_week") + " must be a school day, Sunday to Thursday (Arabic or English)"
+		}
+		p.DayOfWeek = day
+		if p.PeriodNumber < 1 || p.PeriodNumber > MaxPeriodNumber {
+			return fmt.Sprintf("%s must be from 1 to %d", field("period_number"), MaxPeriodNumber)
+		}
+		p.SubjectName = strings.TrimSpace(p.SubjectName)
+		if p.SubjectName == "" {
+			return field("subject_name") + " is required"
+		}
+		teacher := ""
+		if p.TeacherName != nil {
+			teacher = strings.TrimSpace(*p.TeacherName)
+			p.TeacherName = &teacher
+			if teacher == "" {
+				p.TeacherName = nil
+			}
+		}
+		if msg := firstProblem(tooLong(field("subject_name"), p.SubjectName, 100), tooLong(field("teacher_name"), teacher, 100)); msg != "" {
+			return msg
+		}
+		key := fmt.Sprintf("%s|%d", day, p.PeriodNumber)
+		if seen[key] {
+			return fmt.Sprintf("periods contain day_of_week %s with period_number %d more than once", day, p.PeriodNumber)
+		}
+		seen[key] = true
+	}
+	return ""
+}
+
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// readSchedule returns one class's periods in the parent schedule's order: school week, then
+// period_number.
+func readSchedule(ctx context.Context, q queryer, grade, section string) ([]SchedulePeriod, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT ws.day_of_week, ws.period_number, ws.subject_name, ws.teacher_name
+		FROM weekly_schedules ws
+		CROSS JOIN LATERAL (SELECT `+weekdayRankSQL+` AS rank) day
+		WHERE ws.grade = $1 AND ws.section = $2
+		ORDER BY day.rank ASC, CASE WHEN day.rank = 8 THEN ws.day_of_week END ASC, ws.period_number ASC, ws.id ASC`, grade, section)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	periods := []SchedulePeriod{}
+	for rows.Next() {
+		var p SchedulePeriod
+		if err := rows.Scan(&p.DayOfWeek, &p.PeriodNumber, &p.SubjectName, &p.TeacherName); err != nil {
+			return nil, err
+		}
+		periods = append(periods, p)
+	}
+	return periods, rows.Err()
+}
+
+func respondSchedule(w http.ResponseWriter, grade, section string, periods []SchedulePeriod) {
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "grade": grade, "section": section, "data": periods})
+}
+
+func (app *AppEnv) AdminScheduleHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		grade := strings.TrimSpace(r.URL.Query().Get("grade"))
+		section := strings.TrimSpace(r.URL.Query().Get("section"))
+		if msg := scheduleClassProblem(grade, section); msg != "" {
+			respondError(w, http.StatusBadRequest, msg)
+			return
+		}
+		periods, err := readSchedule(r.Context(), app.DB, grade, section)
+		if err != nil {
+			respondInternalError(w, "Database error", "AdminScheduleHandler: query failed", err, "grade", grade, "section", section)
+			return
+		}
+		respondSchedule(w, grade, section, periods)
+
+	case http.MethodPut:
+		var req ScheduleRequest
+		if !decodeJSONBody(w, r, &req, "Invalid request body") {
+			return
+		}
+		if msg := validateScheduleRequest(&req); msg != "" {
+			respondError(w, http.StatusBadRequest, msg)
+			return
+		}
+		var saved []SchedulePeriod
+		err := func() error {
+			tx, err := app.DB.BeginTx(r.Context(), nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			if _, err := tx.ExecContext(r.Context(), `LOCK TABLE weekly_schedules IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(r.Context(), `DELETE FROM weekly_schedules WHERE grade = $1 AND section = $2`, req.Grade, req.Section); err != nil {
+				return err
+			}
+			for _, p := range *req.Periods {
+				if _, err := tx.ExecContext(r.Context(), `
+					INSERT INTO weekly_schedules (grade, section, day_of_week, period_number, subject_name, teacher_name)
+					VALUES ($1, $2, $3, $4, $5, $6)`, req.Grade, req.Section, p.DayOfWeek, p.PeriodNumber, p.SubjectName, p.TeacherName); err != nil {
+					return err
+				}
+			}
+			if saved, err = readSchedule(r.Context(), tx, req.Grade, req.Section); err != nil {
+				return err
+			}
+			return tx.Commit()
+		}()
+		if err != nil {
+			respondInternalError(w, "Failed to save schedule", "AdminScheduleHandler: save failed", err, "grade", req.Grade, "section", req.Section)
+			return
+		}
+		slog.Info("Schedule saved", "grade", req.Grade, "section", req.Section, "periods", len(*req.Periods))
+		respondSchedule(w, req.Grade, req.Section, saved)
 
 	default:
 		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")

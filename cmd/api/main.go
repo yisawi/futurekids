@@ -152,6 +152,8 @@ func run() int {
 	mux.HandleFunc("GET /api/admin/export/excel", appEnv.AdminMiddleware(appEnv.AdminExportExcelHandler))
 	mux.HandleFunc("GET /api/admin/settings", appEnv.AdminMiddleware(appEnv.AdminSettingsHandler))
 	mux.HandleFunc("PUT /api/admin/settings", appEnv.AdminMiddleware(appEnv.AdminSettingsHandler))
+	mux.HandleFunc("GET /api/admin/schedule", appEnv.AdminMiddleware(appEnv.AdminScheduleHandler))
+	mux.HandleFunc("PUT /api/admin/schedule", appEnv.AdminMiddleware(appEnv.AdminScheduleHandler))
 
 	if tz.FromTZDatabase {
 		slog.Info("Timezone loaded", "location", tz.Baghdad.String())

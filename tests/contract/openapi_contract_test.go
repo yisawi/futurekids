@@ -361,6 +361,10 @@ func (r *runner) scenario() {
 	r.call("PUT /api/admin/students", "parent_pin of 4 digits", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": "4821"}, 400)
 	r.call("PUT /api/admin/students", "keeps its own rfid_tag", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 200)
 	r.call("PUT /api/admin/students", "new parent without parent_pin", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "New Parent", "parent_phone": "+9647000000606"}, 400)
+	r.call("PUT /api/admin/students", "grade and section with surrounding spaces", "", admin, map[string]any{"id": idC, "name": "Maryam Example", "parent_name": "Omar Example", "parent_phone": phone1, "grade": " G1 ", "section": "B  "}, 200)
+	var trimmedClass string
+	r.db.QueryRow(`SELECT grade || '/' || section FROM students WHERE id = $1`, idC).Scan(&trimmedClass)
+	r.expect("grade and section are stored trimmed", trimmedClass, "G1/B")
 	r.call("PUT /api/admin/students", "oversized body", "", admin, oversized(), 413)
 	adminDenied("PUT /api/admin/students", "", map[string]any{"id": idA})
 
@@ -771,6 +775,82 @@ func (r *runner) scenario() {
 	r.call("DELETE /api/admin/devices", "sn missing", "", admin, nil, 400)
 	adminDenied("DELETE /api/admin/devices", "?sn=TEST-SN-0003", nil)
 
+	// ── Admin schedule ─────────────────────────────────────────────────────────
+	period := func(day string, n int, subject string, teacher any) map[string]any {
+		return map[string]any{"day_of_week": day, "period_number": n, "subject_name": subject, "teacher_name": teacher}
+	}
+	classG4C := func(periods ...map[string]any) map[string]any {
+		if periods == nil {
+			periods = []map[string]any{}
+		}
+		return map[string]any{"grade": "G4", "section": "C", "periods": periods}
+	}
+	scheduleRows := func(d any) []string {
+		var rows []string
+		for _, e := range list(at(d, "data")) {
+			rows = append(rows, fmt.Sprintf("%s %v %s", at(e, "day_of_week"), at(e, "period_number"), at(e, "subject_name")))
+		}
+		return rows
+	}
+	wantSchedule := []string{"الأحد 1 Mathematics", "الأحد 2 Science", "الإثنين 1 Reading", "الخميس 2 Art"}
+	_, d = r.call("PUT /api/admin/schedule", "scrambled periods with mixed day names", "", admin, map[string]any{"grade": " G4 ", "section": "C ", "periods": []map[string]any{
+		period("Thursday", 2, "Art", nil), period("الاحد", 2, "Science", "Teacher Example"), period(" monday ", 1, "Reading", "  "), period("الأحد", 1, "Mathematics", "Teacher Example"),
+	}}, 200)
+	r.expect("saved schedule: canonical days, school week, period", scheduleRows(d), wantSchedule)
+	r.expect("saved class is trimmed", fmt.Sprint(at(d, "grade"), "/", at(d, "section")), "G4/C")
+	r.expect("blank teacher_name is stored as null", at(d, "data", 2, "teacher_name"), nil)
+	_, d = r.call("GET /api/admin/schedule", "class schedule", "?grade=G4&section=C", admin, nil, 200)
+	r.expect("read back the saved schedule", scheduleRows(d), wantSchedule)
+	_, d = r.call("GET /api/admin/schedule", "class without a schedule", "?grade=G9&section=Z", admin, nil, 200)
+	r.expect("class without a schedule is empty", len(list(at(d, "data"))), 0)
+	r.call("GET /api/admin/schedule", "missing grade", "?section=C", admin, nil, 400)
+	r.call("GET /api/admin/schedule", "blank section", "?grade=G4&section=%20", admin, nil, 400)
+	r.call("GET /api/admin/schedule", "grade too long", "?grade="+strings.Repeat("g", 51)+"&section=C", admin, nil, 400)
+	adminDenied("GET /api/admin/schedule", "?grade=G4&section=C", nil)
+
+	ok := period("الأحد", 1, "Mathematics", nil)
+	var sixtyOne []map[string]any
+	for _, day := range []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"} {
+		for n := 1; n <= 12; n++ {
+			sixtyOne = append(sixtyOne, period(day, n, "Mathematics", nil))
+		}
+	}
+	sixtyOne = append(sixtyOne, period("Sunday", 1, "Extra", nil))
+	for _, tc := range []struct {
+		name string
+		body any
+		msg  string
+	}{
+		{"missing grade", map[string]any{"section": "C", "periods": []any{ok}}, "grade is required"},
+		{"blank section", map[string]any{"grade": "G4", "section": "  ", "periods": []any{ok}}, "section is required"},
+		{"grade too long", map[string]any{"grade": strings.Repeat("g", 51), "section": "C", "periods": []any{ok}}, "grade must be at most 50 characters"},
+		{"period_number 0", classG4C(period("الأحد", 0, "Mathematics", nil)), "periods[0].period_number must be from 1 to 12"},
+		{"period_number 13", classG4C(ok, period("الخميس", 13, "Mathematics", nil)), "periods[1].period_number must be from 1 to 12"},
+		{"blank subject_name", classG4C(period("الأحد", 1, "   ", nil)), "periods[0].subject_name is required"},
+		{"subject_name too long", classG4C(period("الأحد", 1, strings.Repeat("م", 101), nil)), "periods[0].subject_name must be at most 100 characters"},
+		{"teacher_name too long", classG4C(period("الأحد", 1, "Mathematics", strings.Repeat("م", 101))), "periods[0].teacher_name must be at most 100 characters"},
+		{"same day and period twice", classG4C(ok, period("Sunday", 1, "Art", nil)), "periods contain day_of_week الأحد with period_number 1 more than once"},
+		{"Friday", classG4C(period("Friday", 1, "Mathematics", nil)), "periods[0].day_of_week must be a school day, Sunday to Thursday (Arabic or English)"},
+		{"Saturday in Arabic", classG4C(period("السبت", 1, "Mathematics", nil)), "periods[0].day_of_week must be a school day, Sunday to Thursday (Arabic or English)"},
+		{"61 periods", classG4C(sixtyOne...), "periods must contain at most 60 entries"},
+		{"periods missing", map[string]any{"grade": "G4", "section": "C"}, "periods is required; send an empty array to clear the schedule"},
+		{"period_number not an integer", `{"grade":"G4","section":"C","periods":[{"day_of_week":"Sunday","period_number":1.5,"subject_name":"Art"}]}`, "Invalid request body"},
+		{"malformed JSON", "{", "Invalid request body"},
+	} {
+		_, d = r.call("PUT /api/admin/schedule", tc.name, "", admin, tc.body, 400)
+		r.expect("message for "+tc.name, at(d, "message"), tc.msg)
+	}
+	_, d = r.call("GET /api/admin/schedule", "rejected saves changed nothing", "?grade=G4&section=C", admin, nil, 200)
+	r.expect("schedule after rejected saves", scheduleRows(d), wantSchedule)
+	r.call("PUT /api/admin/schedule", "oversized body", "", admin, oversized(), 413)
+	adminDenied("PUT /api/admin/schedule", "", classG4C())
+	_, d = r.call("PUT /api/admin/schedule", "empty periods clears the class", "", admin, classG4C(), 200)
+	r.expect("cleared schedule", len(list(at(d, "data"))), 0)
+	var g4c, g3a int
+	r.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE grade = 'G4' AND section = 'C'), COUNT(*) FILTER (WHERE grade = 'G3' AND section = 'A') FROM weekly_schedules`).Scan(&g4c, &g3a)
+	r.expect("rows left for the cleared class", g4c, 0)
+	r.expect("rows of another class after clearing", g3a, 6)
+
 	// ── System ─────────────────────────────────────────────────────────────────
 	r.call("GET /health", "liveness", "", "", nil, 200)
 
@@ -846,6 +926,8 @@ func (r *runner) databaseFailures() {
 	r.call("PUT /api/admin/students", "database error", "", admin, map[string]any{"id": 1, "name": "Down Example", "parent_name": "Omar Example", "parent_phone": phone1}, 500)
 	r.call("DELETE /api/admin/students", "database error", "?id=1", admin, nil, 500)
 	r.call("PUT /api/admin/settings", "database error", "", admin, map[string]string{"key": "internal_note", "value": "x"}, 500)
+	r.call("GET /api/admin/schedule", "database error", "?grade=G4&section=C", admin, nil, 500)
+	r.call("PUT /api/admin/schedule", "database error", "", admin, map[string]any{"grade": "G4", "section": "C", "periods": []any{}}, 500)
 	r.call("POST /api/admin/leaves", "database error", "", admin, map[string]any{"student_id": 1, "leave_date": today}, 500)
 	r.call("POST /api/admin/devices", "database error", "", admin, map[string]any{"serial_number": "TEST-SN-0100"}, 500)
 	r.call("PUT /api/admin/devices", "database error", "", admin, map[string]any{"serial_number": "TEST-SN-0001", "location_name": "Main Gate", "is_active": true}, 500)
@@ -907,6 +989,7 @@ func (r *runner) transport(t *testing.T) {
 	record("wrong method before authentication", "PUT", "/api/mobile/students", nil, 405, "GET, HEAD")
 	record("wrong method with a valid token", "PUT", "/api/mobile/students", authHeader(r.parent), 405, "GET, HEAD")
 	record("wrong method on an admin route", "PATCH", "/api/admin/devices", nil, 405, "DELETE, GET, HEAD, POST, PUT")
+	record("wrong method on the schedule route", "DELETE", "/api/admin/schedule", nil, 405, "GET, HEAD, PUT")
 	record("wrong method on a login route", "GET", "/api/admin/login", nil, 405, "POST")
 
 	plain := func(name, method, target string, wantStatus int, wantBody string) {
@@ -1359,6 +1442,9 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		}},
 		{"createStudent no longer documents 409", []string{"responses"}, func(root map[string]any) {
 			delete(node(root, "paths", "/api/admin/students", "post", "responses"), "409")
+		}},
+		{"admin schedule teacher_name is no longer nullable", []string{"responses"}, func(root map[string]any) {
+			delete(node(schemas(root), "AdminScheduleEntry", "properties", "teacher_name"), "nullable")
 		}},
 		{"production is listed as a server", []string{"hygiene"}, func(root map[string]any) {
 			root["servers"] = append(list(root["servers"]), map[string]any{"url": "https://futurekids-production.up.railway.app"})

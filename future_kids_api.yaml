@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.7.0"
+  version: "1.8.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -200,6 +200,32 @@ components:
         type: string
         minLength: 1
       example: TEST-SN-0001
+    ScheduleGrade:
+      name: grade
+      in: query
+      required: true
+      description: |
+        The class's grade, as stored on its students (`Student.grade`). Surrounding spaces are
+        ignored; otherwise it must match exactly (case-sensitive). Missing or blank returns 400,
+        and so does a value longer than 50 characters.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 50
+      example: G3
+    ScheduleSection:
+      name: section
+      in: query
+      required: true
+      description: |
+        The class's section, as stored on its students (`Student.section`). Surrounding spaces
+        are ignored; otherwise it must match exactly (case-sensitive). Missing or blank returns
+        400, and so does a value longer than 50 characters.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 50
+      example: A
     AdmsSerial:
       name: SN
       in: query
@@ -527,12 +553,12 @@ components:
           type: string
           nullable: true
           maxLength: 50
-          description: Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+          description: Surrounding spaces are removed before it is stored (the weekly schedule matches it exactly). Longer values return 400 naming the field and the limit.
         section:
           type: string
           nullable: true
           maxLength: 50
-          description: Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+          description: Surrounding spaces are removed before it is stored (the weekly schedule matches it exactly). Longer values return 400 naming the field and the limit.
       required: [name, parent_name, parent_phone]
       example:
         name: Sara Example
@@ -588,12 +614,12 @@ components:
           type: string
           nullable: true
           maxLength: 50
-          description: Omitted or null keeps the stored value. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+          description: Omitted or null keeps the stored value. Otherwise surrounding spaces are removed before it is stored (the weekly schedule matches it exactly). Longer values return 400 naming the field and the limit.
         section:
           type: string
           nullable: true
           maxLength: 50
-          description: Omitted or null keeps the stored value. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+          description: Omitted or null keeps the stored value. Otherwise surrounding spaces are removed before it is stored (the weekly schedule matches it exactly). Longer values return 400 naming the field and the limit.
       required: [id, name, parent_name, parent_phone]
       example:
         id: 42
@@ -1195,6 +1221,146 @@ components:
             subject_name: Science
             teacher_name: ""
 
+    AdminSchedulePeriod:
+      type: object
+      properties:
+        day_of_week:
+          type: string
+          description: |
+            A school day, Sunday to Thursday. Accepted: the Arabic names with or without hamza
+            (`الأحد`/`الاحد`, `الإثنين`/`الاثنين`, `الثلاثاء`, `الأربعاء`/`الاربعاء`, `الخميس`) and the
+            English names (`Sunday` … `Thursday`) in any case, with surrounding spaces ignored. They
+            are stored and returned as `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس`. Friday,
+            Saturday or anything else returns 400.
+        period_number:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 12
+          description: 1 to 12 (400 otherwise). Each day and period pair may appear only once per request (400).
+        subject_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required; surrounding spaces are removed, and blank returns 400. Longer than 100 characters returns 400.
+        teacher_name:
+          type: string
+          nullable: true
+          maxLength: 100
+          description: Optional. Surrounding spaces are removed; omitted, null or blank is stored as null. Longer than 100 characters returns 400.
+      required: [day_of_week, period_number, subject_name]
+      example:
+        day_of_week: الأحد
+        period_number: 1
+        subject_name: Mathematics
+        teacher_name: Teacher Example
+
+    AdminScheduleRequest:
+      type: object
+      properties:
+        grade:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: |
+            Required. Surrounding spaces are removed; otherwise stored exactly as sent (no case
+            folding). Use the grade exactly as the class's students have it: the parent app shows
+            the schedule to children whose grade and section are equal to these.
+        section:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Required. Same rules as `grade`.
+        periods:
+          type: array
+          maxItems: 60
+          description: |
+            The class's whole schedule (at most 5 days × 12 periods = 60). It replaces every stored
+            period of this class, including rows entered earlier in other spellings. **An empty
+            array clears the class's schedule.** Missing or null returns 400, so a client bug
+            cannot clear a class by accident.
+          items:
+            $ref: '#/components/schemas/AdminSchedulePeriod'
+      required: [grade, section, periods]
+      example:
+        grade: G3
+        section: A
+        periods:
+          - day_of_week: Sunday
+            period_number: 2
+            subject_name: Science
+            teacher_name: null
+          - day_of_week: الأحد
+            period_number: 1
+            subject_name: Mathematics
+            teacher_name: Teacher Example
+          - day_of_week: الاثنين
+            period_number: 1
+            subject_name: Reading
+            teacher_name: Teacher Sample
+
+    AdminScheduleEntry:
+      type: object
+      properties:
+        day_of_week:
+          type: string
+          description: |
+            One of `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس` for every period saved
+            through `PUT /api/admin/schedule`. Rows entered directly in the database before keep
+            their stored spelling until the class is saved once.
+        period_number:
+          type: integer
+          format: int32
+        subject_name:
+          type: string
+        teacher_name:
+          type: string
+          nullable: true
+          description: Null when not set.
+      required: [day_of_week, period_number, subject_name, teacher_name]
+      example:
+        day_of_week: الأحد
+        period_number: 2
+        subject_name: Science
+        teacher_name: null
+
+    AdminScheduleResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        grade:
+          type: string
+          description: The class, with surrounding spaces removed.
+        section:
+          type: string
+        data:
+          type: array
+          description: |
+            The class's periods, Sunday to Thursday, then by `period_number` (the order
+            `GET /api/mobile/schedule` uses). Empty when the class has no schedule.
+          items:
+            $ref: '#/components/schemas/AdminScheduleEntry'
+      required: [status, grade, section, data]
+      example:
+        status: success
+        grade: G3
+        section: A
+        data:
+          - day_of_week: الأحد
+            period_number: 1
+            subject_name: Mathematics
+            teacher_name: Teacher Example
+          - day_of_week: الأحد
+            period_number: 2
+            subject_name: Science
+            teacher_name: null
+          - day_of_week: الإثنين
+            period_number: 1
+            subject_name: Reading
+            teacher_name: Teacher Sample
+
     Notification:
       type: object
       properties:
@@ -1449,6 +1615,52 @@ components:
           example:
             status: error
             message: rfid_tag is already used by another student
+    ScheduleBadRequest:
+      description: |
+        Malformed JSON (including a `period_number` that is not an integer); `grade` or `section`
+        missing, blank or longer than 50 characters; `periods` missing or null, or longer than
+        60; or a period that breaks a rule. Period problems name the period by its 0-based
+        index. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            notASchoolDay:
+              summary: Friday, Saturday or an unknown day name
+              value:
+                status: error
+                message: periods[2].day_of_week must be a school day, Sunday to Thursday (Arabic or English)
+            periodNumber:
+              summary: period_number outside 1 to 12
+              value:
+                status: error
+                message: periods[0].period_number must be from 1 to 12
+            duplicate:
+              summary: The same day and period twice
+              value:
+                status: error
+                message: periods contain day_of_week الأحد with period_number 1 more than once
+            tooLong:
+              summary: A field longer than its limit
+              value:
+                status: error
+                message: periods[4].subject_name must be at most 100 characters
+            tooMany:
+              summary: More than 60 periods
+              value:
+                status: error
+                message: periods must contain at most 60 entries
+            missingPeriods:
+              summary: periods missing or null
+              value:
+                status: error
+                message: periods is required; send an empty array to clear the schedule
+            missingClass:
+              summary: grade or section missing or blank
+              value:
+                status: error
+                message: grade is required
     TooManyLoginAttempts:
       description: Too many failed login attempts; see the operation's rate limit.
       headers:
@@ -1745,7 +1957,8 @@ paths:
         Thursday, then Friday and Saturday, then `period_number`. `day_of_week` is returned
         exactly as stored; Arabic names (الأحد … الخميس, with or without hamza) and English
         names in any case are recognized. Unrecognized names sort after all real days,
-        alphabetically. A child without a grade and section has no entries.
+        alphabetically. A child without a grade and section has no entries. Schedules saved with
+        `PUT /api/admin/schedule` use only `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس`.
       security:
         - ParentJWT: []
       responses:
@@ -2414,6 +2627,78 @@ paths:
               example:
                 status: error
                 message: Invalid payload
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/schedule:
+    get:
+      tags: [Admin Dashboard]
+      operationId: getAdminSchedule
+      summary: One class's weekly schedule
+      description: |
+        The schedule of the class `grade` + `section`, Sunday to Thursday, then by
+        `period_number`. A class with no schedule returns 200 with an empty `data`. Take the
+        available grade and section values from `GET /api/admin/students`; there is no class list.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/ScheduleGrade'
+        - $ref: '#/components/parameters/ScheduleSection'
+      responses:
+        '200':
+          description: The class's schedule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminScheduleResponse'
+        '400':
+          $ref: '#/components/responses/ScheduleBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags: [Admin Dashboard]
+      operationId: replaceAdminSchedule
+      summary: Replace one class's weekly schedule
+      description: |
+        Replaces the whole schedule of one class in a single transaction: every stored period of
+        that class is removed and `periods` is stored instead. **An empty `periods` array clears
+        the class.** Other classes are never changed. A request that fails (400 or 500) changes
+        nothing. Saves of schedules run one at a time, so two saves for the same class at once
+        leave exactly one of them. The response is the saved schedule, as `GET` returns it.
+        Parents see it in `GET /api/mobile/schedule` for every active child whose `grade` and
+        `section` are equal to the saved ones.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminScheduleRequest'
+      responses:
+        '200':
+          description: Saved; the class's schedule as now stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminScheduleResponse'
+        '400':
+          $ref: '#/components/responses/ScheduleBadRequest'
         '401':
           $ref: '#/components/responses/AdminUnauthorized'
         '403':
