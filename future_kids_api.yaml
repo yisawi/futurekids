@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.9.0"
+  version: "1.10.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -2925,6 +2925,82 @@ paths:
               example:
                 status: error
                 message: Failed to create leave record
+
+    delete:
+      tags: [Admin Dashboard]
+      operationId: cancelLeave
+      summary: Cancel a student's leave on one day
+      description: |
+        Removes the leave of `student_id` on `date`. The student is then `Absent` for that day in
+        the reports (unless they punched in a window), and the noon absence notification applies
+        again if it has not run yet. Idempotent: the answer is the same 200 whether or not a leave
+        existed, including for an unknown student, so a retry never fails.
+      security:
+        - AdminJWT: []
+      parameters:
+        - name: student_id
+          in: query
+          required: true
+          description: The student's id. Missing, zero, negative or not an integer returns 400.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 42
+        - name: date
+          in: query
+          required: true
+          description: The day of the leave, `YYYY-MM-DD`, a real date with a year from 2000 to 2100. Missing or any other value returns 400.
+          schema:
+            type: string
+            format: date
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          example: "2026-09-21"
+      responses:
+        '200':
+          description: No leave remains for this student on this date (one was removed, or there was none).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: No leave remains for this student on this date
+        '400':
+          description: '`student_id` or `date` missing or invalid. Nothing was changed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing:
+                  summary: A parameter is missing
+                  value:
+                    status: error
+                    message: student_id and date are required
+                badStudentID:
+                  summary: student_id is not a positive integer
+                  value:
+                    status: error
+                    message: student_id must be a positive student id
+                badDate:
+                  summary: date is not YYYY-MM-DD
+                  value:
+                    status: error
+                    message: date must be formatted as YYYY-MM-DD
+                yearOutOfRange:
+                  summary: Year outside 2000 to 2100
+                  value:
+                    status: error
+                    message: date must have a year from 2000 to 2100
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /api/admin/settings:
     get:

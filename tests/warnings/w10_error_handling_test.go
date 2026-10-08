@@ -206,6 +206,7 @@ func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 		{"admin student create", "AdminStudentsHandler:", "POST", "/api/admin/students", `{"name":"K","parent_name":"P","parent_phone":"+9647000000502","parent_pin":"581736","rfid_tag":"T"}`, admin(app.AdminStudentsHandler), false},
 		{"admin student update", "AdminStudentsHandler:", "PUT", "/api/admin/students", `{"id":1,"name":"K","parent_name":"P","parent_phone":"+9647000000502"}`, admin(app.AdminStudentsHandler), false},
 		{"admin student delete", "AdminStudentsHandler:", "DELETE", "/api/admin/students?id=1", "", admin(app.AdminStudentsHandler), false},
+		{"admin leave cancel", "AdminCreateLeaveHandler:", "DELETE", "/api/admin/leaves?student_id=1&date=2026-09-24", "", admin(app.AdminCreateLeaveHandler), false},
 		{"admin leave create", "AdminCreateLeaveHandler:", "POST", "/api/admin/leaves", `{"student_id":1,"leave_date":"2026-09-24"}`, admin(app.AdminCreateLeaveHandler), false},
 		{"admin setting save", "AdminSettingsHandler:", "PUT", "/api/admin/settings", `{"key":"k","value":"v"}`, admin(app.AdminSettingsHandler), false},
 		{"admin banner create", "AdminBannersHandler:", "POST", "/api/admin/banners", w10BannerImage, admin(app.AdminBannersHandler), false},

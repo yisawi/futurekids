@@ -149,6 +149,7 @@ func run() int {
 	mux.HandleFunc("PUT /api/admin/devices", appEnv.AdminMiddleware(appEnv.AdminDevicesHandler))
 	mux.HandleFunc("DELETE /api/admin/devices", appEnv.AdminMiddleware(appEnv.AdminDevicesHandler))
 	mux.HandleFunc("POST /api/admin/leaves", appEnv.AdminMiddleware(appEnv.AdminCreateLeaveHandler))
+	mux.HandleFunc("DELETE /api/admin/leaves", appEnv.AdminMiddleware(appEnv.AdminCreateLeaveHandler))
 	mux.HandleFunc("GET /api/admin/attendance", appEnv.AdminMiddleware(appEnv.AdminDailyAttendanceHandler))
 	mux.HandleFunc("GET /api/admin/export/excel", appEnv.AdminMiddleware(appEnv.AdminExportExcelHandler))
 	mux.HandleFunc("GET /api/admin/settings", appEnv.AdminMiddleware(appEnv.AdminSettingsHandler))

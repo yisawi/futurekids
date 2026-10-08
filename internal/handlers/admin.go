@@ -492,7 +492,51 @@ type LeavePayload struct {
 	Notes     string `json:"notes"`
 }
 
+// LeaveCancelledMessage answers every valid DELETE /api/admin/leaves, whether or not a leave existed.
+const LeaveCancelledMessage = "No leave remains for this student on this date"
+
+// cancelLeave removes the leave of ?student_id= on ?date=. It is idempotent: a missing leave or
+// an unknown student is also 200, so retries never fail and nothing about the student is revealed.
+func (app *AppEnv) cancelLeave(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	idParam, date := q.Get("student_id"), q.Get("date")
+	if idParam == "" || date == "" {
+		respondError(w, http.StatusBadRequest, "student_id and date are required")
+		return
+	}
+	studentID, err := strconv.Atoi(idParam)
+	if err != nil || studentID < 1 {
+		respondError(w, http.StatusBadRequest, "student_id must be a positive student id")
+		return
+	}
+	leaveDate, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "date must be formatted as YYYY-MM-DD")
+		return
+	}
+	if !yearInRange(leaveDate) {
+		respondError(w, http.StatusBadRequest, "date must have a year from 2000 to 2100")
+		return
+	}
+	res, err := app.DB.ExecContext(r.Context(), `DELETE FROM student_leaves WHERE student_id = $1 AND leave_date = $2`, studentID, date)
+	if err != nil {
+		respondInternalError(w, "Failed to cancel leave", "AdminCreateLeaveHandler: delete failed", err, "student_id", studentID, "date", date)
+		return
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		respondInternalError(w, "Failed to cancel leave", "AdminCreateLeaveHandler: rows affected failed", err, "student_id", studentID, "date", date)
+		return
+	}
+	slog.Info("Leave cancelled", "student_id", studentID, "date", date, "removed", n > 0)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": LeaveCancelledMessage})
+}
+
 func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		app.cancelLeave(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
 		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return

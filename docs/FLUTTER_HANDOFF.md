@@ -260,6 +260,16 @@ children goes to all of them, including children the school adds later.
   the admin choose another.
 - **404 on `POST /api/admin/leaves`:** the student doesn't exist or was deactivated. Refresh the
   student list.
+- **Cancel a leave:** the daily report (`GET /api/admin/attendance?date=…`) shows a student with
+  a leave as `Excused`. To undo a leave entered by mistake, call
+  `DELETE /api/admin/leaves?student_id=<id>&date=<YYYY-MM-DD>` (no body).
+  - The answer is always 200 `No leave remains for this student on this date`, also when there
+    was nothing to cancel, so a retry is safe. Don't treat it as proof that a leave existed.
+  - The student is then `Absent` for that day, unless they punched in a window (then `Present`).
+    Reload the report to show it. If it's today and before 12:00, the noon absence notification
+    reaches the parent again.
+  - 400 when `student_id` isn't a positive integer or `date` isn't a real `YYYY-MM-DD` with a year
+    from 2000 to 2100.
 - **Devices:**
   - A device registered without `is_active` is active.
   - `PUT /api/admin/devices` changes only the fields you send (`location_name`, `is_active`);
@@ -391,7 +401,12 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.9.0 (this release):**
+**In API 1.10.0 (this release):**
+
+- **New:** `DELETE /api/admin/leaves?student_id=&date=` cancels a leave (always 200; see the
+  admin dashboard notes). Nothing existing changed.
+
+**In API 1.9.0:**
 
 - **New:** banner management for the dashboard (`GET`, `POST`, `PUT`, `DELETE /api/admin/banners`
   and `GET /api/admin/banners/image`), and the public picture route `GET

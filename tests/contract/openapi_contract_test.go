@@ -480,6 +480,22 @@ func (r *runner) scenario() {
 	}
 	r.call("POST /api/admin/leaves", "oversized body", "", admin, oversized(), 413)
 	adminDenied("POST /api/admin/leaves", "", map[string]any{"student_id": idC, "leave_date": today})
+	cancelDay := "2026-09-01"
+	r.call("POST /api/admin/leaves", "leave to cancel", "", admin, map[string]any{"student_id": idC, "leave_date": cancelDay}, 200)
+	cancelQuery := fmt.Sprintf("?student_id=%d&date=%s", idC, cancelDay)
+	_, d = r.call("DELETE /api/admin/leaves", "cancel a leave", cancelQuery, admin, nil, 200)
+	r.expect("cancel message", at(d, "message"), "No leave remains for this student on this date")
+	var cancelled, kept int
+	r.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE leave_date = $2), COUNT(*) FILTER (WHERE leave_date = $3) FROM student_leaves WHERE student_id = $1`, idC, cancelDay, today).Scan(&cancelled, &kept)
+	r.expect("cancelled leave is gone", cancelled, 0)
+	r.expect("the same student's other leave is kept", kept, 1)
+	r.call("DELETE /api/admin/leaves", "nothing left to cancel", cancelQuery, admin, nil, 200)
+	r.call("DELETE /api/admin/leaves", "unknown student", "?student_id=999999&date="+cancelDay, admin, nil, 200)
+	for _, bad := range []string{"", "?date=" + cancelDay, fmt.Sprintf("?student_id=%d", idC), "?student_id=0&date=" + cancelDay, "?student_id=-1&date=" + cancelDay, "?student_id=abc&date=" + cancelDay,
+		fmt.Sprintf("?student_id=%d&date=01-09-2026", idC), fmt.Sprintf("?student_id=%d&date=1999-12-31", idC), fmt.Sprintf("?student_id=%d&date=2101-01-01", idC)} {
+		r.call("DELETE /api/admin/leaves", "invalid query "+bad, bad, admin, nil, 400)
+	}
+	adminDenied("DELETE /api/admin/leaves", cancelQuery, nil)
 
 	// ── Settings ───────────────────────────────────────────────────────────────
 	r.call("PUT /api/admin/settings", "public setting", "", admin, map[string]string{"key": "whatsapp_number", "value": "+9647000000999"}, 200)
@@ -1111,6 +1127,7 @@ func (r *runner) databaseFailures() {
 	r.call("GET /api/mobile/banners/image", "database error", "?id=1", "", nil, 500)
 	r.call("PUT /api/admin/schedule", "database error", "", admin, map[string]any{"grade": "G4", "section": "C", "periods": []any{}}, 500)
 	r.call("POST /api/admin/leaves", "database error", "", admin, map[string]any{"student_id": 1, "leave_date": today}, 500)
+	r.call("DELETE /api/admin/leaves", "database error", "?student_id=1&date="+today, admin, nil, 500)
 	r.call("POST /api/admin/devices", "database error", "", admin, map[string]any{"serial_number": "TEST-SN-0100"}, 500)
 	r.call("PUT /api/admin/devices", "database error", "", admin, map[string]any{"serial_number": "TEST-SN-0001", "location_name": "Main Gate", "is_active": true}, 500)
 	r.call("DELETE /api/admin/devices", "database error", "?sn=TEST-SN-0100", admin, nil, 500)
@@ -1693,6 +1710,11 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		}},
 		{"the public banner picture no longer documents image/jpeg", []string{"responses"}, func(root map[string]any) {
 			delete(node(root, "paths", "/api/mobile/banners/image", "get", "responses", "200", "content"), "image/jpeg")
+		}},
+		{"cancelLeave documents 404 instead of 200", []string{"responses"}, func(root map[string]any) {
+			responses := node(root, "paths", "/api/admin/leaves", "delete", "responses")
+			responses["404"] = responses["200"]
+			delete(responses, "200")
 		}},
 		{"production is listed as a server", []string{"hygiene"}, func(root map[string]any) {
 			root["servers"] = append(list(root["servers"]), map[string]any{"url": "https://futurekids-production.up.railway.app"})
