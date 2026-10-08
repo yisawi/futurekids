@@ -64,6 +64,25 @@ migrate -path db/migrations -database "$DATABASE_URL" up         # 000025, after
 9. **Rolling back 000024** deletes every uploaded banner picture. Those banners stay but are deactivated, so the old code never shows parents a banner without a picture. Back up first (see `db/migrations/README.md`).
 10. **A later migration, after this deploy,** drops `students.fcm_token`, `notifications.parent_phone` and the 000023 trigger, which the new code does not use.
 
+### Seeding Staging with fake data
+
+`cmd/seed-staging` fills Staging with fake data for the Flutter developers: 47 students (`rfid_tag` 1004 to 1050) for 37 parents (`+9647000002001` to `+9647000002037`, PIN `314159`), weekly schedules, the fake device `SEED-FAKE-0001`, leaves, attendance history since the first day of the previous month, and 3 banners. Everything goes through the real API; it never touches students 1001 to 1003, the real device or the settings. It refuses any `BASE_URL` other than `https://futurekids-staging.up.railway.app`.
+
+```bash
+read -r -p "Admin username: " ADMIN_USERNAME
+read -r -s -p "Admin password: " ADMIN_PASSWORD; echo
+export BASE_URL=https://futurekids-staging.up.railway.app ADMIN_USERNAME ADMIN_PASSWORD
+go run ./cmd/seed-staging            # dry run: prints the plan, changes nothing
+go run ./cmd/seed-staging --apply    # seeds; a second run creates and sends nothing
+unset ADMIN_PASSWORD
+```
+
+`read -s` keeps the password out of the screen and the shell history; never pass it on the command line. The output ends with the parents' phone numbers and PIN for the parent app.
+
+- **Seeded data cannot be removed through the API.** Students can only be deactivated, punches and notifications are never deleted, and parents stay. Plan on keeping it, or clean it up with SQL after a backup.
+- **Notifications:** the attendance history creates one check-in and one check-out notification per present day (about 1,800 history rows, dated the day you seed). Afterwards, the noon absence job notifies the parent of every seeded student without a punch, each school day.
+- **If a run stops midway,** it prints what was done. Re-running `--apply` is safe; if the history of students created in the stopped run was not sent, add `--resume-history`.
+
 ### Settings
 
 | Variable | Default | Purpose |
