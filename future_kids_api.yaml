@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.13.0"
+  version: "1.13.1"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -254,23 +254,24 @@ components:
         minLength: 1
         maxLength: 50
       example: A
-    ScheduleGradeFilter:
+    ScheduleExportGrade:
       name: grade
       in: query
-      required: false
+      required: true
       description: |
-        Optional. Only classes with exactly this grade (case-sensitive); surrounding spaces are
-        ignored. Present but blank returns 400, and so does a value longer than 50 characters.
+        Required. The class's grade exactly as `GET /api/admin/schedule/classes` returns it
+        (case-sensitive); surrounding spaces are ignored. Missing, blank or longer than 50
+        characters returns 400.
       schema:
         type: string
         minLength: 1
         maxLength: 50
-      example: G3
-    ScheduleSectionFilter:
+      example: G1
+    ScheduleExportSection:
       name: section
       in: query
-      required: false
-      description: Optional. Only classes with exactly this section; same rules as `grade`.
+      required: true
+      description: Required. The class's section; same rules as `grade`.
       schema:
         type: string
         minLength: 1
@@ -1565,10 +1566,27 @@ components:
           description: |
             Optional, exactly `true` or `false` (anything else returns 400). With `true` the file
             is checked and the same report is returned, but nothing is saved.
+        grade:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: |
+            Optional class guard, sent together with `section` (only one of them returns 400).
+            Surrounding spaces are removed; blank or longer than 50 characters returns 400. When
+            sent, every filled row of the file must have exactly this grade and section (a row
+            of another class is an error item), and the file must have at least one such row
+            (400 otherwise). Send it exactly as `GET /api/admin/schedule/classes` returns it.
+        section:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Optional class guard, sent together with `grade`; same rules.
       required: [file]
       example:
         file: (binary .xlsx)
         dry_run: 'true'
+        grade: G1
+        section: A
 
     ScheduleImportClass:
       type: object
@@ -1672,7 +1690,8 @@ components:
         The error envelope, with `errors` (the one extension of it) when the problems are in the
         file's rows: at most 50 problems, then one item saying how many more there are. Other 400s
         from the import (not multipart, no file, not a workbook, no header row, too many rows or
-        classes, an invalid `dry_run`) have no `errors`.
+        classes, an invalid `dry_run`, an invalid class guard, no row for the guarded class) have
+        no `errors`.
       properties:
         status:
           type: string
@@ -2182,14 +2201,33 @@ components:
                 status: error
                 message: grade is required
     ScheduleExportBadRequest:
-      description: '`grade` or `section` sent but blank, or longer than 50 characters.'
+      description: '`grade` or `section` missing or blank, or longer than 50 characters.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            missing:
+              summary: grade missing or blank
+              value:
+                status: error
+                message: grade is required
+            tooLong:
+              summary: section longer than 50 characters
+              value:
+                status: error
+                message: section must be at most 50 characters
+    ScheduleClassNotFound:
+      description: |
+        No class has this grade and section: no active student has them and no period is stored
+        for them (the definition of `GET /api/admin/schedule/classes`).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             status: error
-            message: grade must not be blank
+            message: 'No class has this grade and section: no active student and no schedule'
     ScheduleImportBadRequest:
       description: |
         Nothing was saved. Either the request or file as a whole is wrong (no `errors`), or rows
@@ -2239,6 +2277,26 @@ components:
               value:
                 status: error
                 message: dry_run must be "true" or "false"
+            otherClass:
+              summary: With the class guard, a row of another class
+              value:
+                status: error
+                message: The file has 1 problem; nothing was saved
+                errors:
+                  - sheet: Sheet1
+                    row: 8
+                    column: الشعبة
+                    message: this file is for grade G1, section A only
+            guardIncomplete:
+              summary: grade sent without section (or the reverse)
+              value:
+                status: error
+                message: section is required when grade is sent
+            noRowsForClass:
+              summary: With the class guard, no filled row of that class
+              value:
+                status: error
+                message: The file has no rows for grade G1, section A
     ScheduleImportTooLarge:
       description: The file is larger than 2 MiB, or the whole request is larger than 2 MiB + 64 KiB. Nothing was saved.
       content:
@@ -3582,33 +3640,45 @@ paths:
     get:
       tags: [Admin Dashboard]
       operationId: exportScheduleExcel
-      summary: The weekly schedule as an editable Excel file
+      summary: One class's weekly schedule as an editable Excel file
       description: |
+        The schedule of exactly one class, `grade` + `section`, which must be a known class (as
+        in `GET /api/admin/schedule/classes`: an active student or a stored period has exactly
+        this pair; 404 otherwise). There is no whole-school export.
+
         A right-to-left `.xlsx` (one worksheet, `Sheet1`) with the same header as the daily
-        report: the ministry line, the `school_name` setting and a title in rows 1 to 3, the
-        column headers `المرحلة | الشعبة | اليوم | الحصة | المادة | المعلم` in row 5, and the data
-        from row 6. It is an **editable full grid**: for every known class (as in
-        `GET /api/admin/schedule/classes`, narrowed by `grade` and `section`) one row for each
-        day Sunday to Thursday and each period 1 to 6 (30 rows per class), sorted by grade,
-        section, day and period, with the stored subject and teacher, or blank cells. A day
-        with 5 periods therefore has a blank sixth row. Every cell is text, never a formula. With
-        no known class the file has only the header (an empty template). Rows saved before API
-        1.13.0 on another day or with a period above 6 are not in the file, so importing it
-        removes them from that class.
+        report: the ministry line, the `school_name` setting and the title with the class (for
+        example `الجدول الأسبوعي - G1 A`) in rows 1 to 3, the column headers
+        `المرحلة | الشعبة | اليوم | الحصة | المادة | المعلم` in row 5, and the data from row 6. It is
+        an **editable grid** of 30 rows: one for each day Sunday to Thursday and each period 1 to
+        6, with the stored subject and teacher, or blank cells. A day with 5 periods therefore has
+        a blank sixth row, and a class without a schedule downloads as a blank template. Every
+        cell is text, never a formula. Rows saved before API 1.13.0 on another day or with a
+        period above 6 are not in the file, so importing it removes them from the class.
       security:
         - AdminJWT: []
       parameters:
-        - $ref: '#/components/parameters/ScheduleGradeFilter'
-        - $ref: '#/components/parameters/ScheduleSectionFilter'
+        - $ref: '#/components/parameters/ScheduleExportGrade'
+        - $ref: '#/components/parameters/ScheduleExportSection'
       responses:
         '200':
           description: The Excel file.
           headers:
             Content-Disposition:
-              description: '`attachment; filename=schedule_<today>.xlsx` (today in Asia/Baghdad)'
+              description: |
+                An attachment named `schedule_<grade>_<section>_<today>.xlsx` (today in
+                Asia/Baghdad). Spaces, path separators, quotes, control characters and
+                `* : ? < > | ; , %` in the class become `_`. An ASCII name is sent as
+                `filename=`; a name with Arabic or other non-ASCII letters only as the RFC 2231
+                `filename*=utf-8''…` form (percent-encoded UTF-8). Any standard parser (for example
+                `mime.ParseMediaType`) decodes both.
               schema:
                 type: string
-              example: attachment; filename=schedule_2026-10-09.xlsx
+              examples:
+                ascii:
+                  value: attachment; filename=schedule_G1_A_2026-10-09.xlsx
+                arabic:
+                  value: attachment; filename*=utf-8''schedule_G1_%D8%A3_2026-10-09.xlsx
           content:
             application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
               schema:
@@ -3620,6 +3690,8 @@ paths:
           $ref: '#/components/responses/AdminUnauthorized'
         '403':
           $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/ScheduleClassNotFound'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
@@ -3652,6 +3724,12 @@ paths:
         file are untouched. To clear a class, use `PUT` with an empty `periods`. It is all or
         nothing: any problem saves nothing. Imports and `PUT` saves run one at a time. Always call
         it with `dry_run=true` first and show the problems or warnings.
+
+        **One class (the dashboard's per-class Import):** send the `grade` and `section` parts
+        (both or neither). Then every filled row must belong to that class: a row of another
+        class is an error item on its `المرحلة` (or `الشعبة`) cell, and a file without any filled
+        row of the class returns 400. `classes` then has one item. Without the two parts, every
+        class in the file is imported as described above.
 
         Limits: at most 2000 filled rows (ignored blank rows don't count) and 100 classes.
       security:

@@ -18,6 +18,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -130,6 +131,7 @@ func TestOpenAPIContract(t *testing.T) {
 	})
 	t.Run("every response matches the spec", func(t *testing.T) { report(t, exchangeProblems(s, r.xs)) })
 	t.Run("every accepted multipart request matches the spec", func(t *testing.T) { report(t, requestProblems(s, r.xs)) })
+	t.Run("required query parameters match what the server enforces", func(t *testing.T) { report(t, parameterProblems(s, r.xs)) })
 	t.Run("every operation has a success and an error case", func(t *testing.T) {
 		report(t, coverageProblems(s, r.xs))
 		if u := untestedStatuses(s, r.xs); len(u) > 0 {
@@ -1179,23 +1181,35 @@ func (r *runner) scenario() {
 		return got
 	}
 	scheduleHeader := []string{"المرحلة", "الشعبة", "اليوم", "الحصة", "المادة", "المعلم"}
-	x, _ = r.call("GET /api/admin/schedule/export", "whole school", "", admin, nil, 200)
+	x, _ = r.call("GET /api/admin/schedule/export", "one class", "?grade=G3&section=A", admin, nil, 200)
 	if !bytes.HasPrefix(x.body, []byte("PK\x03\x04")) {
 		t.Errorf("schedule export is not an xlsx (zip) file")
 	}
-	r.expect("schedule file name", x.header.Get("Content-Disposition"), "attachment; filename=schedule_"+today+".xlsx")
-	whole := sheetRows(t, x.body)
-	r.expect("whole-school export: header and 30 rows per class", len(whole), 5+30*len(wantClasses))
-	x, _ = r.call("GET /api/admin/schedule/export", "one class", "?grade=G3&section=A", admin, nil, 200)
+	r.expect("schedule file name", x.header.Get("Content-Disposition"), "attachment; filename=schedule_G3_A_"+today+".xlsx")
 	one := sheetRows(t, x.body)
+	r.expect("export title names the class", one[2][0], "الجدول الأسبوعي - G3 A")
 	r.expect("export header row", one[4], scheduleHeader)
 	r.expect("first period of G3/A", one[5], []string{"G3", "A", "الأحد", "1", "Mathematics", "Teacher Example"})
 	r.expect("one class: 30 rows", len(one), 35)
-	x, _ = r.call("GET /api/admin/schedule/export", "unknown class", "?grade=G9", admin, nil, 200)
-	r.expect("unknown class: only the header", len(sheetRows(t, x.body)), 5)
-	r.call("GET /api/admin/schedule/export", "blank grade", "?grade=%20", admin, nil, 400)
-	r.call("GET /api/admin/schedule/export", "section too long", "?section="+strings.Repeat("s", 51), admin, nil, 400)
-	adminDenied("GET /api/admin/schedule/export", "", nil)
+	var classes []string
+	for _, row := range one[5:] {
+		classes = append(classes, row[0]+"/"+row[1])
+	}
+	r.expect("every row is G3/A", strings.Count(strings.Join(classes, ","), "G3/A"), 30)
+	r.call("PUT /api/admin/schedule", "an Arabic class", "", admin, map[string]any{"grade": "G5", "section": "ب", "periods": day("الأحد", 5, "العلوم", nil)}, 200)
+	x, _ = r.call("GET /api/admin/schedule/export", "a class with an Arabic section", "?grade=G5&section=%D8%A8", admin, nil, 200)
+	cd := x.header.Get("Content-Disposition")
+	_, params, err := mime.ParseMediaType(cd)
+	if err != nil || params["filename"] != "schedule_G5_ب_"+today+".xlsx" || !strings.HasPrefix(cd, "attachment; filename*=utf-8''") {
+		t.Errorf("Arabic file name %q: %v %v", cd, params, err)
+	}
+	r.call("PUT /api/admin/schedule", "clear the Arabic class", "", admin, map[string]any{"grade": "G5", "section": "ب", "periods": []any{}}, 200)
+	r.call("GET /api/admin/schedule/export", "unknown class", "?grade=G4&section=C", admin, nil, 404)
+	r.call("GET /api/admin/schedule/export", "grade missing", "?section=A", admin, nil, 400)
+	r.call("GET /api/admin/schedule/export", "section missing", "?grade=G3", admin, nil, 400)
+	r.call("GET /api/admin/schedule/export", "blank grade", "?grade=%20&section=A", admin, nil, 400)
+	r.call("GET /api/admin/schedule/export", "section too long", "?grade=G3&section="+strings.Repeat("s", 51), admin, nil, 400)
+	adminDenied("GET /api/admin/schedule/export", "?grade=G3&section=A", nil)
 
 	workbook := func(rows ...[]string) []byte {
 		f := excelize.NewFile()
@@ -1239,6 +1253,10 @@ func (r *runner) scenario() {
 	_, d = r.call("GET /api/admin/schedule", "imported class", "?grade=G4&section=C", admin, nil, 200)
 	r.expect("imported class read back", len(list(at(d, "data"))), 11)
 	r.expect("imported subject_key", fmt.Sprint(at(d, "data", 0, "subject_key"), " ", at(d, "data", 5, "subject_key")), "math science")
+	_, d = r.call("POST /api/admin/schedule/import", "one class with the class guard", "", admin, multipartBody{upload(valid), field("grade", "G4"), field("section", "C"), field("dry_run", "true")}, 200)
+	r.expect("guarded import report", fmt.Sprint(len(list(at(d, "classes"))), " ", at(d, "classes", 0, "grade"), "/", at(d, "classes", 0, "section")), "1 G4/C")
+	_, d = r.call("POST /api/admin/schedule/import", "a row of another class", "", admin, multipartBody{upload(valid), field("grade", "G4"), field("section", "D")}, 400)
+	r.expect("problem for another class", fmt.Sprint(at(d, "errors", 0, "sheet"), " ", at(d, "errors", 0, "row"), " ", at(d, "errors", 0, "column"), " ", at(d, "errors", 0, "message")), "Sheet1 2 الشعبة this file is for grade G4, section D only")
 	_, d = r.call("POST /api/admin/schedule/import", "rows with problems", "", admin, multipartBody{upload(workbook(scheduleHeader, []string{"G4", "C", "Friday", "1", "Art", ""}))}, 400)
 	r.expect("first problem", fmt.Sprint(at(d, "errors", 0, "sheet"), " ", at(d, "errors", 0, "row"), " ", at(d, "errors", 0, "column")), "Sheet1 2 اليوم")
 	for _, tc := range []struct {
@@ -1253,6 +1271,9 @@ func (r *runner) scenario() {
 		{"empty file", multipartBody{upload(nil)}, "file is empty"},
 		{"file sent twice", multipartBody{upload(valid), upload(valid)}, "file must be sent once"},
 		{"no header row", multipartBody{upload(workbook([]string{"Notes"}))}, "No worksheet has the header row (المرحلة, الشعبة, اليوم, الحصة, المادة, المعلم) in its first 10 rows"},
+		{"grade without section", multipartBody{upload(valid), field("grade", "G4")}, "section is required when grade is sent"},
+		{"section too long", multipartBody{upload(valid), field("grade", "G4"), field("section", strings.Repeat("s", 51))}, "section must be at most 50 characters"},
+		{"no row for the class", multipartBody{upload(workbook(scheduleHeader)), field("grade", "G4"), field("section", "C")}, "The file has no rows for grade G4, section C"},
 	} {
 		_, d = r.call("POST /api/admin/schedule/import", tc.name, "", admin, tc.body, 400)
 		r.expect("message for "+tc.name, at(d, "message"), tc.msg)
@@ -1339,7 +1360,7 @@ func (r *runner) databaseFailures() {
 	r.call("PUT /api/admin/settings", "database error", "", admin, map[string]string{"key": "internal_note", "value": "x"}, 500)
 	r.call("GET /api/admin/schedule", "database error", "?grade=G4&section=C", admin, nil, 500)
 	r.call("GET /api/admin/schedule/classes", "database error", "", admin, nil, 500)
-	r.call("GET /api/admin/schedule/export", "database error", "", admin, nil, 500)
+	r.call("GET /api/admin/schedule/export", "database error", "?grade=G3&section=A", admin, nil, 500)
 	r.call("POST /api/admin/schedule/import", "database error", "", admin, multipartBody{{"file", "schedule.xlsx", handlers.XLSXContentType, contractScheduleXLSX(t)}}, 500)
 	bannerPicture := multipartBody{{"image", "banner.jpg", "image/jpeg", contractJPEG(t, 4)}}
 	r.call("POST /api/admin/banners", "database error", "", admin, bannerPicture, 500)
@@ -1744,6 +1765,48 @@ func responseProblems(s *apiSpec, where string, resp map[string]any, x *exchange
 // requestProblems checks every multipart request the server accepted against the operation's
 // documented multipart/form-data schema: each part sent is a documented property and every
 // required property was sent.
+func parameterProblems(s *apiSpec, xs []*exchange) []string {
+	var problems []string
+	for _, o := range s.operations() {
+		required := map[string]bool{}
+		for _, pr := range list(o.op["parameters"]) {
+			p, err := s.deref(obj(pr))
+			if err != nil || str(p["in"]) != "query" {
+				continue
+			}
+			required[str(p["name"])] = p["required"] == true
+		}
+		if len(required) == 0 {
+			continue
+		}
+		for _, x := range xs {
+			if x.op != o.key() {
+				continue
+			}
+			u, err := url.Parse(x.target)
+			if err != nil {
+				continue
+			}
+			var missing []string
+			for name := range required {
+				if !u.Query().Has(name) {
+					missing = append(missing, name)
+				}
+			}
+			sort.Strings(missing)
+			for _, name := range missing {
+				if required[name] && x.status/100 == 2 {
+					problems = append(problems, fmt.Sprintf("%s [%s]: %d without the required query parameter %s", x.op, x.name, x.status, name))
+				}
+			}
+			if len(missing) == 1 && !required[missing[0]] && x.status == http.StatusBadRequest {
+				problems = append(problems, fmt.Sprintf("%s [%s]: 400 when only the optional query parameter %s is missing; the server requires it", x.op, x.name, missing[0]))
+			}
+		}
+	}
+	return problems
+}
+
 func requestProblems(s *apiSpec, xs []*exchange) []string {
 	ops := map[string]operation{}
 	for _, o := range s.operations() {
@@ -1843,12 +1906,13 @@ func node(root map[string]any, path ...string) map[string]any {
 // checks to catch every one against the same recorded exchanges.
 func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs, tx []*exchange) {
 	checkers := map[string]func(*apiSpec) []string{
-		"transport": func(sp *apiSpec) []string { return transportProblems(sp, tx) },
-		"hygiene":   hygieneProblems,
-		"routes":    func(sp *apiSpec) []string { return routeProblems(sp, served) },
-		"responses": func(sp *apiSpec) []string { return exchangeProblems(sp, xs) },
-		"requests":  func(sp *apiSpec) []string { return requestProblems(sp, xs) },
-		"coverage":  func(sp *apiSpec) []string { return coverageProblems(sp, xs) },
+		"transport":  func(sp *apiSpec) []string { return transportProblems(sp, tx) },
+		"hygiene":    hygieneProblems,
+		"routes":     func(sp *apiSpec) []string { return routeProblems(sp, served) },
+		"responses":  func(sp *apiSpec) []string { return exchangeProblems(sp, xs) },
+		"requests":   func(sp *apiSpec) []string { return requestProblems(sp, xs) },
+		"parameters": func(sp *apiSpec) []string { return parameterProblems(sp, xs) },
+		"coverage":   func(sp *apiSpec) []string { return coverageProblems(sp, xs) },
 	}
 	for name, check := range checkers {
 		if p := check(s); len(p) > 0 {
@@ -1958,6 +2022,12 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		}},
 		{"an import problem loses its row", []string{"responses"}, func(root map[string]any) {
 			delete(obj(node(schemas(root), "ScheduleImportError")["properties"]), "row")
+		}},
+		{"the export's grade parameter is no longer required", []string{"parameters"}, func(root map[string]any) {
+			node(root, "components", "parameters", "ScheduleExportGrade")["required"] = false
+		}},
+		{"the import loses the grade part", []string{"requests"}, func(root map[string]any) {
+			delete(obj(node(schemas(root), "ScheduleImportRequest")["properties"]), "grade")
 		}},
 		{"the import's dry_run part is undocumented", []string{"requests"}, func(root map[string]any) {
 			delete(obj(node(schemas(root), "ScheduleImportRequest")["properties"]), "dry_run")

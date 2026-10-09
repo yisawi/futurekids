@@ -742,7 +742,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	respondXLSX(w, f, fmt.Sprintf("attendance_%s.xlsx", dateParam), "AdminExportExcelHandler", "date", dateParam)
+	respondXLSX(w, f, fmt.Sprintf("attachment; filename=attendance_%s.xlsx", dateParam), "AdminExportExcelHandler", "date", dateParam)
 }
 
 // XLSXContentType is the Content-Type of every Excel file the API returns.
@@ -811,9 +811,9 @@ func newReportWorkbook(schoolName, title string, headers []string) (*excelize.Fi
 	return f, sheet
 }
 
-// respondXLSX writes the workbook as an attachment named filename. It is written to a buffer
+// respondXLSX writes the workbook with the given Content-Disposition. It is written to a buffer
 // first so a failure can still be answered with a clean 500.
-func respondXLSX(w http.ResponseWriter, f *excelize.File, filename, op string, attrs ...any) {
+func respondXLSX(w http.ResponseWriter, f *excelize.File, disposition, op string, attrs ...any) {
 	var buf bytes.Buffer
 	if err := f.Write(&buf); err != nil {
 		respondInternalError(w, "Failed to generate excel file", op+": excel write failed", err, attrs...)
@@ -821,7 +821,7 @@ func respondXLSX(w http.ResponseWriter, f *excelize.File, filename, op string, a
 	}
 
 	w.Header().Set("Content-Type", XLSXContentType)
-	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
+	w.Header().Set("Content-Disposition", disposition)
 	w.Write(buf.Bytes())
 }
 

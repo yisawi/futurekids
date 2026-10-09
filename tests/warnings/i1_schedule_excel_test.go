@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -287,15 +288,24 @@ func TestI1ScheduleExcel(t *testing.T) {
 		return rep
 	}
 
-	t.Run("an empty school exports only the header", func(t *testing.T) {
-		f := i1Workbook(t, get("/api/admin/schedule/export"))
-		rows, _ := f.GetRows("Sheet1")
-		if len(rows) != 5 {
-			t.Errorf("empty export has %d rows, want the 3 title rows, a blank row and the header", len(rows))
+	exportClass := func(grade, section string) a14Response {
+		return get("/api/admin/schedule/export?" + url.Values{"grade": {grade}, "section": {section}}.Encode())
+	}
+
+	t.Run("the export needs the grade and section of a known class", func(t *testing.T) {
+		for _, tc := range []struct{ query, msg string }{
+			{"", "grade is required"},
+			{"?section=A", "grade is required"},
+			{"?grade=G1", "section is required"},
+			{"?grade=&section=A", "grade is required"},
+			{"?grade=%20%20&section=A", "grade is required"},
+			{"?grade=G1&section=%20", "section is required"},
+			{"?grade=" + strings.Repeat("g", 51) + "&section=A", "grade must be at most 50 characters"},
+			{"?grade=G1&section=" + strings.Repeat("s", 51), "section must be at most 50 characters"},
+		} {
+			e1Error(t, get("/api/admin/schedule/export"+tc.query), 400, tc.msg)
 		}
-		if got := fmt.Sprint(rows[len(rows)-1]); got != fmt.Sprint(i1Header) {
-			t.Errorf("header row %s, want %v", got, i1Header)
-		}
+		e1Error(t, exportClass("G1", "A"), 404, "No class has this grade and section: no active student and no schedule")
 	})
 
 	t.Run("PUT accepts days of exactly 5 or 6 periods", func(t *testing.T) {
@@ -556,57 +566,80 @@ func TestI1ScheduleExcel(t *testing.T) {
 		}
 	})
 
-	t.Run("the export is an editable grid of every known class", func(t *testing.T) {
+	days := []string{"الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"}
+	grid := func(t *testing.T, f *excelize.File, grade, section string) [][]string {
+		t.Helper()
+		data := i1DataRows(t, f)
+		if len(data) != 30 {
+			t.Fatalf("%s/%s: %d data rows, want 30", grade, section, len(data))
+		}
+		for i, row := range data {
+			for len(row) < 6 {
+				row = append(row, "")
+			}
+			want := fmt.Sprintf("%s|%s|%s|%d", grade, section, days[i/6], i%6+1)
+			if got := strings.Join(row[:4], "|"); got != want {
+				t.Fatalf("row %d is %s, want %s", i+6, got, want)
+			}
+			data[i] = row
+		}
+		return data
+	}
+
+	t.Run("the export is an editable grid of one class", func(t *testing.T) {
 		if r := put(e1Body("R2", "A", e1Join(e1Day("الأحد", 5, "=SUM(A1:A2)"), e1Day("الخميس", 6, "+Plus", "@Teacher"))...)); r.status != 200 {
 			t.Fatalf("PUT: %d %s", r.status, r.body)
 		}
-		r := get("/api/admin/schedule/export")
+		r := exportClass("G1", "أ")
 		if ct := r.header.Get("Content-Type"); ct != handlers.XLSXContentType {
 			t.Errorf("Content-Type %q", ct)
-		}
-		if cd := r.header.Get("Content-Disposition"); cd != "attachment; filename=schedule_"+tz.Today()+".xlsx" {
-			t.Errorf("Content-Disposition %q", cd)
 		}
 		f := i1Workbook(t, r)
 		view, err := f.GetSheetView("Sheet1", 0)
 		if err != nil || view.RightToLeft == nil || !*view.RightToLeft {
 			t.Errorf("the sheet is not right-to-left")
 		}
-		for cell, want := range map[string]string{"A1": "وزارة التربية والتعليم", "A2": "مدرسة الرحمن الابتدائية الأهلية", "A3": "الجدول الأسبوعي للحصص"} {
+		for cell, want := range map[string]string{"A1": "وزارة التربية والتعليم", "A2": "مدرسة الرحمن الابتدائية الأهلية", "A3": "الجدول الأسبوعي - G1 أ"} {
 			if v, _ := f.GetCellValue("Sheet1", cell); v != want {
 				t.Errorf("%s = %q, want %q", cell, v, want)
 			}
+		}
+		if sheets := f.GetSheetList(); len(sheets) != 1 {
+			t.Errorf("worksheets %v, want one", sheets)
 		}
 		rows, _ := f.GetRows("Sheet1")
 		if fmt.Sprint(rows[4]) != fmt.Sprint(i1Header) {
 			t.Errorf("header row %v", rows[4])
 		}
-		data := i1DataRows(t, f)
-		classes := []string{"G1/أ", "G2/ب", "L9/Z", "R2/A"}
-		if len(data) != 30*len(classes) {
-			t.Fatalf("%d data rows, want 30 for each of %d classes", len(data), len(classes))
+		data := grid(t, f, "G1", "أ")
+		filled := 0
+		for _, row := range data {
+			if row[4] != "" {
+				filled++
+			}
 		}
-		days := []string{"الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"}
-		for i, row := range data {
-			for len(row) < 6 {
-				row = append(row, "")
-			}
-			c, d, p := classes[i/30], days[i%30/6], i%6+1
-			if got := row[0] + "/" + row[1] + "|" + row[2] + "|" + row[3]; got != fmt.Sprintf("%s|%s|%d", c, d, p) {
-				t.Fatalf("row %d is %s, want %s|%s|%d", i+6, got, c, d, p)
-			}
-			data[i] = row
+		if filled != len(g1a) {
+			t.Errorf("G1/أ export has %d filled rows, want %d", filled, len(g1a))
 		}
 		for i, p := range g1a {
 			row := data[dayIndex(p.Day)*6+p.Period-1]
-			if row[4] != p.Subject || row[5] != "معلم تجريبي" && p.Teacher != nil {
+			teacher := ""
+			if p.Teacher != nil {
+				teacher = *p.Teacher
+			}
+			if row[4] != p.Subject || row[5] != teacher {
 				t.Errorf("G1/أ period %d: %v", i, row)
 			}
 		}
-		if row := data[30+0]; row[4] != "" || row[5] != "" {
-			t.Errorf("G2/ب has no schedule but exports %v", row)
+
+		template := grid(t, i1Workbook(t, exportClass("G2", "ب")), "G2", "ب")
+		for _, row := range template {
+			if row[4] != "" || row[5] != "" {
+				t.Errorf("G2/ب has students but no schedule, yet exports %v", row)
+			}
 		}
-		legacy := data[60 : 60+30]
+
+		legacy := grid(t, i1Workbook(t, exportClass("L9", "Z")), "L9", "Z")
 		if got := fmt.Sprint(legacy[0][4], legacy[1][4], legacy[6][4], legacy[2][4]); got != "Legacy ALegacy B" {
 			t.Errorf("L9/Z Sunday 1, Sunday 2, Monday 1, Sunday 3: %q; want the lowest id for Sunday 1, then Legacy B and blanks", got)
 		}
@@ -615,64 +648,157 @@ func TestI1ScheduleExcel(t *testing.T) {
 				t.Errorf("a legacy row outside the grid was exported: %v", row)
 			}
 		}
-		r2 := data[90:]
+
+		rf := i1Workbook(t, get("/api/admin/schedule/export?grade=%20R2%20&section=A%20"))
+		r2 := grid(t, rf, "R2", "A")
 		if r2[0][4] != "=SUM(A1:A2)" || r2[24][4] != "+Plus" || r2[24][5] != "@Teacher" || r2[5][4] != "" {
 			t.Errorf("R2/A rows: %v %v %v", r2[0], r2[24], r2[5])
 		}
-		for _, cell := range []string{"E96", "E120", "F120", "D96"} {
-			if formula, _ := f.GetCellFormula("Sheet1", cell); formula != "" {
+		for _, cell := range []string{"E6", "E30", "F30", "D6", "A6"} {
+			if formula, _ := rf.GetCellFormula("Sheet1", cell); formula != "" {
 				t.Errorf("%s holds the formula %q, want text", cell, formula)
 			}
-			if typ, _ := f.GetCellType("Sheet1", cell); typ != excelize.CellTypeSharedString {
+			if typ, _ := rf.GetCellType("Sheet1", cell); typ != excelize.CellTypeSharedString {
 				t.Errorf("%s has cell type %v, want a string", cell, typ)
+			}
+		}
+		for _, c := range [][2]string{{"g1", "أ"}, {"G1", "ب"}, {"G5", "ج"}} {
+			e1Error(t, exportClass(c[0], c[1]), 404, "No class has this grade and section: no active student and no schedule")
+		}
+	})
+
+	t.Run("the export's file name names the class and the date and is always a valid header", func(t *testing.T) {
+		today := tz.Today()
+		if cd := exportClass("R2", "A").header.Get("Content-Disposition"); cd != "attachment; filename=schedule_R2_A_"+today+".xlsx" {
+			t.Errorf("ASCII class: %q", cd)
+		}
+		odd := "S/1\"'\\\n;%"
+		if r := put(e1Body(odd, "ب/ج", e1Day("الأحد", 5, "Odd")...)); r.status != 200 {
+			t.Fatalf("PUT odd class: %d %s", r.status, r.body)
+		}
+		for _, tc := range []struct{ grade, section, file string }{
+			{"G1", "أ", "schedule_G1_أ_" + today + ".xlsx"},
+			{"L9", "Z", "schedule_L9_Z_" + today + ".xlsx"},
+			{odd, "ب/ج", "schedule_S_1" + strings.Repeat("_", 6) + "_ب_ج_" + today + ".xlsx"},
+		} {
+			r := exportClass(tc.grade, tc.section)
+			if r.status != 200 {
+				t.Errorf("%q/%q: %d %s", tc.grade, tc.section, r.status, r.body)
+				continue
+			}
+			cd := r.header.Get("Content-Disposition")
+			if strings.ContainsAny(cd, "\r\n") {
+				t.Errorf("%q: header holds a line break", cd)
+			}
+			disposition, params, err := mime.ParseMediaType(cd)
+			if err != nil || disposition != "attachment" || params["filename"] != tc.file {
+				t.Errorf("%q parses as %q %v (%v), want attachment with filename %q", cd, disposition, params, err, tc.file)
+			}
+			if ascii := strings.IndexFunc(tc.file, func(r rune) bool { return r > 0x7E }) < 0; !ascii && !strings.HasPrefix(cd, "attachment; filename*=utf-8''") {
+				t.Errorf("%q: a non-ASCII name must use filename*", cd)
+			}
+			if got := grid(t, i1Workbook(t, r), tc.grade, tc.section); len(got) != 30 {
+				t.Errorf("%q/%q: %d rows", tc.grade, tc.section, len(got))
+			}
+		}
+		if r := put(e1Body(odd, "ب/ج")); r.status != 200 {
+			t.Errorf("clearing the odd class: %d", r.status)
+		}
+	})
+
+	t.Run("exporting and importing a class unchanged leaves the schedules as they were", func(t *testing.T) {
+		if r := put(e1Body("RT", "ج", e1Join(e1Day("الأحد", 6, "اللغة العربية", "معلمة تجريبية 5"), e1Day("الإثنين", 5, "الحاسوب"))...)); r.status != 200 {
+			t.Fatalf("PUT RT/ج: %d %s", r.status, r.body)
+		}
+		before := i1Snapshot(t, db, false)
+		for _, c := range []struct {
+			grade, section string
+			periods        int
+		}{{"G1", "أ", len(g1a)}, {"R2", "A", 11}, {"RT", "ج", 11}} {
+			data := exportClass(c.grade, c.section).body
+			for _, dry := range []string{"true", "false"} {
+				rep := importOK(t, data, f1Text("grade", c.grade), f1Text("section", c.section), f1Text("dry_run", dry))
+				if rep.TotalPeriods != c.periods || len(rep.Classes) != 1 || rep.Classes[0].Grade != c.grade || rep.Classes[0].Section != c.section {
+					t.Errorf("%s/%s dry_run=%s: report %+v", c.grade, c.section, dry, rep)
+				}
+			}
+			if after := i1Snapshot(t, db, false); after != before {
+				t.Errorf("round trip of %s/%s changed the schedules\nbefore:\n%s\nafter:\n%s", c.grade, c.section, before, after)
+			}
+		}
+	})
+
+	t.Run("an import for one class accepts only that class", func(t *testing.T) {
+		put(e1Body("GD", "أ", e1Day("الأحد", 5, "Before")...))
+		before := i1Snapshot(t, db, true)
+		guard := func(grade, section string) []f1Part {
+			return []f1Part{f1Text("grade", grade), f1Text("section", section)}
+		}
+		mine := i1Rows("GD", "أ", map[string]int{"الثلاثاء": 6}, "After", "")
+		book := func(rows ...[][]any) []byte { return i1Book(t, i1Sheet{"Sheet1", i1Table(rows...)}) }
+
+		dry := importOK(t, book(mine), append(guard(" GD ", "أ "), f1Text("dry_run", "true"))...)
+		if !dry.DryRun || dry.TotalPeriods != 6 || len(dry.Classes) != 1 || dry.Classes[0].Grade != "GD" {
+			t.Errorf("dry run report %+v", dry)
+		}
+		if after := i1Snapshot(t, db, true); after != before {
+			t.Fatalf("a guarded dry run changed the table")
+		}
+
+		other := "this file is for grade GD, section أ only"
+		for _, tc := range []struct {
+			name  string
+			rows  [][]any
+			wants []i1Problem
+		}{
+			{"a row of another section", append(append([][]any{}, mine...), []any{"GD", "ب", "الأحد", "1", "Art", nil}), []i1Problem{{"Sheet1", 8, "الشعبة", other}}},
+			{"a row of another grade", append([][]any{{"GX", "أ", "الأحد", "1", "Art", nil}}, mine...), []i1Problem{{"Sheet1", 2, "المرحلة", other}}},
+			{"two whole classes", append(append([][]any{}, mine...), i1Rows("GE", "أ", map[string]int{"الأحد": 5}, "Art", "")...), []i1Problem{
+				{"Sheet1", 8, "المرحلة", other}, {"Sheet1", 9, "المرحلة", other}, {"Sheet1", 10, "المرحلة", other}, {"Sheet1", 11, "المرحلة", other}, {"Sheet1", 12, "المرحلة", other}}},
+		} {
+			rep := i1Decode(t, i1Import(t, srv, admin, book(tc.rows), guard("GD", "أ")...), 400)
+			if fmt.Sprint(rep.Errors) != fmt.Sprint(tc.wants) {
+				t.Errorf("%s: problems\n got %v\nwant %v", tc.name, rep.Errors, tc.wants)
 			}
 		}
 
 		for _, tc := range []struct {
-			query string
-			want  []string
+			name  string
+			parts []f1Part
+			msg   string
 		}{
-			{"?grade=G1", []string{"G1/أ"}},
-			{"?section=" + url.QueryEscape("ب"), []string{"G2/ب"}},
-			{"?grade=L9&section=Z", []string{"L9/Z"}},
-			{"?grade=%20R2%20&section=A", []string{"R2/A"}},
-			{"?grade=G1&section=Z", nil},
-			{"?grade=g1", nil},
+			{"grade without section", []f1Part{f1Text("grade", "GD")}, "section is required when grade is sent"},
+			{"section without grade", []f1Part{f1Text("section", "أ")}, "grade is required when section is sent"},
+			{"blank grade", guard("  ", "أ"), "grade is required"},
+			{"blank section", guard("GD", ""), "section is required"},
+			{"grade of 51 characters", guard(strings.Repeat("ص", 51), "أ"), "grade must be at most 50 characters"},
+			{"section of 51 characters", guard("GD", strings.Repeat("s", 51)), "section must be at most 50 characters"},
+			{"grade over 200 bytes", guard(strings.Repeat("g", 201), "أ"), "grade must be at most 50 characters"},
+			{"section over 200 bytes", guard("GD", strings.Repeat("ص", 101)), "section must be at most 50 characters"},
+			{"grade sent twice", append(guard("GD", "أ"), f1Text("grade", "GD")), "grade must be sent once"},
 		} {
-			data := i1DataRows(t, i1Workbook(t, get("/api/admin/schedule/export"+tc.query)))
-			var got []string
-			for i := 0; i < len(data); i += 30 {
-				got = append(got, data[i][0]+"/"+data[i][1])
-			}
-			if len(data) != 30*len(tc.want) || fmt.Sprint(got) != fmt.Sprint(tc.want) {
-				t.Errorf("export%s: %d rows of %v, want %v", tc.query, len(data), got, tc.want)
-			}
+			e1Error(t, i1Import(t, srv, admin, book(mine), tc.parts...), 400, tc.msg)
 		}
-		for _, tc := range []struct{ query, msg string }{
-			{"?grade=", "grade must not be blank"},
-			{"?grade=%20%20", "grade must not be blank"},
-			{"?section=", "section must not be blank"},
-			{"?grade=" + strings.Repeat("g", 51), "grade must be at most 50 characters"},
-			{"?grade=G1&section=" + strings.Repeat("s", 51), "section must be at most 50 characters"},
-		} {
-			e1Error(t, get("/api/admin/schedule/export"+tc.query), 400, tc.msg)
+		e1Error(t, i1Import(t, srv, admin, book(), guard("GD", "أ")...), 400, "The file has no rows for grade GD, section أ")
+		blankGrid := i1Rows("GD", "أ", map[string]int{"الأحد": 6}, "", "")
+		e1Error(t, i1Import(t, srv, admin, book(blankGrid), guard("GD", "أ")...), 400, "The file has no rows for grade GD, section أ")
+		if ok := importOK(t, book(mine, i1Rows("GE", "أ", map[string]int{"الأحد": 5}, "Art", ""))); len(ok.Classes) != 2 {
+			t.Errorf("without the class parts a two-class file must still import both: %+v", ok)
 		}
-	})
-
-	t.Run("exporting and importing unchanged leaves the schedules as they were", func(t *testing.T) {
-		before := i1Snapshot(t, db, false)
-		data := get("/api/admin/schedule/export?grade=G1").body
-		rep := importOK(t, data)
-		if rep.TotalPeriods != len(g1a) || len(rep.Classes) != 1 || rep.Classes[0].Grade != "G1" || rep.Classes[0].Periods != len(g1a) {
-			t.Errorf("report %+v", rep)
+		if after := i1Snapshot(t, db, true); after == before {
+			t.Fatalf("the unguarded import saved nothing")
 		}
-		if after := i1Snapshot(t, db, false); after != before {
-			t.Errorf("round trip changed the schedules\nbefore:\n%s\nafter:\n%s", before, after)
+		before = i1Snapshot(t, db, true)
+		e1Error(t, i1Import(t, srv, admin, book(append(append([][]any{}, mine...), []any{"GD", "ب", "الأحد", "1", "Art", nil})), guard("GD", "أ")...), 400, "The file has 1 problem; nothing was saved")
+		if after := i1Snapshot(t, db, true); after != before {
+			t.Errorf("a rejected guarded import changed the table")
 		}
-		r2 := get("/api/admin/schedule/export?grade=R2").body
-		importOK(t, r2)
-		if after := i1Snapshot(t, db, false); after != before {
-			t.Errorf("round trip of formula-like text changed the schedules\nbefore:\n%s\nafter:\n%s", before, after)
+		real := importOK(t, book(mine), guard("GD", "أ")...)
+		if real.DryRun || len(real.Classes) != 1 {
+			t.Errorf("guarded import %+v", real)
+		}
+		if got := e1List(e1Decode(t, get("/api/admin/schedule?grade=GD&section="+url.QueryEscape("أ"))).Data); got != e1List(e1Day("الثلاثاء", 6, "After")) {
+			t.Errorf("GD/أ after the guarded import:\n%s", got)
 		}
 	})
 
@@ -1096,7 +1222,7 @@ func TestI1ScheduleExcel(t *testing.T) {
 			return a14Do(t, srv, method, path, header, nil)
 		}
 		routes := []struct{ method, path string }{
-			{"GET", "/api/admin/schedule/classes"}, {"GET", "/api/admin/schedule/export"}, {"POST", "/api/admin/schedule/import"},
+			{"GET", "/api/admin/schedule/classes"}, {"GET", "/api/admin/schedule/export?grade=G1&section=" + url.QueryEscape("أ")}, {"POST", "/api/admin/schedule/import"},
 		}
 		before := i1Snapshot(t, db, true)
 		for _, rt := range routes {
@@ -1145,20 +1271,24 @@ func TestI1ScheduleExcel(t *testing.T) {
 	})
 }
 
-// TestI1FullSchoolRoundTrip checks the row limit counts only filled rows: a full-school export of
-// 100 classes (3000 grid rows, 1100 of them filled) imports unchanged, and 2001 filled rows or
-// 101 classes are refused.
+// TestI1FullSchoolRoundTrip checks the row limit counts only filled rows: a file of 100 classes in
+// the export's grid layout (3000 rows, 1100 of them filled) imports unchanged, and 2001 filled rows
+// or 101 classes are refused.
 func TestI1FullSchoolRoundTrip(t *testing.T) {
 	srv, db := a14Server(t, "i1full")
 	admin := a14AdminToken(t, srv)
 	var values []string
+	rows := [][]any{i1Header}
 	for c := 1; c <= 100; c++ {
-		for _, d := range []struct {
-			day string
-			n   int
-		}{{"الأحد", 5}, {"الإثنين", 6}} {
-			for p := 1; p <= d.n; p++ {
-				values = append(values, fmt.Sprintf("('C%03d', 'أ', '%s', %d, 'الرياضيات', 'معلم تجريبي')", c, d.day, p))
+		grade := fmt.Sprintf("C%03d", c)
+		for d, day := range []string{"الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"} {
+			for p := 1; p <= 6; p++ {
+				row := []any{grade, "أ", day, fmt.Sprint(p), nil, nil}
+				if (d == 0 && p <= 5) || d == 1 {
+					values = append(values, fmt.Sprintf("('%s', 'أ', '%s', %d, 'الرياضيات', 'معلم تجريبي')", grade, day, p))
+					row[4], row[5] = "الرياضيات", "معلم تجريبي"
+				}
+				rows = append(rows, row)
 			}
 		}
 	}
@@ -1166,13 +1296,12 @@ func TestI1FullSchoolRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := i1Snapshot(t, db, false)
-	export := a14Do(t, srv, "GET", "/api/admin/schedule/export", a14Bearer(admin), nil)
-	f := i1Workbook(t, export)
-	if rows := i1DataRows(t, f); len(rows) != 3000 {
-		t.Fatalf("export has %d data rows, want 3000", len(rows))
+	if len(rows) != 3001 {
+		t.Fatalf("the file has %d data rows, want 3000", len(rows)-1)
 	}
+	file := i1Book(t, i1Sheet{"Sheet1", rows})
 	for _, dry := range []string{"true", "false"} {
-		rep := i1Decode(t, i1Import(t, srv, admin, export.body, f1Text("dry_run", dry)), 200)
+		rep := i1Decode(t, i1Import(t, srv, admin, file, f1Text("dry_run", dry)), 200)
 		if rep.TotalPeriods != 1100 || len(rep.Classes) != 100 || len(rep.Warnings) != 100 {
 			t.Errorf("dry_run=%s: %d periods, %d classes, %d warnings", dry, rep.TotalPeriods, len(rep.Classes), len(rep.Warnings))
 		}
@@ -1181,17 +1310,17 @@ func TestI1FullSchoolRoundTrip(t *testing.T) {
 		t.Errorf("the full-school round trip changed the schedules")
 	}
 
-	var rows [][]any
+	var many [][]any
 	for c := 1; c <= 400; c++ {
-		rows = append(rows, i1Rows(fmt.Sprintf("D%03d", c), "أ", map[string]int{"الأحد": 5}, "Art", "")...)
+		many = append(many, i1Rows(fmt.Sprintf("D%03d", c), "أ", map[string]int{"الأحد": 5}, "Art", "")...)
 	}
-	rows = append(rows, []any{"D999", "أ", "الأحد", "1", "Art", nil})
-	e1Error(t, i1Import(t, srv, admin, i1Book(t, i1Sheet{"Sheet1", i1Table(rows)})), 400, "The file has more than 2000 schedule rows")
-	e1Error(t, i1Import(t, srv, admin, i1Book(t, i1Sheet{"Sheet1", i1Table(rows[:2000])})), 400, "The file has 400 classes; at most 100 can be imported at once")
-	if rep := i1Decode(t, i1Import(t, srv, admin, i1Book(t, i1Sheet{"Sheet1", i1Table(rows[:500])}), f1Text("dry_run", "true")), 200); len(rep.Classes) != 100 {
+	many = append(many, []any{"D999", "أ", "الأحد", "1", "Art", nil})
+	e1Error(t, i1Import(t, srv, admin, i1Book(t, i1Sheet{"Sheet1", i1Table(many)})), 400, "The file has more than 2000 schedule rows")
+	e1Error(t, i1Import(t, srv, admin, i1Book(t, i1Sheet{"Sheet1", i1Table(many[:2000])})), 400, "The file has 400 classes; at most 100 can be imported at once")
+	if rep := i1Decode(t, i1Import(t, srv, admin, i1Book(t, i1Sheet{"Sheet1", i1Table(many[:500])}), f1Text("dry_run", "true")), 200); len(rep.Classes) != 100 {
 		t.Errorf("100 classes: %d", len(rep.Classes))
 	}
-	e1Error(t, i1Import(t, srv, admin, i1Book(t, i1Sheet{"Sheet1", i1Table(rows[:505])})), 400, "The file has 101 classes; at most 100 can be imported at once")
+	e1Error(t, i1Import(t, srv, admin, i1Book(t, i1Sheet{"Sheet1", i1Table(many[:505])})), 400, "The file has 101 classes; at most 100 can be imported at once")
 	if after := i1Snapshot(t, db, false); after != before {
 		t.Errorf("refused imports changed the schedules")
 	}

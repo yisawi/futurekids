@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"mime"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"future_kids/internal/tz"
 
@@ -27,6 +30,7 @@ const (
 	MaxScheduleImportErrors          = 50
 	scheduleHeaderSearchRows         = 10
 	scheduleHeaderMinMatches         = 3
+	maxScheduleClassPartBytes  int64 = 200
 )
 
 // The columns of the schedule workbook, in export order, with the header names the import accepts.
@@ -119,86 +123,97 @@ func (app *AppEnv) AdminScheduleClassesHandler(w http.ResponseWriter, r *http.Re
 	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": classes})
 }
 
-// scheduleFilter returns the trimmed query parameter name, nil when it is absent, or a problem
-// when it is present but blank or longer than 50 characters.
-func scheduleFilter(r *http.Request, name string) (*string, string) {
-	q := r.URL.Query()
-	if !q.Has(name) {
-		return nil, ""
+// unsafeFileNameRune reports characters replaced by "_" in a download file name: path separators,
+// quotes, spaces, controls and anything else that could break the header or a file system.
+func unsafeFileNameRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.IsSpace(r) || !unicode.IsPrint(r) || strings.ContainsRune(`/\"'*:?<>|;,%`, r)
+}
+
+// scheduleFileDisposition is the Content-Disposition of one class's export: an attachment named
+// schedule_<grade>_<section>_<date>.xlsx, with filename* (RFC 2231) when the name is not ASCII.
+func scheduleFileDisposition(grade, section, date string) string {
+	safe := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if unsafeFileNameRune(r) {
+				return '_'
+			}
+			return r
+		}, s)
 	}
-	v := strings.TrimSpace(q.Get(name))
-	if v == "" {
-		return nil, name + " must not be blank"
+	name := fmt.Sprintf("schedule_%s_%s_%s.xlsx", safe(grade), safe(section), date)
+	if v := mime.FormatMediaType("attachment", map[string]string{"filename": name}); v != "" {
+		return v
 	}
-	if msg := tooLong(name, v, 50); msg != "" {
-		return nil, msg
-	}
-	return &v, ""
+	return "attachment; filename=schedule_" + date + ".xlsx"
 }
 
 func (app *AppEnv) AdminScheduleExportHandler(w http.ResponseWriter, r *http.Request) {
-	grade, msg := scheduleFilter(r, "grade")
-	if msg != "" {
+	grade := strings.TrimSpace(r.URL.Query().Get("grade"))
+	section := strings.TrimSpace(r.URL.Query().Get("section"))
+	if msg := scheduleClassProblem(grade, section); msg != "" {
 		respondError(w, http.StatusBadRequest, msg)
-		return
-	}
-	section, msg := scheduleFilter(r, "section")
-	if msg != "" {
-		respondError(w, http.StatusBadRequest, msg)
-		return
-	}
-
-	schoolName, err := app.readSchoolName(r.Context(), "AdminScheduleExportHandler")
-	if err != nil {
-		respondInternalError(w, "Database error", "AdminScheduleExportHandler: school name query failed", err)
 		return
 	}
 
 	rows, err := app.DB.QueryContext(r.Context(), fmt.Sprintf(`
 		WITH classes AS (`+scheduleClassesSQL+`),
 		stored AS (
-			SELECT DISTINCT ON (ws.grade, ws.section, day.rank, ws.period_number)
-				ws.grade, ws.section, day.rank, ws.period_number, ws.subject_name, ws.teacher_name
+			SELECT DISTINCT ON (day.rank, ws.period_number) day.rank, ws.period_number, ws.subject_name, ws.teacher_name
 			FROM weekly_schedules ws
 			CROSS JOIN LATERAL (SELECT `+weekdayRankSQL+` AS rank) day
-			WHERE day.rank BETWEEN 1 AND 5 AND ws.period_number BETWEEN 1 AND %d
-			ORDER BY ws.grade, ws.section, day.rank, ws.period_number, ws.id
+			WHERE ws.grade = $1 AND ws.section = $2 AND day.rank BETWEEN 1 AND 5 AND ws.period_number BETWEEN 1 AND %d
+			ORDER BY day.rank, ws.period_number, ws.id
 		)
-		SELECT c.grade, c.section, d.rank, p.n, COALESCE(st.subject_name, ''), COALESCE(st.teacher_name, '')
-		FROM classes c
+		SELECT d.rank, p.n, COALESCE(st.subject_name, ''), COALESCE(st.teacher_name, '')
+		FROM (SELECT 1 FROM classes WHERE grade = $1 AND section = $2 LIMIT 1) known
 		CROSS JOIN generate_series(1, 5) AS d(rank)
 		CROSS JOIN generate_series(1, %d) AS p(n)
-		LEFT JOIN stored st ON st.grade = c.grade AND st.section = c.section AND st.rank = d.rank AND st.period_number = p.n
-		WHERE ($1::text IS NULL OR c.grade = $1) AND ($2::text IS NULL OR c.section = $2)
-		ORDER BY c.grade COLLATE "C", c.section COLLATE "C", d.rank, p.n`, MaxPeriodNumber, MaxPeriodNumber), grade, section)
+		LEFT JOIN stored st ON st.rank = d.rank AND st.period_number = p.n
+		ORDER BY d.rank, p.n`, MaxPeriodNumber, MaxPeriodNumber), grade, section)
 	if err != nil {
-		respondInternalError(w, "Database error", "AdminScheduleExportHandler: query failed", err)
+		respondInternalError(w, "Database error", "AdminScheduleExportHandler: query failed", err, "grade", grade, "section", section)
 		return
 	}
-	defer rows.Close()
-
-	f, sheet := newReportWorkbook(schoolName, "الجدول الأسبوعي للحصص", scheduleHeaders())
-	defer f.Close()
-	rowIndex := reportFirstDataRow
+	type gridRow struct {
+		rank, period     int
+		subject, teacher string
+	}
+	var grid []gridRow
 	for rows.Next() {
-		var g, s, subject, teacher string
-		var rank, period int
-		if err := rows.Scan(&g, &s, &rank, &period, &subject, &teacher); err != nil {
-			respondInternalError(w, "Database error", "AdminScheduleExportHandler: scan failed", err, "row", rowIndex)
+		var g gridRow
+		if err := rows.Scan(&g.rank, &g.period, &g.subject, &g.teacher); err != nil {
+			rows.Close()
+			respondInternalError(w, "Database error", "AdminScheduleExportHandler: scan failed", err, "grade", grade, "section", section)
 			return
 		}
-		for col, v := range []string{g, s, schoolWeek[rank-1], strconv.Itoa(period), subject, teacher} {
-			cell, _ := excelize.CoordinatesToCellName(col+1, rowIndex)
-			f.SetCellStr(sheet, cell, v)
-		}
-		rowIndex++
+		grid = append(grid, g)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
-		respondInternalError(w, "Database error", "AdminScheduleExportHandler: rows iteration failed", err)
+		respondInternalError(w, "Database error", "AdminScheduleExportHandler: rows iteration failed", err, "grade", grade, "section", section)
+		return
+	}
+	if len(grid) == 0 {
+		respondError(w, http.StatusNotFound, "No class has this grade and section: no active student and no schedule")
 		return
 	}
 
-	respondXLSX(w, f, fmt.Sprintf("schedule_%s.xlsx", tz.Today()), "AdminScheduleExportHandler")
+	schoolName, err := app.readSchoolName(r.Context(), "AdminScheduleExportHandler")
+	if err != nil {
+		respondInternalError(w, "Database error", "AdminScheduleExportHandler: school name query failed", err, "grade", grade, "section", section)
+		return
+	}
+
+	f, sheet := newReportWorkbook(schoolName, fmt.Sprintf("الجدول الأسبوعي - %s %s", grade, section), scheduleHeaders())
+	defer f.Close()
+	for i, g := range grid {
+		for col, v := range []string{grade, section, schoolWeek[g.rank-1], strconv.Itoa(g.period), g.subject, g.teacher} {
+			cell, _ := excelize.CoordinatesToCellName(col+1, reportFirstDataRow+i)
+			f.SetCellStr(sheet, cell, v)
+		}
+	}
+
+	respondXLSX(w, f, scheduleFileDisposition(grade, section, tz.Today()), "AdminScheduleExportHandler", "grade", grade, "section", section)
 }
 
 // ScheduleImportError is one problem in an uploaded schedule workbook: the worksheet, the Excel
@@ -241,8 +256,9 @@ type scheduleImport struct {
 const notAWorkbook = "file must be an Excel workbook (.xlsx)"
 
 // readScheduleWorkbook parses and validates an uploaded workbook. A non-empty message is a
-// problem with the file as a whole; otherwise problems lists every problem in its rows.
-func readScheduleWorkbook(data []byte) (imp *scheduleImport, message string) {
+// problem with the file as a whole; otherwise problems lists every problem in its rows. When only
+// is set, every row must belong to that class and the file must have at least one.
+func readScheduleWorkbook(data []byte, only *scheduleClassKey) (imp *scheduleImport, message string) {
 	if len(data) == 0 {
 		return nil, "file is empty"
 	}
@@ -308,6 +324,14 @@ func readScheduleWorkbook(data []byte) (imp *scheduleImport, message string) {
 	numbers := map[dayKey][]int{}
 	var classOrder []scheduleClassKey
 	for _, r := range valid {
+		if only != nil && r.class != *only {
+			column := colGrade
+			if r.class.grade == only.grade {
+				column = colSection
+			}
+			problem(r.sheetIndex, r.row, column, fmt.Sprintf("this file is for grade %s, section %s only", only.grade, only.section))
+			continue
+		}
 		if _, ok := imp.classes[r.class]; !ok {
 			classOrder = append(classOrder, r.class)
 			imp.classes[r.class] = nil
@@ -324,6 +348,9 @@ func readScheduleWorkbook(data []byte) (imp *scheduleImport, message string) {
 		}
 		numbers[dk] = append(numbers[dk], r.period.PeriodNumber)
 		imp.classes[r.class] = append(imp.classes[r.class], r.period)
+	}
+	if only != nil && len(classOrder) == 0 && len(imp.problems) == 0 {
+		return nil, fmt.Sprintf("The file has no rows for grade %s, section %s", only.grade, only.section)
 	}
 	if len(classOrder) > MaxScheduleImportClasses {
 		return nil, fmt.Sprintf("The file has %d classes; at most %d can be imported at once", len(classOrder), MaxScheduleImportClasses)
@@ -550,14 +577,45 @@ func validScheduleRow(r rawScheduleRow, problem func(row, column int, msg string
 	return p, ok
 }
 
-var scheduleImportPartLimits = map[string]int64{"file": MaxScheduleFileBytes, "dry_run": 16}
+var scheduleImportPartLimits = map[string]int64{"file": MaxScheduleFileBytes, "dry_run": 16, "grade": maxScheduleClassPartBytes, "section": maxScheduleClassPartBytes}
 
 func scheduleImportOverLimit(name string) *formError {
-	if name == "file" {
+	switch name {
+	case "file":
 		return &formError{status: http.StatusRequestEntityTooLarge, msg: fmt.Sprintf("file must be at most 2 MiB (%d bytes)", MaxScheduleFileBytes),
 			warn: "Request body too large", warnLimit: MaxScheduleFileBytes}
+	case "grade", "section":
+		return &formError{status: http.StatusBadRequest, msg: name + " must be at most 50 characters"}
 	}
 	return &formError{status: http.StatusBadRequest, msg: `dry_run must be "true" or "false"`}
+}
+
+// importClassGuard returns the class the grade and section parts name, nil when neither is sent,
+// or a problem.
+func importClassGuard(raw map[string][]byte) (*scheduleClassKey, string) {
+	grade, hasGrade := raw["grade"]
+	section, hasSection := raw["section"]
+	switch {
+	case !hasGrade && !hasSection:
+		return nil, ""
+	case !hasSection:
+		return nil, "section is required when grade is sent"
+	case !hasGrade:
+		return nil, "grade is required when section is sent"
+	}
+	for _, part := range []struct {
+		name  string
+		value []byte
+	}{{"grade", grade}, {"section", section}} {
+		if !utf8.Valid(part.value) || bytes.ContainsRune(part.value, 0) {
+			return nil, part.name + " must be text"
+		}
+	}
+	k := scheduleClassKey{strings.TrimSpace(string(grade)), strings.TrimSpace(string(section))}
+	if msg := scheduleClassProblem(k.grade, k.section); msg != "" {
+		return nil, msg
+	}
+	return &k, ""
 }
 
 // capImportErrors keeps the first MaxScheduleImportErrors problems and adds one saying how many
@@ -594,7 +652,13 @@ func (app *AppEnv) AdminScheduleImportHandler(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	imp, msg := readScheduleWorkbook(file)
+	only, msg := importClassGuard(raw)
+	if msg != "" {
+		respondError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	imp, msg := readScheduleWorkbook(file, only)
 	if msg != "" {
 		respondError(w, http.StatusBadRequest, msg)
 		return

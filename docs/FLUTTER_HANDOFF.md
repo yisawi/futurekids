@@ -360,8 +360,9 @@ children goes to all of them, including children the school adds later.
 
 ### Weekly schedule
 
-Every class (a grade and section pair) has its own weekly schedule. There are two ways to edit
-it: one class at a time on a screen, or the whole school in Excel.
+Every class (a grade and section pair) has its own weekly schedule. The dashboard lists the
+classes, and each class is edited on its own: on a screen, or through an Excel file that holds
+that one class.
 
 **The 5-or-6 rule (since API 1.13.0).** A day that has periods has **exactly 5 or 6**, numbered
 **1 to 5 or 1 to 6**: no gaps, no repeats, nothing above 6. A day can be left out entirely (no
@@ -424,31 +425,42 @@ filled; check the rule before saving and point at the day.
   English day name). They stay readable everywhere, unchanged, until the class is saved again;
   then the new save must follow the rule. Show such a class as it is and let the admin fix it.
 
-**Excel flow (the whole school):**
+**Excel flow (one class per file).** Show each class from `GET /api/admin/schedule/classes`
+(for example "G1 / A") with three buttons. Send `grade` and `section` **exactly as the classes
+endpoint returns them** (they're case-sensitive and stored as written):
 
-1. **Download** `GET /api/admin/schedule/export` with the `Authorization` header and save the
-   response bytes as a file (it's a binary `.xlsx`, not JSON; the name is in
-   `Content-Disposition`, `schedule_<date>.xlsx`). Optional `grade` and/or `section` narrow it to
-   matching classes (exact match; present but blank is 400).
-2. **The file:** right-to-left, the ministry line, school name and a title in rows 1 to 3, the
-   column headers in row 5, the data from row 6. It's a **full grid**: for every known class, one
-   row per day (Sunday to Thursday) and period (1 to 6), 30 rows per class, with the stored
-   subject and teacher or blank cells. Every cell is text. With no class at all you get only the
-   headers: a blank template.
-3. The admin **edits it** in Excel, LibreOffice or Numbers and saves it as `.xlsx`.
-4. **Upload** it as `multipart/form-data` to `POST /api/admin/schedule/import`, part `file`. **Always
-   send `dry_run=true` first**, show the result, and only after the admin confirms send the same
-   file again without `dry_run` (or with `dry_run=false`).
-   - **200:** `classes` (each with `periods` and `matched_students`), `total_periods` and
-     `warnings`. Show every warning: a class no active student has is saved, but no parent sees
-     it.
-   - **400 with `errors`:** a list of problems, each with `sheet`, `row` (the row number Excel
-     shows), `column` (the standard Arabic header name) and `message`. Show them as a table so
-     the admin can fix the file. At most 50 are listed, then one item with only a `message` such
-     as `and 12 more problems`. Nothing was saved.
-   - **400 without `errors`:** the file as a whole is wrong (not an `.xlsx`, empty, no header row,
-     more than 2000 filled rows or 100 classes) or the request is wrong. Show `message`.
-   - **413:** the file is over 2 MiB.
+- **Export:** `GET /api/admin/schedule/export?grade=G1&section=A` with the `Authorization`
+  header. Save the response bytes as a file (a binary `.xlsx`, not JSON). Take the file name from
+  `Content-Disposition` (`schedule_<grade>_<section>_<date>.xlsx`; an Arabic name comes only as
+  `filename*=utf-8''…`, so use a parser that decodes it) or build the same name locally.
+  - The file holds that class only: right-to-left, the ministry line, school name and the title
+    with the class in rows 1 to 3, the column headers in row 5, and 30 rows from row 6 (Sunday to
+    Thursday × periods 1 to 6) with the stored subject and teacher or blank cells. Every cell is
+    text.
+  - A class with students but no schedule downloads as a **blank template** to fill in.
+  - 400 when `grade` or `section` is missing, blank or over 50 characters; **404** when no active
+    student and no stored period has this class (refresh the class list).
+- **Import:** let the admin pick an `.xlsx` and upload it as `multipart/form-data` to
+  `POST /api/admin/schedule/import` with parts `file`, **`grade` and `section`** (the class of the
+  button), and **`dry_run=true` first**. Show the result, and only after the admin confirms send
+  the same file again without `dry_run` (or with `dry_run=false`).
+  - **200:** `classes` has one item (`periods`, `matched_students`), plus `total_periods` and
+    `warnings`. Show every warning: a class no active student has is saved, but no parent sees
+    it.
+  - **400 with `errors`:** a list of problems, each with `sheet`, `row` (the row number Excel
+    shows), `column` (the standard Arabic header name) and `message`. Show them as a table so the
+    admin can fix the file. **A file that contains a row of another class is rejected**: that row
+    is listed (`this file is for grade G1, section A only`). At most 50 problems are listed, then
+    one item with only a `message` such as `and 12 more problems`. Nothing was saved.
+  - **400 without `errors`:** the file or request as a whole is wrong: not an `.xlsx`, empty, no
+    header row, no filled row of this class (`The file has no rows for grade G1, section A`), only
+    one of `grade`/`section`, or too many rows. Show `message`.
+  - **413:** the file is over 2 MiB.
+- **Clear:** `PUT /api/admin/schedule` with `"periods": []`, after a confirmation dialog. Importing
+  can't clear a class (a file whose rows are all blank is refused).
+
+Without the `grade` and `section` parts the import still accepts a file with several classes and
+replaces each of them; the dashboard's per-class Import should always send them.
 
 **Columns** (found by header name, in any order; extra columns are ignored; the header row must
 be one of the first 10 rows, and title rows above it are fine):
@@ -467,12 +479,11 @@ be one of the first 10 rows, and title rows above it are fine):
 - **Blank rows are ignored:** a row whose subject and teacher are both empty doesn't count, so
   the empty grid rows of the export are fine. Leave a sixth period empty for a 5-period day, and
   all six empty for a day without lessons.
-- **A class in the file is fully replaced**, exactly as with `PUT`, including days that have no
-  filled row in the file. **Classes not in the file are untouched.** A class whose rows are all
-  blank isn't in the file; to clear a class, use `PUT` with `"periods": []`.
+- **The class is fully replaced**, exactly as with `PUT`, including days that have no filled row
+  in the file. Other classes are untouched. To clear a class, use `PUT` with `"periods": []`.
 - **All or nothing:** any problem anywhere saves nothing.
-- Every worksheet with the header row is read (others, such as notes, are ignored), so one sheet
-  per grade works. A day and period may appear once per class across all sheets.
+- Every worksheet with the header row is read (others, such as notes, are ignored). A day and
+  period may appear once across all sheets.
 - Grade and section are kept exactly as written (only surrounding spaces are removed), so `G3` and
   `g3` are different classes. Don't merge cells in the table: a merged cell is read as blank in
   every row but the first.
@@ -547,7 +558,12 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.13.0 (this release):**
+**In API 1.13.1 (this release):** the schedule Excel export is one class per file
+(`grade` and `section` are required; 404 for an unknown class), and the import takes optional
+`grade` and `section` parts that restrict the file to that class. Breaking only for a client
+that called the export without them.
+
+**In API 1.13.0:**
 
 - **Breaking for a dashboard that saves other period counts:** `PUT /api/admin/schedule` accepts
   only days with exactly 5 or 6 periods numbered from 1 (`period_number` 1 to 6, at most 30
