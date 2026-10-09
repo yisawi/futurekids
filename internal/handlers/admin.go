@@ -612,7 +612,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 			st.last_check AS check_out_time
 		FROM students s
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
-		WHERE s.is_active = true
+		WHERE s.is_active = true AND ` + fmt.Sprintf(studentExistedOnSQL, "$1::DATE") + `
 		ORDER BY st.status DESC, s.full_name ASC, s.id ASC
 	`
 
@@ -686,7 +686,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		FROM students s
 		LEFT JOIN parents p ON s.parent_id = p.id
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
-		WHERE s.is_active = true
+		WHERE s.is_active = true AND ` + fmt.Sprintf(studentExistedOnSQL, "$1::DATE") + `
 		ORDER BY st.status DESC, s.full_name ASC
 	`
 

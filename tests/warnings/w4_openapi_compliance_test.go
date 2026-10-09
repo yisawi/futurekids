@@ -27,8 +27,8 @@ func TestW4OpenAPICompliance(t *testing.T) {
 
 	seed := []string{
 		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W4 Parent', '` + w4ParentPhone + `', 'unused')`,
-		`INSERT INTO students (id, full_name, rfid_tag, parent_id, grade, section) VALUES (1, 'W4 Present', 'W4-RFID-1', 1, 'G1', 'A')`,
-		`INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (2, 'W4 Absent', 'W4-RFID-2', 1)`,
+		`INSERT INTO students (id, full_name, rfid_tag, parent_id, grade, section, created_at) VALUES (1, 'W4 Present', 'W4-RFID-1', 1, 'G1', 'A', '2000-01-01 08:00')`,
+		`INSERT INTO students (id, full_name, rfid_tag, parent_id, created_at) VALUES (2, 'W4 Absent', 'W4-RFID-2', 1, '2000-01-01 08:00')`,
 		`INSERT INTO devices (serial_number, location_name, is_active) VALUES ('W4-DEVICE', 'Gate', true)`,
 		`INSERT INTO attendance_logs (student_id, device_sn, check_time) VALUES (1, 'W4-DEVICE', '` + today + ` 07:15:00')`,
 	}

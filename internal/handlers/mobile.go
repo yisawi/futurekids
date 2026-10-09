@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"future_kids/internal/auth"
 	"future_kids/internal/notify"
 	"future_kids/internal/phone"
@@ -206,7 +207,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	now := tz.Now()
+	now := Clock()
 	today := now.Format("2006-01-02")
 	monthParam, ok := requestedMonth(w, r, now)
 	if !ok {
@@ -234,11 +235,13 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 		CROSS JOIN valid_days vd
 		CROSS JOIN LATERAL get_student_status(s.id, vd.m_date) st
 		WHERE s.parent_id = $2 AND s.is_active = true
+		  AND ` + fmt.Sprintf(studentExistedOnSQL, "vd.m_date") + `
+		  AND NOT ($4::boolean AND vd.m_date = $3::DATE AND st.status = 'Absent')
 		GROUP BY s.id, s.full_name
 		ORDER BY s.id ASC
 	`
 
-	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID, today)
+	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID, today, beforeCheckInWindowEnd(now))
 	if err != nil {
 		respondInternalError(w, "Database error", "MobileAttendanceSummaryHandler: query failed", err, "parent_id", parentID, "month", monthParam)
 		return
@@ -283,7 +286,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	now := tz.Now()
+	now := Clock()
 	today := now.Format("2006-01-02")
 	monthParam, ok := requestedMonth(w, r, now)
 	if !ok {
@@ -312,10 +315,12 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		WHERE s.parent_id = $2 AND s.is_active = true
 		  AND md.m_date <= $3::DATE
 		  AND EXTRACT(DOW FROM md.m_date) NOT IN (5, 6)
+		  AND ` + fmt.Sprintf(studentExistedOnSQL, "md.m_date") + `
+		  AND NOT ($4::boolean AND md.m_date = $3::DATE AND st.status = 'Absent')
 		ORDER BY s.id, md.m_date DESC
 	`
 
-	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID, today)
+	rows, err := app.DB.QueryContext(r.Context(), query, monthParam, parentID, today, beforeCheckInWindowEnd(now))
 	if err != nil {
 		respondInternalError(w, "Database error", "MobileMonthlyAttendanceHandler: query failed", err, "parent_id", parentID, "month", monthParam)
 		return

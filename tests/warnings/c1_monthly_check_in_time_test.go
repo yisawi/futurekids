@@ -33,7 +33,7 @@ func c1Setup(t *testing.T) (*handlers.AppEnv, string, string) {
 	for _, q := range []string{
 		`INSERT INTO devices (serial_number, location_name, is_active) VALUES ('C1-DEV', 'Gate', true)`,
 		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (9101, 'C1 Parent', '` + c1Phone + `', 'x')`,
-		`INSERT INTO students (id, full_name, rfid_tag, parent_id, grade, section) VALUES (9101, 'C1 Child One', 'C1-1', 9101, 'G1', 'A'), (9102, 'C1 Child Two', 'C1-2', 9101, 'G1', 'A')`,
+		`INSERT INTO students (id, full_name, rfid_tag, parent_id, grade, section, created_at) VALUES (9101, 'C1 Child One', 'C1-1', 9101, 'G1', 'A', '2026-01-01 08:00'), (9102, 'C1 Child Two', 'C1-2', 9101, 'G1', 'A', '2026-01-01 08:00')`,
 		`INSERT INTO attendance_logs (student_id, device_sn, check_time) VALUES (9101, 'C1-DEV', '2026-03-01 07:15:00'), (9101, 'C1-DEV', '2026-03-01 12:30:00'), (9101, 'C1-DEV', '2026-03-02 12:30:00')`,
 		`INSERT INTO student_leaves (student_id, leave_date, notes) VALUES (9101, '2026-03-03', 'C1 leave')`,
 	} {

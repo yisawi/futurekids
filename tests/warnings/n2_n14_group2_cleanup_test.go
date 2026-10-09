@@ -193,7 +193,7 @@ func TestGroup2Cleanup(t *testing.T) {
 	exec_(t,
 		`INSERT INTO devices (serial_number, location_name, is_active) VALUES ('G2-DEV', 'Gate', true)`,
 		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (901, 'G2 Parent', '+9647000000901', 'h')`,
-		`INSERT INTO students (id, full_name, rfid_tag, parent_id, grade, section) VALUES (901, 'G2 Kid', 'G2-TAG-1', 901, 'G1', 'A'), (902, 'G2 Orphan', 'G2-TAG-2', NULL, NULL, NULL)`,
+		`INSERT INTO students (id, full_name, rfid_tag, parent_id, grade, section, created_at) VALUES (901, 'G2 Kid', 'G2-TAG-1', 901, 'G1', 'A', '2026-01-01 08:00'), (902, 'G2 Orphan', 'G2-TAG-2', NULL, NULL, NULL, '2026-01-01 08:00')`,
 	)
 
 	t.Run("N4/attendance_logs.status is gone and punches still store", func(t *testing.T) {

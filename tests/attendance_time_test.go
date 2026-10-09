@@ -20,8 +20,8 @@ func TestAttendanceTimeWindows(t *testing.T) {
 	// 2. Setup mock data
 	var studentID int
 	err := db.QueryRow(`
-		INSERT INTO students (full_name, rfid_tag, is_active)
-		VALUES ('Time Window Kid', 'RFID-TIME', true)
+		INSERT INTO students (full_name, rfid_tag, is_active, created_at)
+		VALUES ('Time Window Kid', 'RFID-TIME', true, '2026-01-01 08:00')
 		RETURNING id
 	`).Scan(&studentID)
 	if err != nil {

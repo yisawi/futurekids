@@ -36,7 +36,7 @@ func TestW2TimezoneConsistency(t *testing.T) {
 
 	seed := []string{
 		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W2 Parent', '` + w2ParentPhone + `', 'unused')`,
-		`INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (1, 'W2 Student', 'W2-RFID-1', 1)`,
+		`INSERT INTO students (id, full_name, rfid_tag, parent_id, created_at) VALUES (1, 'W2 Student', 'W2-RFID-1', 1, '2000-01-01 08:00')`,
 		`INSERT INTO devices (serial_number, location_name, is_active) VALUES ('W2-DEVICE', 'Gate', true)`,
 		// Device wall-clock punches (Baghdad local time), as ZKTeco sends them.
 		`INSERT INTO attendance_logs (student_id, device_sn, check_time) VALUES
@@ -134,6 +134,12 @@ func TestW2TimezoneConsistency(t *testing.T) {
 		}
 	})
 
+	restoreClock := handlers.Clock
+	t.Cleanup(func() { handlers.Clock = restoreClock })
+	handlers.Clock = func() time.Time {
+		n := time.Now().In(baghdad)
+		return time.Date(n.Year(), n.Month(), n.Day(), 12, 0, 0, 0, baghdad)
+	}
 	expectedDays := schoolDaysUpToToday(time.Now().In(baghdad))
 
 	for _, zone := range []string{"Etc/GMT+12", "Pacific/Kiritimati"} {

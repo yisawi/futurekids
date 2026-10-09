@@ -423,6 +423,9 @@ func (r *runner) scenario() {
 	idC, _ := create("second child", map[string]any{"name": "Maryam Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9003", "grade": "G1", "section": "B"})
 	idD, _ := create("other parent", map[string]any{"name": "Hadi Example", "parent_name": "Layla Example", "parent_phone": phone2, "parent_pin": "593047", "rfid_tag": "9004", "grade": "G3", "section": "A"})
 	idE, _ := create("to deactivate", map[string]any{"name": "Temp Example", "parent_name": "Nour Example", "parent_phone": phone3, "parent_pin": "604158", "rfid_tag": "9005"})
+	if _, err := r.db.Exec(`UPDATE students SET created_at = '2026-01-01 08:00' WHERE id IN ($1, $2, $3)`, idA, idB, idC); err != nil {
+		t.Fatal(err)
+	}
 	r.call("POST /api/admin/students", "missing name", "", admin, map[string]any{"parent_name": "Omar Example", "parent_phone": phone1}, 400)
 	r.call("POST /api/admin/students", "blank parent_phone", "", admin, map[string]any{"name": "Blank Example", "parent_name": "Omar Example", "parent_phone": "   "}, 400)
 	_, d = r.call("POST /api/admin/students", "parent_phone not an Iraqi mobile number", "", admin, map[string]any{"name": "Bad Example", "parent_name": "Omar Example", "parent_phone": "+15551234567"}, 400)
@@ -717,6 +720,13 @@ func (r *runner) scenario() {
 	days := schoolDays(now)
 	todayIsSchoolDay := len(days) > 0 && days[0] == today
 	children := []int{idA, idB, idC}
+	hideAbsentToday := todayIsSchoolDay && now.Before(time.Date(now.Year(), now.Month(), now.Day(), 9, 31, 0, 0, now.Location()))
+	daysOf := func(id int) []string {
+		if id == idB && hideAbsentToday {
+			return days[1:]
+		}
+		return days
+	}
 	for _, q := range []string{"", "?month=" + month} {
 		_, d = r.call("GET /api/mobile/attendance/summary", "current month "+q, q, parent, nil, 200)
 		r.expect("summary month", at(d, "month"), month)
@@ -728,7 +738,7 @@ func (r *runner) scenario() {
 			for i, row := range rows {
 				got = append(got, toInt(at(row, "student_id")))
 				sum := toInt(at(row, "total_present")) + toInt(at(row, "total_excused")) + toInt(at(row, "total_absent"))
-				r.expect(fmt.Sprintf("summary[%d] counts every school day", i), sum, len(days))
+				r.expect(fmt.Sprintf("summary[%d] counts every school day, without an Absent today before 09:31", i), sum, len(daysOf(toInt(at(row, "student_id")))))
 			}
 			r.expect("summary children by ascending id", got, children)
 			if todayIsSchoolDay {
@@ -754,12 +764,31 @@ func (r *runner) scenario() {
 					t.Errorf("monthly record %v still has the old check_time key", at(rec, "date"))
 				}
 			}
-			r.expect(fmt.Sprintf("student %v: school days newest first", at(rep, "student_id")), dates, days)
+			r.expect(fmt.Sprintf("student %v: school days newest first, without an Absent today before 09:31", at(rep, "student_id")), dates, daysOf(toInt(at(rep, "student_id"))))
 		}
 		r.expect("monthly children by ascending id", got, children)
 		if todayIsSchoolDay {
 			r.expect("monthly today", []any{at(reports, 0, "records", 0, "status"), at(reports, 0, "records", 0, "check_in_time"), at(reports, 0, "records", 0, "check_out_time")}, []any{"Present", "07:15 AM", "12:30 PM"})
 		}
+	}
+	_, d = r.call("POST /api/mobile/login", "parent of a child created today", "", "", map[string]string{"phone": phone2, "pin": "593047"}, 200)
+	parentD := str(at(d, "data", "token"))
+	previousMonth := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, now.Location()).Format("2006-01")
+	for _, op := range []string{"GET /api/mobile/attendance/summary", "GET /api/mobile/attendance/monthly"} {
+		_, d = r.call(op, "child created today, previous month", "?month="+previousMonth, parentD, nil, 200)
+		r.expect(op+": a month before the child existed has no rows", len(list(at(d, "data"))), 0)
+	}
+	_, d = r.call("GET /api/mobile/attendance/monthly", "child created today, current month", "", parentD, nil, 200)
+	var createdToday []string
+	for _, rep := range list(at(d, "data")) {
+		for _, rec := range list(at(rep, "records")) {
+			createdToday = append(createdToday, str(at(rec, "date")))
+		}
+	}
+	if todayIsSchoolDay {
+		r.expect("a child created today has only today", createdToday, []string{today})
+	} else {
+		r.expect("a child created today has no school day yet", len(createdToday), 0)
 	}
 	for _, op := range []string{"GET /api/mobile/attendance/summary", "GET /api/mobile/attendance/monthly"} {
 		_, d = r.call(op, "future month", "?month=2099-01", parent, nil, 200)
@@ -920,6 +949,15 @@ func (r *runner) scenario() {
 		}
 		r.expect("Present, Excused, Absent, then by name", ids, []int{idD, idA, idC, idB})
 	}
+	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
+	_, d = r.call("GET /api/admin/attendance", "a day before a student was created", "?date="+yesterday, admin, nil, 200)
+	ids = nil
+	for _, rec := range list(at(d, "data")) {
+		ids = append(ids, toInt(at(rec, "student_id")))
+	}
+	sort.Ints(ids)
+	r.expect("yesterday's report leaves out the student created today", ids, []int{idA, idB, idC})
+	r.call("GET /api/admin/export/excel", "a day before a student was created", "?date="+yesterday, admin, nil, 200)
 	for _, bad := range []string{"2026-02-30", "21-09-2026", "today", "0000-01-01", "1999-12-31", "2101-01-01"} {
 		r.call("GET /api/admin/attendance", "invalid date "+bad, "?date="+bad, admin, nil, 400)
 		r.call("GET /api/admin/export/excel", "invalid date "+bad, "?date="+bad, admin, nil, 400)

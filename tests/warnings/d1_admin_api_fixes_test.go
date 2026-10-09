@@ -400,7 +400,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 	})
 
 	t.Run("D7/the admin daily report breaks name ties by student id", func(t *testing.T) {
-		if _, err := db.Exec(`INSERT INTO students (id, full_name, rfid_tag) VALUES (9712, 'D7 Same Name', 'D7-12'), (9711, 'D7 Same Name', 'D7-11')`); err != nil {
+		if _, err := db.Exec(`INSERT INTO students (id, full_name, rfid_tag, created_at) VALUES (9712, 'D7 Same Name', 'D7-12', '2026-01-01 08:00'), (9711, 'D7 Same Name', 'D7-11', '2026-01-01 08:00')`); err != nil {
 			t.Fatal(err)
 		}
 		rec := serve(t, app.AdminMiddleware(app.AdminDailyAttendanceHandler), "GET", "/api/admin/attendance?date=2026-03-04", admin, "")

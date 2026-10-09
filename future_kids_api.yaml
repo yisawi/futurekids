@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.10.0"
+  version: "1.11.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -2179,9 +2179,17 @@ paths:
       summary: Monthly attendance totals per child
       description: |
         Present, Excused and Absent counts per active child over the month's school days
-        (Sunday–Thursday) up to today. Children by ascending id. A month with no school day up
-        to today (a future month, or the first days of a month that fall on Friday and
-        Saturday) returns an empty `data` array, not zero counts.
+        (Sunday–Thursday) up to today. Children by ascending id.
+        - **A child is counted from the day it was added** (its creation date in Asia/Baghdad,
+          inclusive). Earlier days are not counted at all, even if punches or leaves exist for
+          them.
+        - **Today before 09:31 Asia/Baghdad** (while the check-in window is open), today is not
+          counted when its status is `Absent`, because the child may simply not have arrived
+          yet. A `Present` or `Excused` today is counted. From 09:31:00 today counts normally.
+        - A child with no counted day in the month (added after the month, or a month with no
+          school day up to today) is left out. When no child has a counted day (a future month,
+          or the first days of a month that fall on Friday and Saturday), `data` is an empty
+          array, not zero counts.
       security:
         - ParentJWT: []
       parameters:
@@ -2211,8 +2219,16 @@ paths:
       summary: Day-by-day attendance per child for a month
       description: |
         One record per school day (Sunday–Thursday) of the month up to today, newest first,
-        grouped by child in ascending id. A month with no school day up to today returns an
-        empty `data` array.
+        grouped by child in ascending id.
+        - **A child's records start on the day it was added** (its creation date in
+          Asia/Baghdad, inclusive), so a month may start after its first school day. Earlier
+          days have no record, even if punches or leaves exist for them.
+        - **Today before 09:31 Asia/Baghdad** (while the check-in window is open), today's record
+          is left out when its status is `Absent`, because the child may simply not have arrived
+          yet. A `Present` or `Excused` today is included. From 09:31:00 it is included normally.
+        - A child with no record in the month is left out. When no child has a record (a future
+          month, a month before the children were added, or a month with no school day up to
+          today), `data` is an empty array.
       security:
         - ParentJWT: []
       parameters:
@@ -2805,8 +2821,11 @@ paths:
       operationId: getDailyAttendance
       summary: Daily attendance report
       description: |
-        Every active student for the day, ordered Present, then Excused, then Absent, by name
-        within each status, and by `student_id` for equal names.
+        Every active student that existed on the day (added on or before it, by creation date
+        in Asia/Baghdad), ordered Present, then Excused, then Absent, by name within each status,
+        and by `student_id` for equal names. A student added after the day is not listed. For
+        today, a student without a punch is `Absent` even before the check-in window closes at
+        09:31; show it as "not arrived yet" until then.
       security:
         - AdminJWT: []
       parameters:
@@ -2836,8 +2855,10 @@ paths:
       summary: Daily attendance as an Excel file
       description: |
         A right-to-left `.xlsx` report (Arabic headers) with student, parent, status and
-        check-in/check-out times for every active student, including students without a
-        linked parent. The header shows the `school_name` setting.
+        check-in/check-out times for every active student that existed on the day (added on or
+        before it, by creation date in Asia/Baghdad), including students without a linked
+        parent. A student added after the day is not listed. The header shows the `school_name`
+        setting.
       security:
         - AdminJWT: []
       parameters:

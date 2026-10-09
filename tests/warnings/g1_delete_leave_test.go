@@ -31,6 +31,9 @@ func TestG1DeleteLeave(t *testing.T) {
 		return int(r.json(t)["data"].(map[string]any)["id"].(float64))
 	}
 	sara, ali := student("Sara Example"), student("Ali Example")
+	if _, err := db.Exec(`UPDATE students SET created_at = '2026-09-01 08:00' WHERE id IN ($1, $2)`, sara, ali); err != nil {
+		t.Fatal(err)
+	}
 	for _, l := range []struct {
 		id   int
 		date string

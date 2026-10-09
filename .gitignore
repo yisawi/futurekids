@@ -22,3 +22,4 @@ REPORT.md
 db/scripts/rotate_admin_password*.with_password.sql
 AUDIT_REPORT.md*.sql.bak
 staging_before_*.sql
+/flutter/

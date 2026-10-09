@@ -115,6 +115,18 @@ These strings are never null but may be `""`:
   - `Excused` means no punch and a leave recorded for the day.
   - `Absent` means neither. That includes a child who **hasn't arrived yet today** and a child who
     punched only outside the windows (for example at 10:00).
+- **"Not arrived yet" before 09:31:** for **today**, an `Absent` status before **09:31 Asia/Baghdad**
+  (while the check-in window is open) means the child hasn't arrived yet, not that they're absent.
+  Show "not arrived yet" wording on the parent's today screen (`GET /api/mobile/attendance/today`)
+  and in the admin daily report and dashboard. Compare against the current time in
+  **Asia/Baghdad** (UTC+03:00), never the phone's time zone. From 09:31:00 `Absent` means absent.
+  The monthly records and the summary already leave an `Absent` today out until then.
+- **A student's calendar starts on the day they were added.** Earlier days aren't returned or
+  counted: the monthly records may start after the 1st, the summary counts only days since then,
+  and a month entirely before that day leaves the child out (`"data": []` when no child has a
+  day). Draw the missing days like Friday and Saturday, as days without a record, not as absences.
+- **Past-date admin reports** (`GET /api/admin/attendance?date=` and the Excel export) list only
+  students who already existed on that date; students added later aren't listed.
 
 ## Lists and ordering
 
@@ -133,9 +145,10 @@ These strings are never null but may be `""`:
   entered earlier by other means may use other spellings (English, without hamza). It isn't an
   enum or a number. Group consecutive entries by `day_of_week` in the order received; don't sort
   or switch on English names.
-- **Summary and monthly with no school days:** for a month with no school day up to today (a
-  future month, or a month whose first days are Friday and Saturday), both return `"data": []`,
-  not zero counts.
+- **Summary and monthly with no counted day:** a child with no counted day in the month is left
+  out. For a month where no child has one (a future month, a month before the children were
+  added, or a month whose first days are Friday and Saturday), both return `"data": []`, not zero
+  counts.
 
 ## Banners in the parent app
 
@@ -401,7 +414,18 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.10.0 (this release):**
+**In API 1.11.0 (this release):**
+
+- **A student is counted from the day they were added.** The monthly records and summary no
+  longer contain or count days before that; a month entirely before it leaves the child out.
+  Past-date admin reports and Excel exports don't list students added after that date. Before,
+  every school day of the month counted as `Absent`.
+- **Today before 09:31 Asia/Baghdad:** the monthly records and summary leave out an `Absent`
+  today until the check-in window closes. The today screen, the admin report and the dashboard
+  are unchanged; show "not arrived yet" there (see Dates, times and time zone).
+- Response shapes are unchanged.
+
+**In API 1.10.0:**
 
 - **New:** `DELETE /api/admin/leaves?student_id=&date=` cancels a leave (always 200; see the
   admin dashboard notes). Nothing existing changed.
