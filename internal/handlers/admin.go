@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -677,11 +678,8 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var schoolName string
-	switch err := app.DB.QueryRowContext(r.Context(), `SELECT setting_value FROM settings WHERE setting_key = 'school_name'`).Scan(&schoolName); {
-	case err == sql.ErrNoRows:
-		slog.Warn("AdminExportExcelHandler: school_name setting is missing; the report header will be blank")
-	case err != nil:
+	schoolName, err := app.readSchoolName(r.Context(), "AdminExportExcelHandler")
+	if err != nil {
 		respondInternalError(w, "Database error", "AdminExportExcelHandler: school name query failed", err, "date", dateParam)
 		return
 	}
@@ -715,49 +713,12 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 	}
 	defer rows.Close()
 
-	f := excelize.NewFile()
+	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت الدخول", "وقت الخروج"}
+	f, sheet := newReportWorkbook(schoolName, fmt.Sprintf("تقرير الحضور والغياب اليومي الشامل - تاريخ: %s", dateParam), headers)
 	defer f.Close()
 
-	sheet := "Sheet1"
-
-	// 1. تحويل اتجاه الشيت من اليمين إلى اليسار (RTL)
-	rtlEnable := true
-	f.SetSheetView(sheet, 0, &excelize.ViewOptions{RightToLeft: &rtlEnable})
-
-	// 2. إعداد تنسيق العناوين (توسيط وخط عريض)
-	titleStyle, _ := f.NewStyle(&excelize.Style{
-		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
-		Font:      &excelize.Font{Bold: true, Size: 14},
-	})
-
-	// 3. كتابة الترويسة الرسمية ودمج الخلايا من العمود A إلى H
-	f.MergeCell(sheet, "A1", "I1")
-	f.SetCellValue(sheet, "A1", "وزارة التربية والتعليم")
-
-	f.MergeCell(sheet, "A2", "I2")
-	f.SetCellValue(sheet, "A2", schoolName)
-
-	f.MergeCell(sheet, "A3", "I3")
-	f.SetCellValue(sheet, "A3", fmt.Sprintf("تقرير الحضور والغياب اليومي الشامل - تاريخ: %s", dateParam))
-
-	// تطبيق التنسيق على الترويسة
-	f.SetCellStyle(sheet, "A1", "I3", titleStyle)
-
-	// 4. إعداد ترويسة أعمدة الجدول (في الصف الخامس لترك مسافة)
-	headerStyle, _ := f.NewStyle(&excelize.Style{
-		Font: &excelize.Font{Bold: true},
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
-	})
-
-	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت الدخول", "وقت الخروج"}
-	for i, header := range headers {
-		cell, _ := excelize.CoordinatesToCellName(i+1, 5)
-		f.SetCellValue(sheet, cell, header)
-	}
-	f.SetCellStyle(sheet, "A5", "I5", headerStyle)
-
-	// 5. تعبئة البيانات (ابتداءً من الصف السادس)
-	rowIndex := 6
+	// تعبئة البيانات (ابتداءً من الصف السادس)
+	rowIndex := reportFirstDataRow
 	for rows.Next() {
 		var id int
 		var studentName, grade, section, parentName, phone, status, checkIn, checkOut string
@@ -781,15 +742,86 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Write to buffer first so we can return a clean HTTP error if generation fails.
+	respondXLSX(w, f, fmt.Sprintf("attendance_%s.xlsx", dateParam), "AdminExportExcelHandler", "date", dateParam)
+}
+
+// XLSXContentType is the Content-Type of every Excel file the API returns.
+const XLSXContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+// Excel reports: three merged title rows, a blank row, the column headers on reportHeaderRow and
+// the data from reportFirstDataRow.
+const (
+	reportHeaderRow    = 5
+	reportFirstDataRow = 6
+)
+
+// readSchoolName returns the school_name setting, or "" (logged as WARN by op) when it is missing.
+func (app *AppEnv) readSchoolName(ctx context.Context, op string) (string, error) {
+	var schoolName string
+	switch err := app.DB.QueryRowContext(ctx, `SELECT setting_value FROM settings WHERE setting_key = 'school_name'`).Scan(&schoolName); {
+	case err == sql.ErrNoRows:
+		slog.Warn(op + ": school_name setting is missing; the report header will be blank")
+	case err != nil:
+		return "", err
+	}
+	return schoolName, nil
+}
+
+// newReportWorkbook returns a right-to-left workbook whose sheet has the ministry line, the school
+// name and title merged across the columns, and the bold grey column headers.
+func newReportWorkbook(schoolName, title string, headers []string) (*excelize.File, string) {
+	f := excelize.NewFile()
+	sheet := "Sheet1"
+
+	// 1. تحويل اتجاه الشيت من اليمين إلى اليسار (RTL)
+	rtlEnable := true
+	f.SetSheetView(sheet, 0, &excelize.ViewOptions{RightToLeft: &rtlEnable})
+
+	// 2. إعداد تنسيق العناوين (توسيط وخط عريض)
+	titleStyle, _ := f.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Font:      &excelize.Font{Bold: true, Size: 14},
+	})
+
+	// 3. كتابة الترويسة الرسمية ودمج الخلايا حتى آخر عمود
+	last, _ := excelize.ColumnNumberToName(len(headers))
+	f.MergeCell(sheet, "A1", last+"1")
+	f.SetCellValue(sheet, "A1", "وزارة التربية والتعليم")
+
+	f.MergeCell(sheet, "A2", last+"2")
+	f.SetCellValue(sheet, "A2", schoolName)
+
+	f.MergeCell(sheet, "A3", last+"3")
+	f.SetCellValue(sheet, "A3", title)
+
+	// تطبيق التنسيق على الترويسة
+	f.SetCellStyle(sheet, "A1", last+"3", titleStyle)
+
+	// 4. إعداد ترويسة أعمدة الجدول (في الصف الخامس لترك مسافة)
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
+	})
+
+	for i, header := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, reportHeaderRow)
+		f.SetCellValue(sheet, cell, header)
+	}
+	f.SetCellStyle(sheet, "A"+strconv.Itoa(reportHeaderRow), last+strconv.Itoa(reportHeaderRow), headerStyle)
+	return f, sheet
+}
+
+// respondXLSX writes the workbook as an attachment named filename. It is written to a buffer
+// first so a failure can still be answered with a clean 500.
+func respondXLSX(w http.ResponseWriter, f *excelize.File, filename, op string, attrs ...any) {
 	var buf bytes.Buffer
 	if err := f.Write(&buf); err != nil {
-		respondInternalError(w, "Failed to generate excel file", "AdminExportExcelHandler: excel write failed", err, "date", dateParam)
+		respondInternalError(w, "Failed to generate excel file", op+": excel write failed", err, attrs...)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=attendance_%s.xlsx", dateParam))
+	w.Header().Set("Content-Type", XLSXContentType)
+	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
 	w.Write(buf.Bytes())
 }
 
@@ -1009,11 +1041,37 @@ type ScheduleRequest struct {
 	Periods *[]SchedulePeriod `json:"periods"`
 }
 
-// A class has at most MaxPeriodNumber periods on each of the five school days.
+// A school day that has periods has exactly MinDayPeriods or MaxPeriodNumber of them, numbered
+// from 1 with no gaps, so a class has at most 5 × MaxPeriodNumber periods.
 const (
-	MaxPeriodNumber    = 12
+	MinDayPeriods      = 5
+	MaxPeriodNumber    = 6
 	MaxSchedulePeriods = 5 * MaxPeriodNumber
 )
+
+// schoolWeek lists the stored day names, Sunday to Thursday; index + 1 is weekdayRankSQL's rank.
+var schoolWeek = []string{"الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"}
+
+// dayPeriodsProblem returns "" when numbers are exactly 1 to 5 or 1 to 6 in any order, otherwise
+// "periods 1, 2, 3, 4" (sorted) for the error message.
+func dayPeriodsProblem(numbers []int) string {
+	sorted := append([]int(nil), numbers...)
+	sort.Ints(sorted)
+	valid := len(sorted) >= MinDayPeriods && len(sorted) <= MaxPeriodNumber
+	parts := make([]string, len(sorted))
+	for i, n := range sorted {
+		parts[i] = strconv.Itoa(n)
+		if n != i+1 {
+			valid = false
+		}
+	}
+	if valid {
+		return ""
+	}
+	return "periods " + strings.Join(parts, ", ")
+}
+
+const dayPeriodsRule = "a school day must have exactly 5 or 6 periods, numbered 1 to 5 or 1 to 6"
 
 // schoolDays maps a folded day name (see canonicalSchoolDay) to the form stored in
 // weekly_schedules. Friday and Saturday are not school days.
@@ -1092,6 +1150,21 @@ func validateScheduleRequest(req *ScheduleRequest) string {
 		}
 		seen[key] = true
 	}
+	first := map[string]int{}
+	numbers := map[string][]int{}
+	for i, p := range periods {
+		if _, ok := first[p.DayOfWeek]; !ok {
+			first[p.DayOfWeek] = i
+		}
+		numbers[p.DayOfWeek] = append(numbers[p.DayOfWeek], p.PeriodNumber)
+	}
+	for _, day := range schoolWeek {
+		if got, ok := numbers[day]; ok {
+			if problem := dayPeriodsProblem(got); problem != "" {
+				return fmt.Sprintf("periods[%d].day_of_week %s has %s; %s", first[day], day, problem, dayPeriodsRule)
+			}
+		}
+	}
 	return ""
 }
 
@@ -1123,8 +1196,39 @@ func readSchedule(ctx context.Context, q queryer, grade, section string) ([]Sche
 	return periods, rows.Err()
 }
 
+// ScheduleItem is a stored period as the admin API returns it, with its subject_key.
+type ScheduleItem struct {
+	SchedulePeriod
+	SubjectKey string `json:"subject_key"`
+}
+
 func respondSchedule(w http.ResponseWriter, grade, section string, periods []SchedulePeriod) {
-	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "grade": grade, "section": section, "data": periods})
+	items := make([]ScheduleItem, len(periods))
+	for i, p := range periods {
+		items[i] = ScheduleItem{SchedulePeriod: p, SubjectKey: SubjectKey(p.SubjectName)}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "grade": grade, "section": section, "data": items})
+}
+
+// lockSchedules serializes every schedule write (PUT and import) until the transaction ends.
+func lockSchedules(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `LOCK TABLE weekly_schedules IN SHARE ROW EXCLUSIVE MODE`)
+	return err
+}
+
+// replaceClassSchedule deletes every stored period of the class and inserts periods.
+func replaceClassSchedule(ctx context.Context, tx *sql.Tx, grade, section string, periods []SchedulePeriod) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM weekly_schedules WHERE grade = $1 AND section = $2`, grade, section); err != nil {
+		return err
+	}
+	for _, p := range periods {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO weekly_schedules (grade, section, day_of_week, period_number, subject_name, teacher_name)
+			VALUES ($1, $2, $3, $4, $5, $6)`, grade, section, p.DayOfWeek, p.PeriodNumber, p.SubjectName, p.TeacherName); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (app *AppEnv) AdminScheduleHandler(w http.ResponseWriter, r *http.Request) {
@@ -1159,18 +1263,11 @@ func (app *AppEnv) AdminScheduleHandler(w http.ResponseWriter, r *http.Request) 
 				return err
 			}
 			defer tx.Rollback()
-			if _, err := tx.ExecContext(r.Context(), `LOCK TABLE weekly_schedules IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+			if err := lockSchedules(r.Context(), tx); err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(r.Context(), `DELETE FROM weekly_schedules WHERE grade = $1 AND section = $2`, req.Grade, req.Section); err != nil {
+			if err := replaceClassSchedule(r.Context(), tx, req.Grade, req.Section, *req.Periods); err != nil {
 				return err
-			}
-			for _, p := range *req.Periods {
-				if _, err := tx.ExecContext(r.Context(), `
-					INSERT INTO weekly_schedules (grade, section, day_of_week, period_number, subject_name, teacher_name)
-					VALUES ($1, $2, $3, $4, $5, $6)`, req.Grade, req.Section, p.DayOfWeek, p.PeriodNumber, p.SubjectName, p.TeacherName); err != nil {
-					return err
-				}
 			}
 			if saved, err = readSchedule(r.Context(), tx, req.Grade, req.Section); err != nil {
 				return err

@@ -214,7 +214,7 @@ func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 		{"admin banner delete", "AdminBannersHandler:", "DELETE", "/api/admin/banners?id=1", "", admin(app.AdminBannersHandler), false},
 		{"admin banner image", "AdminBannersHandler:", "GET", "/api/admin/banners/image?id=1", "", admin(app.AdminBannerImageHandler), false},
 		{"mobile banner image", "MobileBannerImageHandler:", "GET", "/api/mobile/banners/image?id=1", "", app.MobileBannerImageHandler, false},
-		{"admin schedule save", "AdminScheduleHandler:", "PUT", "/api/admin/schedule", `{"grade":"G3","section":"A","periods":[{"day_of_week":"Sunday","period_number":1,"subject_name":"Mathematics"}]}`, admin(app.AdminScheduleHandler), false},
+		{"admin schedule save", "AdminScheduleHandler:", "PUT", "/api/admin/schedule", `{"grade":"G3","section":"A","periods":[{"day_of_week":"Sunday","period_number":1,"subject_name":"Mathematics"},{"day_of_week":"Sunday","period_number":2,"subject_name":"Mathematics"},{"day_of_week":"Sunday","period_number":3,"subject_name":"Mathematics"},{"day_of_week":"Sunday","period_number":4,"subject_name":"Mathematics"},{"day_of_week":"Sunday","period_number":5,"subject_name":"Mathematics"}]}`, admin(app.AdminScheduleHandler), false},
 		{"admin device create", "AdminDevicesHandler:", "POST", "/api/admin/devices", `{"serial_number":"SN1","location_name":"Gate","is_active":true}`, admin(app.AdminDevicesHandler), false},
 		{"admin device update", "AdminDevicesHandler:", "PUT", "/api/admin/devices", `{"serial_number":"SN1","location_name":"Gate","is_active":true}`, admin(app.AdminDevicesHandler), false},
 		{"admin device disable", "AdminDevicesHandler:", "DELETE", "/api/admin/devices?sn=SN1", "", admin(app.AdminDevicesHandler), false},

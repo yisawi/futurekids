@@ -84,101 +84,124 @@ func (f *bannerForm) empty() bool {
 	return f.image == nil && f.title == nil && f.actionLink == nil && f.isActive == nil
 }
 
-type bannerFormError struct {
-	status       int
-	msg          string
-	bodyTooLarge bool
+// formError is a rejected multipart/form-data request. bodyLimit is set when the whole body is
+// larger than its limit; warn, when set, is logged as WARN with warnLimit before answering.
+type formError struct {
+	status    int
+	msg       string
+	bodyLimit int64
+	warn      string
+	warnLimit int64
 }
 
-func (e *bannerFormError) respond(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case e.bodyTooLarge:
-		respondBodyTooLarge(w, r, MaxBannerBodyBytes)
-	case e.status == http.StatusRequestEntityTooLarge:
-		slog.Warn("Banner image too large", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "limit_bytes", MaxBannerImageBytes)
-		respondError(w, e.status, e.msg)
-	default:
-		respondError(w, e.status, e.msg)
+func (e *formError) respond(w http.ResponseWriter, r *http.Request) {
+	if e.bodyLimit > 0 {
+		respondBodyTooLarge(w, r, e.bodyLimit)
+		return
 	}
+	if e.warn != "" {
+		slog.Warn(e.warn, "path", r.URL.Path, "remote_addr", r.RemoteAddr, "limit_bytes", e.warnLimit)
+	}
+	respondError(w, e.status, e.msg)
 }
 
-func bannerPartError(err error) *bannerFormError {
+func formPartError(err error, bodyLimit int64) *formError {
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
-		return &bannerFormError{status: http.StatusRequestEntityTooLarge, bodyTooLarge: true}
+		return &formError{status: http.StatusRequestEntityTooLarge, bodyLimit: bodyLimit}
 	}
-	return &bannerFormError{status: http.StatusBadRequest, msg: "Invalid multipart body"}
+	return &formError{status: http.StatusBadRequest, msg: "Invalid multipart body"}
 }
 
-// readBannerForm streams a multipart/form-data body of at most MaxBannerBodyBytes and
-// validates its parts. The picture type is detected from its bytes; the file name and the
-// part's declared Content-Type are ignored. Unknown parts are discarded.
-func readBannerForm(w http.ResponseWriter, r *http.Request) (*bannerForm, *bannerFormError) {
-	r.Body = http.MaxBytesReader(w, r.Body, MaxBannerBodyBytes)
-	form, ferr := parseBannerParts(r)
-	if ferr != nil && !ferr.bodyTooLarge {
+// readFormParts streams a multipart/form-data body of at most maxBody bytes and returns the parts
+// named in limits, each at most its limit; other parts are discarded and a part sent twice is
+// rejected. A part over its limit stops reading with overLimit(name). After an error the rest of
+// the body is drained, so a body over maxBody is answered with 413.
+func readFormParts(w http.ResponseWriter, r *http.Request, maxBody int64, limits map[string]int64, overLimit func(name string) *formError) (map[string][]byte, *formError) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	raw, ferr := streamFormParts(r, maxBody, limits, overLimit)
+	if ferr != nil && ferr.bodyLimit == 0 {
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) && ferr.status != http.StatusRequestEntityTooLarge {
-				ferr = &bannerFormError{status: http.StatusRequestEntityTooLarge, bodyTooLarge: true}
+				ferr = &formError{status: http.StatusRequestEntityTooLarge, bodyLimit: maxBody}
 			}
 		}
 	}
-	return form, ferr
+	return raw, ferr
 }
 
-func parseBannerParts(r *http.Request) (*bannerForm, *bannerFormError) {
+func streamFormParts(r *http.Request, maxBody int64, limits map[string]int64, overLimit func(name string) *formError) (map[string][]byte, *formError) {
 	mr, err := r.MultipartReader()
 	if err != nil {
-		return nil, &bannerFormError{status: http.StatusBadRequest, msg: "Request must be multipart/form-data"}
+		return nil, &formError{status: http.StatusBadRequest, msg: "Request must be multipart/form-data"}
 	}
 	raw := map[string][]byte{}
 	for {
 		part, err := mr.NextPart()
 		if err == io.EOF {
-			break
+			return raw, nil
 		}
 		if err != nil {
-			return nil, bannerPartError(err)
+			return nil, formPartError(err, maxBody)
 		}
 		name := part.FormName()
-		limit := maxBannerTextPartBytes
-		switch name {
-		case "image":
-			limit = MaxBannerImageBytes
-		case "title", "action_link", "is_active":
-		default:
+		limit, known := limits[name]
+		if !known {
 			if _, err := io.Copy(io.Discard, part); err != nil {
-				return nil, bannerPartError(err)
+				return nil, formPartError(err, maxBody)
 			}
 			continue
 		}
 		if _, dup := raw[name]; dup {
-			return nil, &bannerFormError{status: http.StatusBadRequest, msg: name + " must be sent once"}
+			return nil, &formError{status: http.StatusBadRequest, msg: name + " must be sent once"}
 		}
 		data, err := io.ReadAll(io.LimitReader(part, limit+1))
 		if err != nil {
-			return nil, bannerPartError(err)
+			return nil, formPartError(err, maxBody)
 		}
 		if int64(len(data)) > limit {
-			if name == "image" {
-				return nil, &bannerFormError{status: http.StatusRequestEntityTooLarge, msg: fmt.Sprintf("image must be at most 2 MiB (%d bytes)", MaxBannerImageBytes)}
-			}
-			if name == "is_active" {
-				return nil, &bannerFormError{status: http.StatusBadRequest, msg: `is_active must be "true" or "false"`}
-			}
-			chars := MaxBannerTitleChars
-			if name == "action_link" {
-				chars = MaxBannerActionLinkChars
-			}
-			return nil, &bannerFormError{status: http.StatusBadRequest, msg: fmt.Sprintf("%s must be at most %d characters", name, chars)}
+			return nil, overLimit(name)
 		}
 		raw[name] = data
 	}
+}
 
+var bannerPartLimits = map[string]int64{
+	"image":       MaxBannerImageBytes,
+	"title":       maxBannerTextPartBytes,
+	"action_link": maxBannerTextPartBytes,
+	"is_active":   maxBannerTextPartBytes,
+}
+
+func bannerPartOverLimit(name string) *formError {
+	switch name {
+	case "image":
+		return &formError{status: http.StatusRequestEntityTooLarge, msg: fmt.Sprintf("image must be at most 2 MiB (%d bytes)", MaxBannerImageBytes),
+			warn: "Banner image too large", warnLimit: MaxBannerImageBytes}
+	case "is_active":
+		return &formError{status: http.StatusBadRequest, msg: `is_active must be "true" or "false"`}
+	case "action_link":
+		return &formError{status: http.StatusBadRequest, msg: fmt.Sprintf("action_link must be at most %d characters", MaxBannerActionLinkChars)}
+	}
+	return &formError{status: http.StatusBadRequest, msg: fmt.Sprintf("%s must be at most %d characters", name, MaxBannerTitleChars)}
+}
+
+// readBannerForm streams a multipart/form-data body of at most MaxBannerBodyBytes and
+// validates its parts. The picture type is detected from its bytes; the file name and the
+// part's declared Content-Type are ignored. Unknown parts are discarded.
+func readBannerForm(w http.ResponseWriter, r *http.Request) (*bannerForm, *formError) {
+	raw, ferr := readFormParts(w, r, MaxBannerBodyBytes, bannerPartLimits, bannerPartOverLimit)
+	if ferr != nil {
+		return nil, ferr
+	}
+	return parseBannerParts(raw)
+}
+
+func parseBannerParts(raw map[string][]byte) (*bannerForm, *formError) {
 	form := &bannerForm{}
-	bad := func(msg string) (*bannerForm, *bannerFormError) {
-		return nil, &bannerFormError{status: http.StatusBadRequest, msg: msg}
+	bad := func(msg string) (*bannerForm, *formError) {
+		return nil, &formError{status: http.StatusBadRequest, msg: msg}
 	}
 	if data, ok := raw["image"]; ok {
 		if len(data) == 0 {

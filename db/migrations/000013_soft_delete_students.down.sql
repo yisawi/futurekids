@@ -6,6 +6,8 @@
 --   internal/handlers/mobile.go — MobileTodayAttendanceHandler, MobileAttendanceSummaryHandler,
 --     MobileMonthlyAttendanceHandler, MobileScheduleHandler, MobileStudentsHandler.
 --   internal/cron/absent_job.go — ProcessDailyAbsences.
+--   internal/handlers/schedule_excel.go — AdminScheduleClassesHandler, AdminScheduleExportHandler
+--     and AdminScheduleImportHandler count active students.
 -- Data loss: which students were deleted; soft-deleted students become indistinguishable from active ones.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first

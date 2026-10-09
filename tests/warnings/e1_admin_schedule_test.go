@@ -49,6 +49,32 @@ func e1P(day string, period int, subject string, teacher ...string) e1Period {
 	return p
 }
 
+// e1Day returns periods 1 to n of day, all with the same subject (and teacher, when given).
+func e1Day(day string, n int, subject string, teacher ...string) []e1Period {
+	out := make([]e1Period, n)
+	for i := range out {
+		out[i] = e1P(day, i+1, subject, teacher...)
+	}
+	return out
+}
+
+// e1Join concatenates lists of periods; e1Rev returns a list in reverse order.
+func e1Join(lists ...[]e1Period) []e1Period {
+	var out []e1Period
+	for _, l := range lists {
+		out = append(out, l...)
+	}
+	return out
+}
+
+func e1Rev(ps []e1Period) []e1Period {
+	out := make([]e1Period, len(ps))
+	for i, p := range ps {
+		out[len(ps)-1-i] = p
+	}
+	return out
+}
+
 func e1Body(grade, section string, periods ...e1Period) map[string]any {
 	if periods == nil {
 		periods = []e1Period{}
@@ -172,26 +198,22 @@ func TestE1AdminSchedule(t *testing.T) {
 	}
 
 	t.Run("save then read back in school-week order", func(t *testing.T) {
-		r := put(e1Body(" G3 ", " A ",
-			e1P("الخميس", 2, "Art"),
-			e1P("Sunday", 2, "Reading"),
-			e1P("الاثنين", 1, "Science", "Teacher Example"),
-			e1P("الأحد", 1, "Mathematics", "Teacher Example"),
-			e1P("الأربعاء", 1, "History"),
-			e1P("Tuesday", 3, "Music"),
-			e1P("Tuesday", 1, "Geography"),
-			e1P("thursday", 1, "Drawing"),
+		scrambled := e1Join(
+			e1Rev(e1Day("الخميس", 5, "Art")),
+			e1Day("Sunday", 6, "Reading"),
+			e1Rev(e1Day("الاثنين", 5, "Science", "Teacher Example")),
+			e1Day("Tuesday", 5, "Geography"),
+			e1Rev(e1Day("الأربعاء", 6, "History")),
+		)
+		scrambled[0].Day, scrambled[5].Day, scrambled[7].Day = "thursday", "الأحد", "الاحد"
+		r := put(e1Body(" G3 ", " A ", scrambled...))
+		want := e1List(e1Join(
+			e1Day("الأحد", 6, "Reading"),
+			e1Day("الإثنين", 5, "Science", "Teacher Example"),
+			e1Day("الثلاثاء", 5, "Geography"),
+			e1Day("الأربعاء", 6, "History"),
+			e1Day("الخميس", 5, "Art"),
 		))
-		want := e1List([]e1Period{
-			e1P("الأحد", 1, "Mathematics", "Teacher Example"),
-			e1P("الأحد", 2, "Reading"),
-			e1P("الإثنين", 1, "Science", "Teacher Example"),
-			e1P("الثلاثاء", 1, "Geography"),
-			e1P("الثلاثاء", 3, "Music"),
-			e1P("الأربعاء", 1, "History"),
-			e1P("الخميس", 1, "Drawing"),
-			e1P("الخميس", 2, "Art"),
-		})
 		saved := e1Decode(t, r)
 		if saved.Grade != "G3" || saved.Section != "A" {
 			t.Errorf("PUT echoed class %q/%q, want the trimmed G3/A", saved.Grade, saved.Section)
@@ -214,10 +236,10 @@ func TestE1AdminSchedule(t *testing.T) {
 	})
 
 	t.Run("a second PUT replaces the first and leaves other classes alone", func(t *testing.T) {
-		if r := put(e1Body("G4", "A", e1P("الأحد", 1, "Mathematics"), e1P("الأحد", 2, "Science"), e1P("الخميس", 6, "Music"))); r.status != 200 {
+		if r := put(e1Body("G4", "A", e1Join(e1Day("الأحد", 5, "Mathematics"), e1Day("الخميس", 6, "Music"))...)); r.status != 200 {
 			t.Fatalf("first PUT: %d %s", r.status, r.body)
 		}
-		put(e1Body("G4", "B", e1P("الأحد", 1, "Reading", "Teacher Example")))
+		put(e1Body("G4", "B", e1Day("الأحد", 5, "Reading", "Teacher Example")...))
 		if _, err := db.Exec(`INSERT INTO weekly_schedules (grade, section, day_of_week, period_number, subject_name)
 			VALUES ('G4', 'A', 'Friday', 1, 'Legacy Club'), ('G4', 'A', 'Holiday', 1, 'Legacy Trip'), ('G9', 'Z', 'Sunday', 1, 'Legacy Row')`); err != nil {
 			t.Fatal(err)
@@ -225,10 +247,10 @@ func TestE1AdminSchedule(t *testing.T) {
 		others := `NOT (grade = 'G4' AND section = 'A')`
 		before := e1Snapshot(t, db, others)
 
-		if r := put(e1Body("G4", "A", e1P("Monday", 3, "Art", "Teacher Sample"), e1P("الأحد", 2, "Drawing"))); r.status != 200 {
+		if r := put(e1Body("G4", "A", e1Join(e1Day("Monday", 6, "Art", "Teacher Sample"), e1Day("الأحد", 5, "Drawing"))...)); r.status != 200 {
 			t.Fatalf("second PUT: %d %s", r.status, r.body)
 		}
-		want := e1List([]e1Period{e1P("الأحد", 2, "Drawing"), e1P("الإثنين", 3, "Art", "Teacher Sample")})
+		want := e1List(e1Join(e1Day("الأحد", 5, "Drawing"), e1Day("الإثنين", 6, "Art", "Teacher Sample")))
 		if got := e1List(stored("G4", "A")); got != want {
 			t.Errorf("after the second PUT\n got:\n%s\nwant:\n%s", got, want)
 		}
@@ -259,19 +281,19 @@ func TestE1AdminSchedule(t *testing.T) {
 			{"الأربعاء", "الأربعاء"}, {"الاربعاء", "الأربعاء"}, {"Wednesday\t", "الأربعاء"},
 			{"الخميس", "الخميس"}, {" الخميس", "الخميس"}, {"THURSDAY", "الخميس"},
 		} {
-			if r := put(e1Body("G5", "D", e1P(tc.in, 1, "Mathematics"))); r.status != 200 {
+			if r := put(e1Body("G5", "D", e1Day(tc.in, 5, "Mathematics")...)); r.status != 200 {
 				t.Errorf("%q: %d %s", tc.in, r.status, r.body)
 				continue
 			}
 			var day string
-			if err := db.QueryRow(`SELECT day_of_week FROM weekly_schedules WHERE grade = 'G5' AND section = 'D'`).Scan(&day); err != nil {
+			if err := db.QueryRow(`SELECT DISTINCT day_of_week FROM weekly_schedules WHERE grade = 'G5' AND section = 'D'`).Scan(&day); err != nil {
 				t.Fatal(err)
 			}
 			if day != tc.want {
 				t.Errorf("%q stored as %q, want %q", tc.in, day, tc.want)
 			}
 		}
-		put(e1Body("G5", "D", e1P("Sunday", 1, "Mathematics")))
+		put(e1Body("G5", "D", e1Day("Sunday", 5, "Mathematics")...))
 		before := e1Snapshot(t, db, `TRUE`)
 		for _, day := range []string{"Friday", "friday", "الجمعة", "Saturday", "السبت", "Funday", "Sun", "الأحد الأحد", "", "   ", "١"} {
 			e1Error(t, put(e1Body("G5", "D", e1P(day, 1, "Mathematics"))), 400, "periods[0].day_of_week must be a school day, Sunday to Thursday (Arabic or English)")
@@ -320,9 +342,9 @@ func TestE1AdminSchedule(t *testing.T) {
 			periods []e1Period
 			msg     string
 		}{
-			{"period 0", []e1Period{ok, e1P("الأحد", 0, "Science")}, "periods[1].period_number must be from 1 to 12"},
-			{"period 13", []e1Period{e1P("الخميس", 13, "Science")}, "periods[0].period_number must be from 1 to 12"},
-			{"period -1", []e1Period{e1P("الخميس", -1, "Science")}, "periods[0].period_number must be from 1 to 12"},
+			{"period 0", []e1Period{ok, e1P("الأحد", 0, "Science")}, "periods[1].period_number must be from 1 to 6"},
+			{"period 7", []e1Period{e1P("الخميس", 7, "Science")}, "periods[0].period_number must be from 1 to 6"},
+			{"period -1", []e1Period{e1P("الخميس", -1, "Science")}, "periods[0].period_number must be from 1 to 6"},
 			{"blank subject", []e1Period{ok, e1P("الأحد", 2, "Science"), e1P("الإثنين", 1, "   ")}, "periods[2].subject_name is required"},
 			{"missing subject", []e1Period{e1P("الإثنين", 1, "")}, "periods[0].subject_name is required"},
 			{"subject too long", []e1Period{e1P("الإثنين", 1, long(101))}, "periods[0].subject_name must be at most 100 characters"},
@@ -335,11 +357,11 @@ func TestE1AdminSchedule(t *testing.T) {
 
 		var many []e1Period
 		for _, day := range []string{"الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"} {
-			for n := 1; n <= 12; n++ {
+			for n := 1; n <= 6; n++ {
 				many = append(many, e1P(day, n, long(100), long(100)))
 			}
 		}
-		e1Error(t, put(e1Body("G6", "A", append(many, e1P("الأحد", 1, "Extra"))...)), 400, "periods must contain at most 60 entries")
+		e1Error(t, put(e1Body("G6", "A", append(many, e1P("الأحد", 1, "Extra"))...)), 400, "periods must contain at most 30 entries")
 		body := e1Body("G6", "A")
 		delete(body, "periods")
 		e1Error(t, put(body), 400, "periods is required; send an empty array to clear the schedule")
@@ -352,16 +374,16 @@ func TestE1AdminSchedule(t *testing.T) {
 		}
 
 		if r := put(e1Body("G6", "A", many...)); r.status != 200 {
-			t.Fatalf("60 periods at every limit: %d %s", r.status, r.body)
+			t.Fatalf("30 periods at every limit: %d %s", r.status, r.body)
 		}
 		var n, full int
 		db.QueryRow(`SELECT COUNT(*), COUNT(*) FILTER (WHERE char_length(subject_name) = 100 AND char_length(teacher_name) = 100) FROM weekly_schedules WHERE grade = 'G6' AND section = 'A'`).Scan(&n, &full)
-		if n != 60 || full != 60 {
-			t.Errorf("stored %d periods, %d with 100-character names; want 60 and 60", n, full)
+		if n != 30 || full != 30 {
+			t.Errorf("stored %d periods, %d with 100-character names; want 30 and 30", n, full)
 		}
-		if r := put(e1Body(long(50), long(50), ok)); r.status != 200 {
+		if r := put(e1Body(long(50), long(50), e1Day("الأحد", 5, "Mathematics")...)); r.status != 200 {
 			t.Errorf("grade and section of 50 characters: %d %s", r.status, r.body)
-		} else if got := stored(long(50), long(50)); len(got) != 1 {
+		} else if got := stored(long(50), long(50)); len(got) != 5 {
 			t.Errorf("50-character class read back %v", got)
 		}
 
@@ -371,24 +393,25 @@ func TestE1AdminSchedule(t *testing.T) {
 			{"day_of_week": "الأحد", "period_number": 2, "subject_name": "Science", "teacher_name": nil},
 			{"day_of_week": "الأحد", "period_number": 3, "subject_name": "Art"},
 			{"day_of_week": "الأحد", "period_number": 4, "subject_name": "Music", "teacher_name": padded},
+			{"day_of_week": "الأحد", "period_number": 5, "subject_name": "Reading", "teacher_name": nil},
 		}})
-		want := e1List([]e1Period{e1P("الأحد", 1, "Mathematics"), e1P("الأحد", 2, "Science"), e1P("الأحد", 3, "Art"), e1P("الأحد", 4, "Music", "Teacher Example")})
+		want := e1List([]e1Period{e1P("الأحد", 1, "Mathematics"), e1P("الأحد", 2, "Science"), e1P("الأحد", 3, "Art"), e1P("الأحد", 4, "Music", "Teacher Example"), e1P("الأحد", 5, "Reading")})
 		if got := e1List(e1Decode(t, r).Data); got != want {
 			t.Errorf("trimmed names and null teachers\n got:\n%s\nwant:\n%s", got, want)
 		}
 		var nulls int
 		db.QueryRow(`SELECT COUNT(*) FROM weekly_schedules WHERE grade = 'G6' AND section = 'B' AND teacher_name IS NULL`).Scan(&nulls)
-		if nulls != 3 {
-			t.Errorf("%d NULL teacher_name rows, want 3 (blank, null and omitted)", nulls)
+		if nulls != 4 {
+			t.Errorf("%d NULL teacher_name rows, want 4 (blank, null twice and omitted)", nulls)
 		}
 	})
 
 	t.Run("a failed PUT leaves the previous schedule exactly as it was", func(t *testing.T) {
-		if r := put(e1Body("G7", "C", e1P("الأحد", 1, "Mathematics", "Teacher Example"), e1P("الإثنين", 2, "Science"))); r.status != 200 {
+		if r := put(e1Body("G7", "C", e1Join(e1Day("الأحد", 5, "Mathematics", "Teacher Example"), e1Day("الإثنين", 6, "Science"))...)); r.status != 200 {
 			t.Fatalf("baseline PUT: %d %s", r.status, r.body)
 		}
 		before := e1Snapshot(t, db, `TRUE`)
-		e1Error(t, put(e1Body("G7", "C", e1P("الأحد", 1, "Art"), e1P("الأحد", 2, "Music"), e1P("الخميس", 13, "Drawing"))), 400, "periods[2].period_number must be from 1 to 12")
+		e1Error(t, put(e1Body("G7", "C", e1P("الأحد", 1, "Art"), e1P("الأحد", 2, "Music"), e1P("الخميس", 7, "Drawing"))), 400, "periods[2].period_number must be from 1 to 6")
 		if after := e1Snapshot(t, db, `TRUE`); after != before {
 			t.Errorf("a 400 changed the table\nbefore:\n%s\nafter:\n%s", before, after)
 		}
@@ -397,7 +420,7 @@ func TestE1AdminSchedule(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Exec(`ALTER TABLE weekly_schedules DROP CONSTRAINT e1_refuse_poison`)
-		e1Error(t, put(e1Body("G7", "C", e1P("الأحد", 1, "Art"), e1P("الأحد", 2, "Music"), e1P("الخميس", 1, "Poison"))), 500, "Failed to save schedule")
+		e1Error(t, put(e1Body("G7", "C", e1Join(e1Day("الأحد", 5, "Art"), e1Day("الخميس", 5, "Poison"))...)), 500, "Failed to save schedule")
 		if after := e1Snapshot(t, db, `TRUE`); after != before {
 			t.Errorf("a database failure mid-PUT changed the table\nbefore:\n%s\nafter:\n%s", before, after)
 		}
@@ -407,8 +430,8 @@ func TestE1AdminSchedule(t *testing.T) {
 	})
 
 	t.Run("concurrent PUTs for one class never mix or fail", func(t *testing.T) {
-		alpha := []e1Period{e1P("الأحد", 1, "Alpha"), e1P("الأحد", 2, "Alpha"), e1P("الإثنين", 1, "Alpha"), e1P("الخميس", 5, "Alpha")}
-		beta := []e1Period{e1P("الأحد", 1, "Beta"), e1P("الأحد", 3, "Beta"), e1P("الإثنين", 1, "Beta"), e1P("الثلاثاء", 2, "Beta"), e1P("الخميس", 5, "Beta"), e1P("الخميس", 6, "Beta")}
+		alpha := e1Join(e1Day("الأحد", 5, "Alpha"), e1Day("الإثنين", 5, "Alpha"), e1Day("الخميس", 6, "Alpha"))
+		beta := e1Join(e1Day("الأحد", 6, "Beta"), e1Day("الإثنين", 5, "Beta"), e1Day("الثلاثاء", 5, "Beta"), e1Day("الخميس", 6, "Beta"))
 		wantA, wantB := e1List(alpha), e1List(beta)
 		for round := 0; round < 20; round++ {
 			if round%2 == 0 {
@@ -471,9 +494,9 @@ func TestE1AdminSchedule(t *testing.T) {
 			t.Errorf("blank grade and section stored as %s, want empty strings as before", got)
 		}
 
-		saved := e1Decode(t, put(e1Body("G9", "A",
-			e1P("Thursday", 1, "Art"), e1P("الأحد", 2, "Science", "Teacher Example"), e1P("الأحد", 1, "Mathematics"), e1P("الاربعاء", 3, "Music", "Teacher Sample"),
-		))).Data
+		saved := e1Decode(t, put(e1Body("G9", "A", e1Join(
+			e1Day("Thursday", 5, "Art"), e1Rev(e1Day("الأحد", 6, "Science", "Teacher Example")), e1Day("الاربعاء", 5, "Music", "Teacher Sample"),
+		)...))).Data
 
 		login := a14Do(t, srv, "POST", "/api/mobile/login", nil, map[string]string{"phone": parentPhone, "pin": parentPin})
 		if login.status != 200 {
@@ -562,12 +585,12 @@ func TestE1AdminSchedule(t *testing.T) {
 		}
 		found := false
 		for _, m := range lines {
-			if m["grade"] == "G6" && m["section"] == "A" && m["periods"] == float64(60) {
+			if m["grade"] == "G6" && m["section"] == "A" && m["periods"] == float64(30) {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("no log line for the 60-period save of G6/A")
+			t.Errorf("no log line for the 30-period save of G6/A")
 		}
 	})
 

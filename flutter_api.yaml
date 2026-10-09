@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Future Kids Attendance System API
-  version: 1.12.0
+  version: 1.13.0
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -17,6 +17,8 @@ info:
     **Conventions**
     - JSON responses carry `"status": "success"` or `"status": "error"`. Every JSON error is
       `{"status": "error", "message": "..."}`. Branch on the HTTP status code, not on `message`.
+      The one extension: a 400 from `POST /api/admin/schedule/import` about the file's rows adds
+      an `errors` array (sheet, row, column and message of each problem).
     - Authenticate with `Authorization: Bearer <token>`: the word `Bearer` exactly, one space.
       Parent tokens last 30 days and admin tokens 7 days; there is no refresh endpoint. A 401
       means "log in again"; a 403 means the token belongs to the other app (parent vs admin).
@@ -312,7 +314,10 @@ paths:
         exactly as stored; Arabic names (الأحد … الخميس, with or without hamza) and English
         names in any case are recognized. Unrecognized names sort after all real days,
         alphabetically. A child without a grade and section has no entries. Schedules saved with
-        `PUT /api/admin/schedule` use only `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس`.
+        `PUT /api/admin/schedule` or the Excel import use only `الأحد`, `الإثنين`, `الثلاثاء`,
+        `الأربعاء`, `الخميس`, and every day has exactly 5 or 6 periods (older rows may differ
+        until their class is saved again). Each entry carries `subject_key` for the subject's
+        icon.
       security:
         - ParentJWT: []
       responses:
@@ -1146,8 +1151,10 @@ paths:
       summary: One class's weekly schedule
       description: |
         The schedule of the class `grade` + `section`, Sunday to Thursday, then by
-        `period_number`. A class with no schedule returns 200 with an empty `data`. Take the
-        available grade and section values from `GET /api/admin/students`; there is no class list.
+        `period_number`, each with its `subject_key`. A class with no schedule returns 200 with an
+        empty `data`. Take the classes from `GET /api/admin/schedule/classes`. Rows saved before
+        API 1.13.0 that break the 5-or-6 rule are returned as stored until the class is saved
+        again.
       security:
         - AdminJWT: []
       parameters:
@@ -1182,7 +1189,8 @@ paths:
         nothing. Saves of schedules run one at a time, so two saves for the same class at once
         leave exactly one of them. The response is the saved schedule, as `GET` returns it.
         Parents see it in `GET /api/mobile/schedule` for every active child whose `grade` and
-        `section` are equal to the saved ones.
+        `section` are equal to the saved ones. Breaking in API 1.13.0: every day that has periods
+        must have exactly periods 1 to 5 or 1 to 6 (at most 30 periods).
       security:
         - AdminJWT: []
       requestBody:
@@ -1206,6 +1214,138 @@ paths:
           $ref: '#/components/responses/AdminForbidden'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/schedule/classes:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listScheduleClasses
+      summary: Every known class, for the schedule overview
+      description: |
+        Every class the school has: the grade and section pairs of active students (both
+        non-blank) together with every class that has stored periods, with the number of
+        students, periods and days of each. A class with `student_count` 0 has a schedule no
+        parent sees; one with `period_count` 0 has no schedule yet.
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: The classes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleClassListResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/schedule/export:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: exportScheduleExcel
+      summary: The weekly schedule as an editable Excel file
+      description: |
+        A right-to-left `.xlsx` (one worksheet, `Sheet1`) with the same header as the daily
+        report: the ministry line, the `school_name` setting and a title in rows 1 to 3, the
+        column headers `المرحلة | الشعبة | اليوم | الحصة | المادة | المعلم` in row 5, and the data
+        from row 6. It is an **editable full grid**: for every known class (as in
+        `GET /api/admin/schedule/classes`, narrowed by `grade` and `section`) one row for each
+        day Sunday to Thursday and each period 1 to 6 (30 rows per class), sorted by grade,
+        section, day and period, with the stored subject and teacher, or blank cells. A day
+        with 5 periods therefore has a blank sixth row. Every cell is text, never a formula. With
+        no known class the file has only the header (an empty template). Rows saved before API
+        1.13.0 on another day or with a period above 6 are not in the file, so importing it
+        removes them from that class.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/ScheduleGradeFilter'
+        - $ref: '#/components/parameters/ScheduleSectionFilter'
+      responses:
+        '200':
+          description: The Excel file.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename=schedule_<today>.xlsx` (today in Asia/Baghdad)'
+              schema:
+                type: string
+              example: attachment; filename=schedule_2026-10-09.xlsx
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/ScheduleExportBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/schedule/import:
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: importScheduleExcel
+      summary: Replace the schedules of the classes in an Excel file
+      description: |
+        Reads every worksheet whose header row (one of its first 10 rows, with at least three of
+        the six names) names the columns; other worksheets are ignored. Columns are found by
+        name, in any order; extra columns are ignored; all six are required. Header names
+        (hamza, ta marbuta and case don't matter): `المرحلة`/`الصف`/`grade`, `الشعبة`/`section`,
+        `اليوم`/`day`, `الحصة`/`period`, `المادة`/`subject`, `المعلم`/`المدرس`/`teacher`.
+
+        **Rows:** a row whose subject and teacher are both blank is ignored (so the blank rows of
+        the export don't matter). Otherwise: grade and section 1 to 50 characters, stored exactly
+        as written apart from surrounding spaces (a number cell becomes its plain number text);
+        day Sunday to Thursday in Arabic or English, as for `PUT /api/admin/schedule`; period a
+        whole number 1 to 6 (number or text cells, Arabic-Indic or Persian digits); subject 1 to
+        100 characters; teacher up to 100 (blank is none). A teacher without a subject is an
+        error. Formulas are never evaluated: their saved values are used, and a formula without a
+        saved value is an error. Each class's days must follow the 5-or-6 rule, and a day and
+        period may appear once per class (also across worksheets).
+
+        **Saving:** every class (grade and section pair) in the file is **fully replaced**, as
+        with `PUT /api/admin/schedule`, including days missing from the file; classes not in the
+        file are untouched. To clear a class, use `PUT` with an empty `periods`. It is all or
+        nothing: any problem saves nothing. Imports and `PUT` saves run one at a time. Always call
+        it with `dry_run=true` first and show the problems or warnings.
+
+        Limits: at most 2000 filled rows (ignored blank rows don't count) and 100 classes.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ScheduleImportRequest'
+      responses:
+        '200':
+          description: Checked (and saved unless `dry_run` was `true`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleImportResponse'
+        '400':
+          $ref: '#/components/responses/ScheduleImportBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '413':
+          $ref: '#/components/responses/ScheduleImportTooLarge'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
@@ -1738,6 +1878,28 @@ components:
         The class's section, as stored on its students (`Student.section`). Surrounding spaces
         are ignored; otherwise it must match exactly (case-sensitive). Missing or blank returns
         400, and so does a value longer than 50 characters.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 50
+      example: A
+    ScheduleGradeFilter:
+      name: grade
+      in: query
+      required: false
+      description: |
+        Optional. Only classes with exactly this grade (case-sensitive); surrounding spaces are
+        ignored. Present but blank returns 400, and so does a value longer than 50 characters.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 50
+      example: G3
+    ScheduleSectionFilter:
+      name: section
+      in: query
+      required: false
+      description: Optional. Only classes with exactly this section; same rules as `grade`.
       schema:
         type: string
         minLength: 1
@@ -2789,6 +2951,8 @@ components:
         teacher_name:
           type: string
           description: Empty string when not set.
+        subject_key:
+          $ref: '#/components/schemas/SubjectKey'
       required:
         - student_id
         - student_name
@@ -2798,6 +2962,7 @@ components:
         - period_number
         - subject_name
         - teacher_name
+        - subject_key
       example:
         student_id: 42
         student_name: Sara Example
@@ -2807,6 +2972,7 @@ components:
         period_number: 1
         subject_name: Mathematics
         teacher_name: Teacher Example
+        subject_key: math
     ScheduleResponse:
       type: object
       properties:
@@ -2832,6 +2998,7 @@ components:
             period_number: 1
             subject_name: Mathematics
             teacher_name: Teacher Example
+            subject_key: math
           - student_id: 42
             student_name: Sara Example
             grade: G3
@@ -2840,6 +3007,7 @@ components:
             period_number: 2
             subject_name: Science
             teacher_name: ''
+            subject_key: science
     AdminSchedulePeriod:
       type: object
       properties:
@@ -2855,8 +3023,11 @@ components:
           type: integer
           format: int32
           minimum: 1
-          maximum: 12
-          description: 1 to 12 (400 otherwise). Each day and period pair may appear only once per request (400).
+          maximum: 6
+          description: |
+            1 to 6 (400 otherwise). Each day and period pair may appear only once per request
+            (400). A day that has periods must have exactly periods 1 to 5 or 1 to 6 (see
+            `AdminScheduleRequest.periods`).
         subject_name:
           type: string
           minLength: 1
@@ -2894,12 +3065,15 @@ components:
           description: Required. Same rules as `grade`.
         periods:
           type: array
-          maxItems: 60
+          maxItems: 30
           description: |
-            The class's whole schedule (at most 5 days × 12 periods = 60). It replaces every stored
-            period of this class, including rows entered earlier in other spellings. **An empty
-            array clears the class's schedule.** Missing or null returns 400, so a client bug
-            cannot clear a class by accident.
+            The class's whole schedule (at most 5 days × 6 periods = 30). **Every day that has
+            periods must have exactly 5 or 6 of them, numbered 1 to 5 or 1 to 6, with no gaps and
+            no repeats**; a day can be left out entirely, and different days can have 5 or 6.
+            Anything else returns 400 naming the day. It replaces every stored period of this
+            class, including rows entered earlier in other spellings. **An empty array clears the
+            class's schedule.** Missing or null returns 400, so a client bug cannot clear a class
+            by accident. A `subject_key` sent back in a period is ignored.
           items:
             $ref: '#/components/schemas/AdminSchedulePeriod'
       required:
@@ -2910,18 +3084,26 @@ components:
         grade: G3
         section: A
         periods:
-          - day_of_week: Sunday
-            period_number: 2
-            subject_name: Science
-            teacher_name: null
           - day_of_week: الأحد
             period_number: 1
-            subject_name: Mathematics
-            teacher_name: Teacher Example
-          - day_of_week: الاثنين
-            period_number: 1
-            subject_name: Reading
-            teacher_name: Teacher Sample
+            subject_name: الرياضيات
+            teacher_name: معلم تجريبي 1
+          - day_of_week: الأحد
+            period_number: 2
+            subject_name: العلوم
+            teacher_name: null
+          - day_of_week: Sunday
+            period_number: 3
+            subject_name: اللغة العربية
+            teacher_name: معلمة تجريبية 2
+          - day_of_week: الاحد
+            period_number: 4
+            subject_name: اللغة الإنكليزية
+            teacher_name: null
+          - day_of_week: الأحد
+            period_number: 5
+            subject_name: التربية الفنية
+            teacher_name: null
     AdminScheduleEntry:
       type: object
       properties:
@@ -2929,27 +3111,34 @@ components:
           type: string
           description: |
             One of `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس` for every period saved
-            through `PUT /api/admin/schedule`. Rows entered directly in the database before keep
-            their stored spelling until the class is saved once.
+            through `PUT /api/admin/schedule` or the Excel import. Rows entered directly in the
+            database before keep their stored spelling until the class is saved once.
         period_number:
           type: integer
           format: int32
+          description: |
+            1 to 6 for schedules saved since API 1.13.0. Rows saved earlier keep their number
+            (it can be higher) until the class is saved again.
         subject_name:
           type: string
         teacher_name:
           type: string
           nullable: true
           description: Null when not set.
+        subject_key:
+          $ref: '#/components/schemas/SubjectKey'
       required:
         - day_of_week
         - period_number
         - subject_name
         - teacher_name
+        - subject_key
       example:
         day_of_week: الأحد
         period_number: 2
         subject_name: Science
         teacher_name: null
+        subject_key: science
     AdminScheduleResponse:
       type: object
       properties:
@@ -2981,16 +3170,299 @@ components:
         data:
           - day_of_week: الأحد
             period_number: 1
-            subject_name: Mathematics
-            teacher_name: Teacher Example
+            subject_name: الرياضيات
+            teacher_name: معلم تجريبي 1
+            subject_key: math
           - day_of_week: الأحد
             period_number: 2
-            subject_name: Science
+            subject_name: العلوم
             teacher_name: null
-          - day_of_week: الإثنين
-            period_number: 1
-            subject_name: Reading
-            teacher_name: Teacher Sample
+            subject_key: science
+          - day_of_week: الأحد
+            period_number: 3
+            subject_name: اللغة العربية
+            teacher_name: معلمة تجريبية 2
+            subject_key: arabic
+          - day_of_week: الأحد
+            period_number: 4
+            subject_name: اللغة الإنكليزية
+            teacher_name: null
+            subject_key: english
+          - day_of_week: الأحد
+            period_number: 5
+            subject_name: التربية الفنية
+            teacher_name: null
+            subject_key: art
+    SubjectKey:
+      type: string
+      enum:
+        - math
+        - pe
+        - arabic
+        - english
+        - islamic
+        - computer
+        - science
+        - social
+        - art
+        - music
+        - other
+      description: |
+        Read-only. The subject's family, computed by the server from `subject_name` so the app
+        can pick an icon without matching Arabic spellings: `math` (رياضيات, حساب), `pe` (رياضة,
+        تربية رياضية/بدنية), `arabic` (عربي, قراءة), `english` (إنكليزي/إنجليزي), `islamic`
+        (إسلامية, قرآن, دينية), `computer` (حاسوب, حاسب, كمبيوتر, معلوماتية), `science` (علوم),
+        `social` (اجتماعيات, جغرافية, تاريخ, وطنية), `art` (فنية, رسم), `music` (موسيقى, نشيد), and
+        `other` for anything else. Hamza, ta marbuta, alef maqsura, diacritics, tatweel, case and
+        extra spaces don't matter; English names (Mathematics, Science, English…) are recognized
+        as whole words. Never send it: a `subject_key` in a request is ignored. New values may be
+        added in a later minor version, so map unknown values to the `other` icon.
+      example: math
+    ScheduleClass:
+      type: object
+      properties:
+        grade:
+          type: string
+        section:
+          type: string
+        student_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Active students with exactly this grade and section.
+        period_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Stored periods of this class (0 when it has no schedule).
+        day_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Distinct days among the stored periods (one day stored in two spellings counts once).
+      required:
+        - grade
+        - section
+        - student_count
+        - period_count
+        - day_count
+      example:
+        grade: G3
+        section: A
+        student_count: 24
+        period_count: 28
+        day_count: 5
+    ScheduleClassListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          description: |
+            Every known class: the grade and section pairs of active students (both non-blank)
+            together with every class that has stored periods. Ordered by `grade`, then
+            `section`, compared as plain stored strings (by Unicode code point); order them for
+            display yourself.
+          items:
+            $ref: '#/components/schemas/ScheduleClass'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          - grade: G3
+            section: A
+            student_count: 24
+            period_count: 28
+            day_count: 5
+          - grade: G3
+            section: ب
+            student_count: 0
+            period_count: 30
+            day_count: 5
+          - grade: G4
+            section: A
+            student_count: 21
+            period_count: 0
+            day_count: 0
+    ScheduleImportRequest:
+      type: object
+      description: |
+        `multipart/form-data`. Each part is sent at most once (400 otherwise); unknown parts are
+        ignored.
+      properties:
+        file:
+          type: string
+          format: binary
+          description: |
+            Required. An Excel workbook (`.xlsx`), at most 2 MiB (2,097,152 bytes; larger returns
+            413). Its bytes must be a zip that opens as a workbook and unpacks to at most 20 MiB;
+            anything else (CSV, old `.xls`, text renamed to `.xlsx`, an empty file) returns 400
+            whatever the file name or the part's Content-Type say. See the operation for the
+            columns and rules.
+        dry_run:
+          type: string
+          enum:
+            - 'true'
+            - 'false'
+          default: 'false'
+          description: |
+            Optional, exactly `true` or `false` (anything else returns 400). With `true` the file
+            is checked and the same report is returned, but nothing is saved.
+      required:
+        - file
+      example:
+        file: (binary .xlsx)
+        dry_run: 'true'
+    ScheduleImportClass:
+      type: object
+      properties:
+        grade:
+          type: string
+        section:
+          type: string
+        periods:
+          type: integer
+          format: int32
+          minimum: 5
+          description: Periods stored for this class (its whole schedule after the import).
+        matched_students:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Active students with exactly this grade and section, who see it in the parent app.
+      required:
+        - grade
+        - section
+        - periods
+        - matched_students
+      example:
+        grade: G3
+        section: A
+        periods: 28
+        matched_students: 24
+    ScheduleImportResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+        dry_run:
+          type: boolean
+          description: True when nothing was saved.
+        total_periods:
+          type: integer
+          format: int32
+          minimum: 0
+        classes:
+          type: array
+          description: Every class in the file, ordered by `grade`, then `section` (plain strings).
+          items:
+            $ref: '#/components/schemas/ScheduleImportClass'
+        warnings:
+          type: array
+          description: |
+            One text per class that no active student has (`matched_students` is 0): its schedule
+            is saved but no parent sees it, usually because of a typo in the grade or section.
+            Show these before the admin confirms.
+          items:
+            type: string
+      required:
+        - status
+        - message
+        - dry_run
+        - total_periods
+        - classes
+        - warnings
+      example:
+        status: success
+        message: 'Dry run: the file is valid; nothing was saved'
+        dry_run: true
+        total_periods: 58
+        classes:
+          - grade: G3
+            section: A
+            periods: 28
+            matched_students: 24
+          - grade: G3
+            section: ب
+            periods: 30
+            matched_students: 0
+        warnings:
+          - 'grade G3, section ب: no active student has this grade and section, parents will not see it'
+    ScheduleImportError:
+      type: object
+      description: |
+        One problem in the file. `sheet` is the worksheet's name, `row` the Excel row number (as
+        Excel shows it) and `column` the column's standard header name (`المرحلة`, `الشعبة`,
+        `اليوم`, `الحصة`, `المادة` or `المعلم`), whatever header the file used. The last item of a
+        capped list has only `message` (for example `and 12 more problems`).
+      properties:
+        sheet:
+          type: string
+        row:
+          type: integer
+          format: int32
+          minimum: 1
+        column:
+          type: string
+          enum:
+            - المرحلة
+            - الشعبة
+            - اليوم
+            - الحصة
+            - المادة
+            - المعلم
+        message:
+          type: string
+      required:
+        - message
+      example:
+        sheet: Sheet1
+        row: 9
+        column: اليوم
+        message: day must be a school day, Sunday to Thursday (Arabic or English)
+    ScheduleImportErrorResponse:
+      type: object
+      description: |
+        The error envelope, with `errors` (the one extension of it) when the problems are in the
+        file's rows: at most 50 problems, then one item saying how many more there are. Other 400s
+        from the import (not multipart, no file, not a workbook, no header row, too many rows or
+        classes, an invalid `dry_run`) have no `errors`.
+      properties:
+        status:
+          type: string
+          enum:
+            - error
+        message:
+          type: string
+        errors:
+          type: array
+          maxItems: 51
+          items:
+            $ref: '#/components/schemas/ScheduleImportError'
+      required:
+        - status
+        - message
+      example:
+        status: error
+        message: The file has 2 problems; nothing was saved
+        errors:
+          - sheet: Sheet1
+            row: 9
+            column: اليوم
+            message: day must be a school day, Sunday to Thursday (Arabic or English)
+          - sheet: Sheet1
+            row: 12
+            column: الحصة
+            message: grade G3, section A has periods 1, 2, 3, 4 on الإثنين; a school day must have exactly 5 or 6 periods, numbered 1 to 5 or 1 to 6
     AdminBanner:
       type: object
       properties:
@@ -3461,8 +3933,9 @@ components:
       description: |
         Malformed JSON (including a `period_number` that is not an integer); `grade` or `section`
         missing, blank or longer than 50 characters; `periods` missing or null, or longer than
-        60; or a period that breaks a rule. Period problems name the period by its 0-based
-        index. Nothing was changed.
+        30; a period that breaks a rule; or a day without exactly 5 or 6 periods numbered from 1.
+        Problems name the period by its 0-based index (for a day, its first period in the
+        request) and the day. Nothing was changed.
       content:
         application/json:
           schema:
@@ -3474,10 +3947,15 @@ components:
                 status: error
                 message: periods[2].day_of_week must be a school day, Sunday to Thursday (Arabic or English)
             periodNumber:
-              summary: period_number outside 1 to 12
+              summary: period_number outside 1 to 6
               value:
                 status: error
-                message: periods[0].period_number must be from 1 to 12
+                message: periods[0].period_number must be from 1 to 6
+            dayPeriods:
+              summary: A day without exactly 5 or 6 periods numbered from 1 (here 4 periods)
+              value:
+                status: error
+                message: periods[5].day_of_week الإثنين has periods 1, 2, 3, 4; a school day must have exactly 5 or 6 periods, numbered 1 to 5 or 1 to 6
             duplicate:
               summary: The same day and period twice
               value:
@@ -3489,10 +3967,10 @@ components:
                 status: error
                 message: periods[4].subject_name must be at most 100 characters
             tooMany:
-              summary: More than 60 periods
+              summary: More than 30 periods
               value:
                 status: error
-                message: periods must contain at most 60 entries
+                message: periods must contain at most 30 entries
             missingPeriods:
               summary: periods missing or null
               value:
@@ -3503,6 +3981,81 @@ components:
               value:
                 status: error
                 message: grade is required
+    ScheduleExportBadRequest:
+      description: '`grade` or `section` sent but blank, or longer than 50 characters.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: grade must not be blank
+    ScheduleImportBadRequest:
+      description: |
+        Nothing was saved. Either the request or file as a whole is wrong (no `errors`), or rows
+        of the file have problems (`errors` lists them).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ScheduleImportErrorResponse'
+          examples:
+            rows:
+              summary: Problems in the file's rows
+              value:
+                status: error
+                message: The file has 1 problem; nothing was saved
+                errors:
+                  - sheet: Sheet1
+                    row: 7
+                    column: الحصة
+                    message: period must be a whole number from 1 to 6
+            notWorkbook:
+              summary: Not an .xlsx workbook (or empty, or unpacking to more than 20 MiB)
+              value:
+                status: error
+                message: file must be an Excel workbook (.xlsx)
+            noHeader:
+              summary: No worksheet has the header row
+              value:
+                status: error
+                message: No worksheet has the header row (المرحلة, الشعبة, اليوم, الحصة, المادة, المعلم) in its first 10 rows
+            tooManyRows:
+              summary: More than 2000 filled rows
+              value:
+                status: error
+                message: The file has more than 2000 schedule rows
+            tooManyClasses:
+              summary: More than 100 classes
+              value:
+                status: error
+                message: The file has 101 classes; at most 100 can be imported at once
+            missingFile:
+              summary: No file part
+              value:
+                status: error
+                message: file is required
+            dryRun:
+              summary: dry_run other than true or false
+              value:
+                status: error
+                message: dry_run must be "true" or "false"
+    ScheduleImportTooLarge:
+      description: The file is larger than 2 MiB, or the whole request is larger than 2 MiB + 64 KiB. Nothing was saved.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            file:
+              summary: File over 2 MiB
+              value:
+                status: error
+                message: file must be at most 2 MiB (2097152 bytes)
+            body:
+              summary: Request over the limit
+              value:
+                status: error
+                message: Request body too large
     BannerWriteBadRequest:
       description: |
         Not `multipart/form-data` or a malformed body; a field sent twice; `image` missing (create),

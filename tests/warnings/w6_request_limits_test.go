@@ -85,7 +85,7 @@ func TestW6RequestLimits(t *testing.T) {
 		{"leave create", "POST", "/api/admin/leaves", func(int) string { return `{"student_id":1,"leave_date":"2026-09-24"}` }, "Invalid request payload", admin(app.AdminCreateLeaveHandler)},
 		{"setting save", "PUT", "/api/admin/settings", func(int) string { return `{"key":"w6","value":"v"}` }, "Invalid payload", admin(app.AdminSettingsHandler)},
 		{"schedule save", "PUT", "/api/admin/schedule", func(int) string {
-			return `{"grade":"W6","section":"A","periods":[{"day_of_week":"Sunday","period_number":1,"subject_name":"Mathematics"}]}`
+			return `{"grade":"W6","section":"A","periods":[{"day_of_week":"Sunday","period_number":1,"subject_name":"Mathematics"},{"day_of_week":"Sunday","period_number":2,"subject_name":"Mathematics"},{"day_of_week":"Sunday","period_number":3,"subject_name":"Mathematics"},{"day_of_week":"Sunday","period_number":4,"subject_name":"Mathematics"},{"day_of_week":"Sunday","period_number":5,"subject_name":"Mathematics"}]}`
 		}, "Invalid request body", admin(app.AdminScheduleHandler)},
 		{"device create", "POST", "/api/admin/devices", func(v int) string {
 			return fmt.Sprintf(`{"serial_number":"W6-NEW-%d","location_name":"Gate","is_active":true}`, v)

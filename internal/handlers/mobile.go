@@ -43,6 +43,7 @@ type MobileSchedulePayload struct {
 	PeriodNumber int    `json:"period_number"`
 	SubjectName  string `json:"subject_name"`
 	TeacherName  string `json:"teacher_name"`
+	SubjectKey   string `json:"subject_key"`
 }
 
 type MobileNotificationPayload struct {
@@ -436,6 +437,7 @@ func (app *AppEnv) MobileScheduleHandler(w http.ResponseWriter, r *http.Request)
 			respondInternalError(w, "Database error", "MobileScheduleHandler: scan failed", err, "parent_id", parentID)
 			return
 		}
+		sp.SubjectKey = SubjectKey(sp.SubjectName)
 		schedules = append(schedules, sp)
 	}
 	if err := rows.Err(); err != nil {

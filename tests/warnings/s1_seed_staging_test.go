@@ -146,7 +146,9 @@ func TestS1SeedStaging(t *testing.T) {
 		t.Fatalf("device: %d %s", r.status, r.body)
 	}
 	if r := a14Do(t, srv, "PUT", "/api/admin/schedule", admin, map[string]any{"grade": "G2", "section": "A", "periods": []map[string]any{
-		{"day_of_week": "الأحد", "period_number": 1, "subject_name": "اختبار"}, {"day_of_week": "الإثنين", "period_number": 1, "subject_name": "اختبار"}}}); r.status != 200 {
+		{"day_of_week": "الأحد", "period_number": 1, "subject_name": "اختبار"}, {"day_of_week": "الأحد", "period_number": 2, "subject_name": "اختبار"},
+		{"day_of_week": "الأحد", "period_number": 3, "subject_name": "اختبار"}, {"day_of_week": "الأحد", "period_number": 4, "subject_name": "اختبار"},
+		{"day_of_week": "الأحد", "period_number": 5, "subject_name": "اختبار"}}}); r.status != 200 {
 		t.Fatalf("G2/A schedule: %d %s", r.status, r.body)
 	}
 	existingRows := func() string {
@@ -220,7 +222,7 @@ func TestS1SeedStaging(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("dry run: exit %d\n%s", code, out)
 		}
-		for _, want := range []string{"DRY RUN: nothing will be changed", "47 will be created", "REPLACES the existing schedule of G2/A (2 periods)", "G6/B keeps no schedule", "Device SEED-FAKE-0001: will be registered", "Leaves: 8 will be recorded", "Banners: 3 will be uploaded", "DRY RUN: nothing was changed"} {
+		for _, want := range []string{"DRY RUN: nothing will be changed", "47 will be created", "REPLACES the existing schedule of G2/A (5 periods)", "G6/B keeps no schedule", "Device SEED-FAKE-0001: will be registered", "Leaves: 8 will be recorded", "Banners: 3 will be uploaded", "DRY RUN: nothing was changed"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("dry-run output lacks %q\n%s", want, out)
 			}

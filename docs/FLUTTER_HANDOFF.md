@@ -59,7 +59,9 @@ Every JSON error has this shape:
 {"status": "error", "message": "Invalid or expired token"}
 ```
 
-Decide what to do from the **HTTP status**. `message` is for logs and may change.
+Decide what to do from the **HTTP status**. `message` is for logs and may change. The one
+extension: a 400 from the admin Excel import (`POST /api/admin/schedule/import`) can add an
+`errors` list (see [Weekly schedule](#weekly-schedule)).
 
 Some responses are **not JSON**: 431, and 502/503 from Railway's edge proxy during a deploy.
 Handle a non-JSON body without crashing.
@@ -146,7 +148,7 @@ These strings are never null but may be `""`:
 | `GET /api/mobile/banners` | Newest first |
 
 - **Schedule days:** `day_of_week` is the day name as stored. Schedules saved from the admin
-  dashboard always use `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس`; rows the school
+  dashboard (screen or Excel import) always use `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس`; rows the school
   entered earlier by other means may use other spellings (English, without hamza). It isn't an
   enum or a number. Group consecutive entries by `day_of_week` in the order received; don't sort
   or switch on English names.
@@ -154,6 +156,37 @@ These strings are never null but may be `""`:
   out. For a month where no child has one (a future month, a month before the children were
   added, or a month whose first days are Friday and Saturday), both return `"data": []`, not zero
   counts.
+
+## Weekly schedule in the parent app
+
+`GET /api/mobile/schedule` returns one flat list for all of the parent's children: by child (`id`
+ascending), then Sunday to Thursday, then `period_number`.
+
+- **Group** the items by `student_id`, then by `day_of_week` in the order received (Sunday to
+  Thursday). Don't sort by the day name.
+- **Header:** show the child's `student_name`, `grade` and `section` from the items.
+- **Periods chip:** count the day's items and show "N periods" (5 or 6 for schedules saved since
+  API 1.13.0; older ones may differ).
+- **Teacher:** `teacher_name` is `""` when not set; hide the teacher line then.
+- **Icon:** pick it from `subject_key`, never from the Arabic subject name. Map unknown values to
+  the `other` icon, since keys may be added later. The app owns the icon assets; suggested
+  concepts:
+
+  | `subject_key` | Subjects | Icon concept |
+  |---|---|---|
+  | `math` | الرياضيات, الحساب | calculator |
+  | `pe` | التربية الرياضية, التربية البدنية | ball or running figure |
+  | `arabic` | اللغة العربية, القراءة | Arabic letter or open book |
+  | `english` | اللغة الإنكليزية | "Aa" or speech bubble |
+  | `islamic` | التربية الإسلامية, القرآن الكريم | crescent or mosque |
+  | `computer` | الحاسوب | laptop |
+  | `science` | العلوم | flask |
+  | `social` | الاجتماعيات, التاريخ, الجغرافية, التربية الوطنية | globe |
+  | `art` | التربية الفنية, الرسم | palette or brush |
+  | `music` | الموسيقى, الأناشيد | music note |
+  | `other` | anything else | generic book (default) |
+
+- A child whose grade and section match no saved schedule has no items: show "no schedule yet".
 
 ## Banners in the parent app
 
@@ -327,26 +360,45 @@ children goes to all of them, including children the school adds later.
 
 ### Weekly schedule
 
-One screen edits the schedule of one class (a grade and section pair):
+Every class (a grade and section pair) has its own weekly schedule. There are two ways to edit
+it: one class at a time on a screen, or the whole school in Excel.
 
-1. **Choose the class** from the distinct `grade` and `section` values in
-   `GET /api/admin/students`. There's no class-list endpoint.
-2. **Load it** with `GET /api/admin/schedule?grade=G3&section=A`. A class without a schedule
+**The 5-or-6 rule (since API 1.13.0).** A day that has periods has **exactly 5 or 6**, numbered
+**1 to 5 or 1 to 6**: no gaps, no repeats, nothing above 6. A day can be left out entirely (no
+lessons that day), and different days of one class can have 5 or 6. Anything else is a 400 that
+names the day. In the editing grid, show six rows per day and let the admin leave the sixth row
+empty: a day with 5 periods simply has no period 6. Don't send a day with only some periods
+filled; check the rule before saving and point at the day.
+
+**Screen flow (one class):**
+
+1. **Overview:** `GET /api/admin/schedule/classes` lists every known class: the grade and section
+   pairs of active students together with every class that has a schedule, each with
+   `student_count`, `period_count` and `day_count`. It's ordered by the stored strings; sort for
+   display yourself. Show warnings from the counts:
+   - `student_count` 0: "no students match this class, parents won't see this schedule" (usually a
+     typo in the grade or section);
+   - `period_count` 0: "no schedule yet".
+2. **Open a class** with `GET /api/admin/schedule?grade=G3&section=A`. A class without a schedule
    returns 200 with `"data": []`.
-3. **Edit the grid** locally: Sunday to Thursday, periods 1 to 12, each cell a subject and an
+3. **Edit the grid** locally: Sunday to Thursday, periods 1 to 6, each cell a subject and an
    optional teacher.
 4. **Save the whole class with one `PUT /api/admin/schedule`:**
    ```json
    {"grade": "G3", "section": "A", "periods": [
-     {"day_of_week": "الأحد", "period_number": 1, "subject_name": "Mathematics", "teacher_name": "Teacher Example"},
-     {"day_of_week": "الأحد", "period_number": 2, "subject_name": "Science", "teacher_name": null}
+     {"day_of_week": "الأحد", "period_number": 1, "subject_name": "الرياضيات", "teacher_name": "معلم تجريبي 1"},
+     {"day_of_week": "الأحد", "period_number": 2, "subject_name": "العلوم", "teacher_name": null},
+     {"day_of_week": "الأحد", "period_number": 3, "subject_name": "اللغة العربية", "teacher_name": null},
+     {"day_of_week": "الأحد", "period_number": 4, "subject_name": "اللغة الإنكليزية", "teacher_name": null},
+     {"day_of_week": "الأحد", "period_number": 5, "subject_name": "التربية الفنية", "teacher_name": null}
    ]}
    ```
    It replaces every period of that class; cells you leave out are removed. Other classes never
-   change. The response has the same shape as the `GET`, with the schedule as now stored; show it
-   instead of your local copy.
+   change. The response has the same shape as the `GET`, with the schedule as now stored (each
+   period with its `subject_key`); show it instead of your local copy. `subject_key` is
+   read-only: you may send the periods back with it, and it's ignored.
 
-**Rules:**
+**Rules for `PUT`:**
 
 - **Empty save:** `"periods": []` clears that class's schedule. Ask the admin to confirm first.
   Leaving `periods` out (or `null`) is a 400, so a bug can't clear a class.
@@ -354,19 +406,80 @@ One screen edits the schedule of one class (a grade and section pair):
   The server stores and returns `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس`. Friday,
   Saturday or anything else is 400.
 - **Limits:**
-  - `period_number` is 1 to 12.
+  - `period_number` is 1 to 6, and each day follows the 5-or-6 rule.
   - `subject_name` is required, 1 to 100 characters.
   - `teacher_name` is optional, up to 100 characters; `null` or blank is saved as `null`.
   - `grade` and `section` are required, 1 to 50 characters, and saved with surrounding spaces
     removed.
-  - At most 60 periods per request (5 days × 12), and each day and period pair at most once.
-- **Errors:** a 400 `message` names the problem, and a period by its 0-based index, for example
-  `periods[2].day_of_week must be a school day, Sunday to Thursday (Arabic or English)`. A failed
-  save (400 or 500) changes nothing; the stored schedule stays as it was.
-- **Two admins saving the same class at once:** one save wins entirely; the schedule is never a mix.
+  - At most 30 periods per request (5 days × 6), and each day and period pair at most once.
+- **Errors:** a 400 `message` names the problem, the period by its 0-based index and the day, for
+  example `periods[5].day_of_week الإثنين has periods 1, 2, 3, 4; a school day must have exactly
+  5 or 6 periods, numbered 1 to 5 or 1 to 6`. A failed save (400 or 500) changes nothing.
+- **Two admins saving the same class at once** (or a save during an Excel import): one wins
+  entirely; the schedule is never a mix.
 - **What parents see:** `GET /api/mobile/schedule` shows these periods to every active child whose
   `grade` and `section` are equal to the saved ones, in the same order. A missing teacher appears
   there as `""` (here it's `null`).
+- **Schedules saved before API 1.13.0** may break the rule (4 periods, period 8, a Friday row, an
+  English day name). They stay readable everywhere, unchanged, until the class is saved again;
+  then the new save must follow the rule. Show such a class as it is and let the admin fix it.
+
+**Excel flow (the whole school):**
+
+1. **Download** `GET /api/admin/schedule/export` with the `Authorization` header and save the
+   response bytes as a file (it's a binary `.xlsx`, not JSON; the name is in
+   `Content-Disposition`, `schedule_<date>.xlsx`). Optional `grade` and/or `section` narrow it to
+   matching classes (exact match; present but blank is 400).
+2. **The file:** right-to-left, the ministry line, school name and a title in rows 1 to 3, the
+   column headers in row 5, the data from row 6. It's a **full grid**: for every known class, one
+   row per day (Sunday to Thursday) and period (1 to 6), 30 rows per class, with the stored
+   subject and teacher or blank cells. Every cell is text. With no class at all you get only the
+   headers: a blank template.
+3. The admin **edits it** in Excel, LibreOffice or Numbers and saves it as `.xlsx`.
+4. **Upload** it as `multipart/form-data` to `POST /api/admin/schedule/import`, part `file`. **Always
+   send `dry_run=true` first**, show the result, and only after the admin confirms send the same
+   file again without `dry_run` (or with `dry_run=false`).
+   - **200:** `classes` (each with `periods` and `matched_students`), `total_periods` and
+     `warnings`. Show every warning: a class no active student has is saved, but no parent sees
+     it.
+   - **400 with `errors`:** a list of problems, each with `sheet`, `row` (the row number Excel
+     shows), `column` (the standard Arabic header name) and `message`. Show them as a table so
+     the admin can fix the file. At most 50 are listed, then one item with only a `message` such
+     as `and 12 more problems`. Nothing was saved.
+   - **400 without `errors`:** the file as a whole is wrong (not an `.xlsx`, empty, no header row,
+     more than 2000 filled rows or 100 classes) or the request is wrong. Show `message`.
+   - **413:** the file is over 2 MiB.
+
+**Columns** (found by header name, in any order; extra columns are ignored; the header row must
+be one of the first 10 rows, and title rows above it are fine):
+
+| Column | Also accepted | Content |
+|---|---|---|
+| `المرحلة` | `الصف`, `grade` | Required, 1 to 50 characters, exactly as the students have it |
+| `الشعبة` | `section` | Required, 1 to 50 characters, exactly as the students have it |
+| `اليوم` | `day` | Sunday to Thursday, in Arabic (with or without hamza) or English |
+| `الحصة` | `period` | A whole number 1 to 6 (Arabic-Indic or Persian digits are fine) |
+| `المادة` | `subject` | Required when the row has a teacher, 1 to 100 characters |
+| `المعلم` | `المدرس`, `teacher` | Optional, up to 100 characters |
+
+**Import rules:**
+
+- **Blank rows are ignored:** a row whose subject and teacher are both empty doesn't count, so
+  the empty grid rows of the export are fine. Leave a sixth period empty for a 5-period day, and
+  all six empty for a day without lessons.
+- **A class in the file is fully replaced**, exactly as with `PUT`, including days that have no
+  filled row in the file. **Classes not in the file are untouched.** A class whose rows are all
+  blank isn't in the file; to clear a class, use `PUT` with `"periods": []`.
+- **All or nothing:** any problem anywhere saves nothing.
+- Every worksheet with the header row is read (others, such as notes, are ignored), so one sheet
+  per grade works. A day and period may appear once per class across all sheets.
+- Grade and section are kept exactly as written (only surrounding spaces are removed), so `G3` and
+  `g3` are different classes. Don't merge cells in the table: a merged cell is read as blank in
+  every row but the first.
+- Formulas are not evaluated; the value Excel saved is used. A formula with no saved value is an
+  error naming the cell.
+- Rows saved before API 1.13.0 on Friday or Saturday, or with a period above 6, aren't in the
+  export; importing that class removes them.
 
 ### Banners
 
@@ -434,7 +547,19 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.12.0 (this release):**
+**In API 1.13.0 (this release):**
+
+- **Breaking for a dashboard that saves other period counts:** `PUT /api/admin/schedule` accepts
+  only days with exactly 5 or 6 periods numbered from 1 (`period_number` 1 to 6, at most 30
+  periods). Schedules saved earlier stay readable until saved again.
+- **New:** `GET /api/admin/schedule/classes` (class overview), `GET /api/admin/schedule/export`
+  (Excel download) and `POST /api/admin/schedule/import` (Excel upload; its 400 can carry an
+  `errors` list, the one extension of the error envelope). See [Weekly schedule](#weekly-schedule).
+- **Added field:** `subject_key` on every item of `GET /api/mobile/schedule` and of the admin
+  schedule `GET` and `PUT` responses. Nothing else in those responses changed. See
+  [Weekly schedule in the parent app](#weekly-schedule-in-the-parent-app).
+
+**In API 1.12.0:**
 
 - **`parent_pin` must be 16 to 72 printable ASCII characters with at least one letter, one digit
   and one symbol** whenever the admin sets or replaces it (400 otherwise). This breaks only a

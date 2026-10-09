@@ -7,6 +7,8 @@
 --   internal/handlers/admin.go — AdminStudentsHandler, AdminDashboardHandler,
 --     AdminDailyAttendanceHandler, AdminExportExcelHandler, AdminDevicesHandler.
 --   internal/handlers/mobile.go — every parent endpoint reads students.
+--   internal/handlers/schedule_excel.go — AdminScheduleClassesHandler, AdminScheduleExportHandler
+--     and AdminScheduleImportHandler read students.
 --   internal/cron/absent_job.go — ProcessDailyAbsences reads students.
 -- Data loss: every student, device and attendance punch is deleted permanently. Only run this
 --   when tearing down the whole database.

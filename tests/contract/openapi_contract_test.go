@@ -27,9 +27,11 @@ import (
 	"testing"
 	"time"
 
+	"future_kids/internal/handlers"
 	"future_kids/internal/testdb"
 	"future_kids/internal/tz"
 
+	excelize "github.com/xuri/excelize/v2"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -317,6 +319,22 @@ func contractPNG(t *testing.T, seed int) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, contractPicture(seed)); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// contractScheduleXLSX is a valid schedule workbook: class G4/C with five periods on Sunday.
+func contractScheduleXLSX(t *testing.T) []byte {
+	t.Helper()
+	f := excelize.NewFile()
+	defer f.Close()
+	f.SetSheetRow("Sheet1", "A1", &[]string{"المرحلة", "الشعبة", "اليوم", "الحصة", "المادة", "المعلم"})
+	for i := 1; i <= 5; i++ {
+		f.SetSheetRow("Sheet1", fmt.Sprintf("A%d", i+1), &[]string{"G4", "C", "الأحد", strconv.Itoa(i), "Mathematics", ""})
+	}
+	var buf bytes.Buffer
+	if err := f.Write(&buf); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -823,6 +841,11 @@ func (r *runner) scenario() {
 		}
 	}
 	r.expect("missing teacher is an empty string", at(d, "data", 1, "teacher_name"), "")
+	var keys []string
+	for _, e := range list(at(d, "data")) {
+		keys = append(keys, str(at(e, "subject_key")))
+	}
+	r.expect("subject_key of each entry", keys, []string{"math", "other", "science", "music", "art", "other", "math", "social", "other"})
 	parentDenied("GET /api/mobile/schedule", "")
 
 	// ── Notifications ──────────────────────────────────────────────────────────
@@ -1020,20 +1043,43 @@ func (r *runner) scenario() {
 		}
 		return map[string]any{"grade": "G4", "section": "C", "periods": periods}
 	}
+	day := func(name string, n int, subject string, teacher any) []map[string]any {
+		var out []map[string]any
+		for i := 1; i <= n; i++ {
+			out = append(out, period(name, i, subject, teacher))
+		}
+		return out
+	}
+	join := func(lists ...[]map[string]any) []map[string]any {
+		var out []map[string]any
+		for _, l := range lists {
+			out = append(out, l...)
+		}
+		return out
+	}
 	scheduleRows := func(d any) []string {
 		var rows []string
 		for _, e := range list(at(d, "data")) {
-			rows = append(rows, fmt.Sprintf("%s %v %s", at(e, "day_of_week"), at(e, "period_number"), at(e, "subject_name")))
+			rows = append(rows, fmt.Sprintf("%s %v %s %s", at(e, "day_of_week"), at(e, "period_number"), at(e, "subject_name"), at(e, "subject_key")))
 		}
 		return rows
 	}
-	wantSchedule := []string{"الأحد 1 Mathematics", "الأحد 2 Science", "الإثنين 1 Reading", "الخميس 2 Art"}
-	_, d = r.call("PUT /api/admin/schedule", "scrambled periods with mixed day names", "", admin, map[string]any{"grade": " G4 ", "section": "C ", "periods": []map[string]any{
-		period("Thursday", 2, "Art", nil), period("الاحد", 2, "Science", "Teacher Example"), period(" monday ", 1, "Reading", "  "), period("الأحد", 1, "Mathematics", "Teacher Example"),
-	}}, 200)
+	var wantSchedule []string
+	for _, w := range []struct {
+		day, subject, key string
+		n                 int
+	}{{"الأحد", "Science", "science", 6}, {"الإثنين", "Reading", "other", 5}, {"الخميس", "Art", "art", 5}} {
+		for i := 1; i <= w.n; i++ {
+			wantSchedule = append(wantSchedule, fmt.Sprintf("%s %d %s %s", w.day, i, w.subject, w.key))
+		}
+	}
+	scrambled := join(day("Thursday", 5, "Art", nil), day("الاحد", 6, "Science", "Teacher Example"), day(" monday ", 5, "Reading", "  "))
+	scrambled[0], scrambled[10] = scrambled[10], scrambled[0]
+	scrambled[6]["day_of_week"] = "الأحد"
+	_, d = r.call("PUT /api/admin/schedule", "scrambled periods with mixed day names", "", admin, map[string]any{"grade": " G4 ", "section": "C ", "periods": scrambled}, 200)
 	r.expect("saved schedule: canonical days, school week, period", scheduleRows(d), wantSchedule)
 	r.expect("saved class is trimmed", fmt.Sprint(at(d, "grade"), "/", at(d, "section")), "G4/C")
-	r.expect("blank teacher_name is stored as null", at(d, "data", 2, "teacher_name"), nil)
+	r.expect("blank teacher_name is stored as null", at(d, "data", 6, "teacher_name"), nil)
 	_, d = r.call("GET /api/admin/schedule", "class schedule", "?grade=G4&section=C", admin, nil, 200)
 	r.expect("read back the saved schedule", scheduleRows(d), wantSchedule)
 	_, d = r.call("GET /api/admin/schedule", "class without a schedule", "?grade=G9&section=Z", admin, nil, 200)
@@ -1044,13 +1090,12 @@ func (r *runner) scenario() {
 	adminDenied("GET /api/admin/schedule", "?grade=G4&section=C", nil)
 
 	ok := period("الأحد", 1, "Mathematics", nil)
-	var sixtyOne []map[string]any
-	for _, day := range []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"} {
-		for n := 1; n <= 12; n++ {
-			sixtyOne = append(sixtyOne, period(day, n, "Mathematics", nil))
-		}
+	var thirtyOne []map[string]any
+	for _, name := range []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"} {
+		thirtyOne = append(thirtyOne, day(name, 6, "Mathematics", nil)...)
 	}
-	sixtyOne = append(sixtyOne, period("Sunday", 1, "Extra", nil))
+	thirtyOne = append(thirtyOne, period("Sunday", 1, "Extra", nil))
+	gap := join(day("الأحد", 4, "Mathematics", nil), []map[string]any{period("الأحد", 6, "Mathematics", nil)})
 	for _, tc := range []struct {
 		name string
 		body any
@@ -1059,15 +1104,17 @@ func (r *runner) scenario() {
 		{"missing grade", map[string]any{"section": "C", "periods": []any{ok}}, "grade is required"},
 		{"blank section", map[string]any{"grade": "G4", "section": "  ", "periods": []any{ok}}, "section is required"},
 		{"grade too long", map[string]any{"grade": strings.Repeat("g", 51), "section": "C", "periods": []any{ok}}, "grade must be at most 50 characters"},
-		{"period_number 0", classG4C(period("الأحد", 0, "Mathematics", nil)), "periods[0].period_number must be from 1 to 12"},
-		{"period_number 13", classG4C(ok, period("الخميس", 13, "Mathematics", nil)), "periods[1].period_number must be from 1 to 12"},
+		{"period_number 0", classG4C(period("الأحد", 0, "Mathematics", nil)), "periods[0].period_number must be from 1 to 6"},
+		{"period_number 7", classG4C(ok, period("الخميس", 7, "Mathematics", nil)), "periods[1].period_number must be from 1 to 6"},
+		{"a day with 4 periods", classG4C(join(day("الأحد", 5, "Mathematics", nil), day("Monday", 4, "Art", nil))...), "periods[5].day_of_week الإثنين has periods 1, 2, 3, 4; a school day must have exactly 5 or 6 periods, numbered 1 to 5 or 1 to 6"},
+		{"a day with a gap", classG4C(gap...), "periods[0].day_of_week الأحد has periods 1, 2, 3, 4, 6; a school day must have exactly 5 or 6 periods, numbered 1 to 5 or 1 to 6"},
 		{"blank subject_name", classG4C(period("الأحد", 1, "   ", nil)), "periods[0].subject_name is required"},
 		{"subject_name too long", classG4C(period("الأحد", 1, strings.Repeat("م", 101), nil)), "periods[0].subject_name must be at most 100 characters"},
 		{"teacher_name too long", classG4C(period("الأحد", 1, "Mathematics", strings.Repeat("م", 101))), "periods[0].teacher_name must be at most 100 characters"},
 		{"same day and period twice", classG4C(ok, period("Sunday", 1, "Art", nil)), "periods contain day_of_week الأحد with period_number 1 more than once"},
 		{"Friday", classG4C(period("Friday", 1, "Mathematics", nil)), "periods[0].day_of_week must be a school day, Sunday to Thursday (Arabic or English)"},
 		{"Saturday in Arabic", classG4C(period("السبت", 1, "Mathematics", nil)), "periods[0].day_of_week must be a school day, Sunday to Thursday (Arabic or English)"},
-		{"61 periods", classG4C(sixtyOne...), "periods must contain at most 60 entries"},
+		{"31 periods", classG4C(thirtyOne...), "periods must contain at most 30 entries"},
 		{"periods missing", map[string]any{"grade": "G4", "section": "C"}, "periods is required; send an empty array to clear the schedule"},
 		{"period_number not an integer", `{"grade":"G4","section":"C","periods":[{"day_of_week":"Sunday","period_number":1.5,"subject_name":"Art"}]}`, "Invalid request body"},
 		{"malformed JSON", "{", "Invalid request body"},
@@ -1077,6 +1124,12 @@ func (r *runner) scenario() {
 	}
 	_, d = r.call("GET /api/admin/schedule", "rejected saves changed nothing", "?grade=G4&section=C", admin, nil, 200)
 	r.expect("schedule after rejected saves", scheduleRows(d), wantSchedule)
+	echoed := join(day("الأحد", 6, "Science", "Teacher Example"), day("الإثنين", 5, "Reading", nil), day("الخميس", 5, "Art", nil))
+	for i, p := range echoed {
+		p["subject_key"] = []any{"other", 7, map[string]any{"x": true}}[i%3]
+	}
+	_, d = r.call("PUT /api/admin/schedule", "subject_key sent back is ignored", "", admin, classG4C(echoed...), 200)
+	r.expect("schedule saved with subject_key in the request", scheduleRows(d), wantSchedule)
 	r.call("PUT /api/admin/schedule", "oversized body", "", admin, oversized(), 413)
 	adminDenied("PUT /api/admin/schedule", "", classG4C())
 	_, d = r.call("PUT /api/admin/schedule", "empty periods clears the class", "", admin, classG4C(), 200)
@@ -1085,6 +1138,129 @@ func (r *runner) scenario() {
 	r.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE grade = 'G4' AND section = 'C'), COUNT(*) FILTER (WHERE grade = 'G3' AND section = 'A') FROM weekly_schedules`).Scan(&g4c, &g3a)
 	r.expect("rows left for the cleared class", g4c, 0)
 	r.expect("rows of another class after clearing", g3a, 6)
+
+	// ── Schedule classes, Excel export and import ──────────────────────────────
+	_, d = r.call("GET /api/admin/schedule/classes", "known classes", "", admin, nil, 200)
+	var classList []string
+	for _, c := range list(at(d, "data")) {
+		classList = append(classList, fmt.Sprintf("%s/%s students=%v periods=%v days=%v", at(c, "grade"), at(c, "section"), at(c, "student_count"), at(c, "period_count"), at(c, "day_count")))
+	}
+	var wantClasses []string
+	rows, err := r.db.Query(`SELECT c.grade, c.section,
+		(SELECT COUNT(*) FROM students s WHERE s.is_active AND s.grade = c.grade AND s.section = c.section)
+		FROM (SELECT grade, section FROM students WHERE is_active AND btrim(COALESCE(grade, '')) <> '' AND btrim(COALESCE(section, '')) <> ''
+		      UNION SELECT grade, section FROM weekly_schedules) c ORDER BY c.grade COLLATE "C", c.section COLLATE "C"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]string{"G3/A": "periods=6 days=5", "G1/B": "periods=3 days=3"}
+	for rows.Next() {
+		var g, sec string
+		var n int
+		rows.Scan(&g, &sec, &n)
+		rest := counts[g+"/"+sec]
+		if rest == "" {
+			rest = "periods=0 days=0"
+		}
+		wantClasses = append(wantClasses, fmt.Sprintf("%s/%s students=%d %s", g, sec, n, rest))
+	}
+	rows.Close()
+	r.expect("classes: students' and stored classes with their counts", classList, wantClasses)
+	adminDenied("GET /api/admin/schedule/classes", "", nil)
+
+	sheetRows := func(t *testing.T, body []byte) [][]string {
+		t.Helper()
+		f, err := excelize.OpenReader(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("export is not a workbook: %v", err)
+		}
+		defer f.Close()
+		got, _ := f.GetRows("Sheet1")
+		return got
+	}
+	scheduleHeader := []string{"المرحلة", "الشعبة", "اليوم", "الحصة", "المادة", "المعلم"}
+	x, _ = r.call("GET /api/admin/schedule/export", "whole school", "", admin, nil, 200)
+	if !bytes.HasPrefix(x.body, []byte("PK\x03\x04")) {
+		t.Errorf("schedule export is not an xlsx (zip) file")
+	}
+	r.expect("schedule file name", x.header.Get("Content-Disposition"), "attachment; filename=schedule_"+today+".xlsx")
+	whole := sheetRows(t, x.body)
+	r.expect("whole-school export: header and 30 rows per class", len(whole), 5+30*len(wantClasses))
+	x, _ = r.call("GET /api/admin/schedule/export", "one class", "?grade=G3&section=A", admin, nil, 200)
+	one := sheetRows(t, x.body)
+	r.expect("export header row", one[4], scheduleHeader)
+	r.expect("first period of G3/A", one[5], []string{"G3", "A", "الأحد", "1", "Mathematics", "Teacher Example"})
+	r.expect("one class: 30 rows", len(one), 35)
+	x, _ = r.call("GET /api/admin/schedule/export", "unknown class", "?grade=G9", admin, nil, 200)
+	r.expect("unknown class: only the header", len(sheetRows(t, x.body)), 5)
+	r.call("GET /api/admin/schedule/export", "blank grade", "?grade=%20", admin, nil, 400)
+	r.call("GET /api/admin/schedule/export", "section too long", "?section="+strings.Repeat("s", 51), admin, nil, 400)
+	adminDenied("GET /api/admin/schedule/export", "", nil)
+
+	workbook := func(rows ...[]string) []byte {
+		f := excelize.NewFile()
+		defer f.Close()
+		for i, row := range rows {
+			for j, v := range row {
+				cell, _ := excelize.CoordinatesToCellName(j+1, i+1)
+				f.SetCellStr("Sheet1", cell, v)
+			}
+		}
+		var buf bytes.Buffer
+		if err := f.Write(&buf); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	importRows := [][]string{scheduleHeader}
+	for _, w := range []struct {
+		day, subject string
+		n            int
+	}{{"الأحد", "الرياضيات", 5}, {"Monday", "العلوم", 6}} {
+		for i := 1; i <= w.n; i++ {
+			importRows = append(importRows, []string{"G4", "C", w.day, strconv.Itoa(i), w.subject, "Teacher Example"})
+		}
+	}
+	upload := func(data []byte) formPart { return formPart{"file", "schedule.xlsx", handlers.XLSXContentType, data} }
+	valid := workbook(importRows...)
+	g4c = func() int {
+		var n int
+		r.db.QueryRow(`SELECT COUNT(*) FROM weekly_schedules WHERE grade = 'G4' AND section = 'C'`).Scan(&n)
+		return n
+	}()
+	_, d = r.call("POST /api/admin/schedule/import", "dry run", "", admin, multipartBody{upload(valid), field("dry_run", "true")}, 200)
+	r.expect("dry run report", fmt.Sprint(at(d, "dry_run"), " ", at(d, "total_periods"), " ", at(d, "classes", 0, "grade"), "/", at(d, "classes", 0, "section"), " ", at(d, "classes", 0, "periods"), " ", at(d, "classes", 0, "matched_students")), "true 11 G4/C 11 0")
+	r.expect("dry run warns about a class without students", len(list(at(d, "warnings"))), 1)
+	var after int
+	r.db.QueryRow(`SELECT COUNT(*) FROM weekly_schedules WHERE grade = 'G4' AND section = 'C'`).Scan(&after)
+	r.expect("dry run wrote nothing", after, g4c)
+	_, d = r.call("POST /api/admin/schedule/import", "import", "", admin, multipartBody{upload(valid), field("dry_run", "false")}, 200)
+	r.expect("import report", fmt.Sprint(at(d, "dry_run"), " ", at(d, "total_periods")), "false 11")
+	_, d = r.call("GET /api/admin/schedule", "imported class", "?grade=G4&section=C", admin, nil, 200)
+	r.expect("imported class read back", len(list(at(d, "data"))), 11)
+	r.expect("imported subject_key", fmt.Sprint(at(d, "data", 0, "subject_key"), " ", at(d, "data", 5, "subject_key")), "math science")
+	_, d = r.call("POST /api/admin/schedule/import", "rows with problems", "", admin, multipartBody{upload(workbook(scheduleHeader, []string{"G4", "C", "Friday", "1", "Art", ""}))}, 400)
+	r.expect("first problem", fmt.Sprint(at(d, "errors", 0, "sheet"), " ", at(d, "errors", 0, "row"), " ", at(d, "errors", 0, "column")), "Sheet1 2 اليوم")
+	for _, tc := range []struct {
+		name string
+		body any
+		msg  string
+	}{
+		{"not multipart", map[string]any{"file": "x"}, "Request must be multipart/form-data"},
+		{"no file", multipartBody{field("dry_run", "true")}, "file is required"},
+		{"dry_run not true or false", multipartBody{upload(valid), field("dry_run", "yes")}, `dry_run must be "true" or "false"`},
+		{"text named .xlsx", multipartBody{upload([]byte("grade,section\nG4,C\n"))}, "file must be an Excel workbook (.xlsx)"},
+		{"empty file", multipartBody{upload(nil)}, "file is empty"},
+		{"file sent twice", multipartBody{upload(valid), upload(valid)}, "file must be sent once"},
+		{"no header row", multipartBody{upload(workbook([]string{"Notes"}))}, "No worksheet has the header row (المرحلة, الشعبة, اليوم, الحصة, المادة, المعلم) in its first 10 rows"},
+	} {
+		_, d = r.call("POST /api/admin/schedule/import", tc.name, "", admin, tc.body, 400)
+		r.expect("message for "+tc.name, at(d, "message"), tc.msg)
+	}
+	_, d = r.call("POST /api/admin/schedule/import", "file over 2 MiB", "", admin, multipartBody{upload(make([]byte, 2<<20+1))}, 413)
+	r.expect("message for a file over 2 MiB", at(d, "message"), "file must be at most 2 MiB (2097152 bytes)")
+	r.call("POST /api/admin/schedule/import", "body over the limit", "", admin, multipartBody{upload(valid), {name: "padding", data: bytes.Repeat([]byte("p"), 3<<20)}}, 413)
+	adminDenied("POST /api/admin/schedule/import", "", multipartBody{upload(valid)})
 
 	// ── System ─────────────────────────────────────────────────────────────────
 	r.call("GET /health", "liveness", "", "", nil, 200)
@@ -1162,6 +1338,9 @@ func (r *runner) databaseFailures() {
 	r.call("DELETE /api/admin/students", "database error", "?id=1", admin, nil, 500)
 	r.call("PUT /api/admin/settings", "database error", "", admin, map[string]string{"key": "internal_note", "value": "x"}, 500)
 	r.call("GET /api/admin/schedule", "database error", "?grade=G4&section=C", admin, nil, 500)
+	r.call("GET /api/admin/schedule/classes", "database error", "", admin, nil, 500)
+	r.call("GET /api/admin/schedule/export", "database error", "", admin, nil, 500)
+	r.call("POST /api/admin/schedule/import", "database error", "", admin, multipartBody{{"file", "schedule.xlsx", handlers.XLSXContentType, contractScheduleXLSX(t)}}, 500)
 	bannerPicture := multipartBody{{"image", "banner.jpg", "image/jpeg", contractJPEG(t, 4)}}
 	r.call("POST /api/admin/banners", "database error", "", admin, bannerPicture, 500)
 	r.call("PUT /api/admin/banners", "database error", "?id=1", admin, multipartBody{{name: "title", data: []byte("Down")}}, 500)
@@ -1232,6 +1411,8 @@ func (r *runner) transport(t *testing.T) {
 	record("wrong method with a valid token", "PUT", "/api/mobile/students", authHeader(r.parent), 405, "GET, HEAD")
 	record("wrong method on an admin route", "PATCH", "/api/admin/devices", nil, 405, "DELETE, GET, HEAD, POST, PUT")
 	record("wrong method on the schedule route", "DELETE", "/api/admin/schedule", nil, 405, "GET, HEAD, PUT")
+	record("wrong method on the schedule import route", "GET", "/api/admin/schedule/import", nil, 405, "POST")
+	record("wrong method on the schedule export route", "POST", "/api/admin/schedule/export", nil, 405, "GET, HEAD")
 	record("wrong method on the banner picture route", "DELETE", "/api/mobile/banners/image", nil, 405, "GET, HEAD")
 	record("wrong method on a login route", "GET", "/api/admin/login", nil, 405, "POST")
 
@@ -1761,6 +1942,25 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		}},
 		{"parent_pin goes back to the 6-digit pattern", []string{"hygiene"}, func(root map[string]any) {
 			node(schemas(root), "StudentCreateRequest", "properties", "parent_pin")["pattern"] = "^[0-9]{6}$"
+		}},
+		{"subject_key is undocumented on the parent schedule", []string{"responses"}, func(root map[string]any) {
+			delete(obj(node(schemas(root), "ScheduleEntry")["properties"]), "subject_key")
+		}},
+		{"subject_key loses a value", []string{"responses"}, func(root map[string]any) {
+			sk := node(schemas(root), "SubjectKey")
+			var kept []any
+			for _, v := range list(sk["enum"]) {
+				if v != "math" {
+					kept = append(kept, v)
+				}
+			}
+			sk["enum"] = kept
+		}},
+		{"an import problem loses its row", []string{"responses"}, func(root map[string]any) {
+			delete(obj(node(schemas(root), "ScheduleImportError")["properties"]), "row")
+		}},
+		{"the import's dry_run part is undocumented", []string{"requests"}, func(root map[string]any) {
+			delete(obj(node(schemas(root), "ScheduleImportRequest")["properties"]), "dry_run")
 		}},
 		{"production is listed as a server", []string{"hygiene"}, func(root map[string]any) {
 			root["servers"] = append(list(root["servers"]), map[string]any{"url": "https://futurekids-production.up.railway.app"})
