@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Future Kids Attendance System API
-  version: 1.11.0
+  version: 1.12.0
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -1867,9 +1867,10 @@ components:
           type: string
           maxLength: 72
           description: |
-            The parent's PIN, as a string, compared exactly (not trimmed). New PINs are 6 digits,
-            but login checks no format, so a parent whose PIN was set before that rule keeps
-            logging in with it.
+            The parent's credential, as a string, compared exactly: never trimmed or changed. Login
+            accepts any format: new credentials are 16 to 72 ASCII characters with letters, digits
+            and symbols, but credentials set before that rule (4 or 6 digits) keep working, so
+            don't check the format in the app.
         fcm_token:
           type: string
           description: |
@@ -1882,7 +1883,7 @@ components:
         - pin
       example:
         phone: '+9647000000101'
-        pin: '482193'
+        pin: Kq7#vR2m!Tx9pW4z
         fcm_token: fcm-example-registration-token
     DeviceTokenRequest:
       type: object
@@ -2080,18 +2081,20 @@ components:
             with this number, creating the parent when the number is new.
         parent_pin:
           type: string
-          minLength: 6
-          maxLength: 6
-          pattern: ^[0-9]{6}$
+          minLength: 16
+          maxLength: 72
+          pattern: ^[\x21-\x7E]{16,72}$
           description: |
+            The parent's login credential (the parent types it into the app as `pin`).
             **Required when `parent_phone` is not registered yet** (a new parent): missing, empty
-            or only spaces returns 400. When set it must be exactly 6 ASCII digits `0-9` (any
-            other value returns 400; Arabic-Indic or Persian digits are rejected). The admin
-            dashboard generates it with a secure random source; the server never does, stores
-            only a hash and can never return it. For an already registered number it is
-            optional: a PIN replaces the current one and signs the parent out of every device
-            (their tokens get 401 and their registered push devices are removed); empty or
-            omitted keeps both.
+            or only spaces returns 400. When set it must be **16 to 72 characters of printable
+            ASCII** (`!` to `~`: no spaces, no other characters) with **at least one letter, one
+            digit and one symbol** (a symbol is any of those characters that is neither a letter
+            nor a digit); anything else returns 400. 72 is the bcrypt limit. The admin dashboard
+            generates it with a secure random source; the server never does, stores only a hash
+            and can never return it. For an already registered number it is optional: a value
+            replaces the current one and signs the parent out of every device (their tokens get
+            401 and their registered push devices are removed); empty or omitted keeps both.
         rfid_tag:
           type: string
           maxLength: 50
@@ -2116,7 +2119,7 @@ components:
         name: Sara Example
         parent_name: Omar Example
         parent_phone: '+9647000000101'
-        parent_pin: '482193'
+        parent_pin: Kq7#vR2m!Tx9pW4z
         rfid_tag: '1001'
         grade: G3
         section: A
@@ -2148,15 +2151,16 @@ components:
             not registered yet creates a new parent, which needs `parent_pin`.
         parent_pin:
           type: string
-          minLength: 6
-          maxLength: 6
-          pattern: ^[0-9]{6}$
+          minLength: 16
+          maxLength: 72
+          pattern: ^[\x21-\x7E]{16,72}$
           description: |
             **Required when `parent_phone` is not registered yet** (missing, empty or only spaces
-            returns 400); the dashboard generates it. When set it must be exactly 6 ASCII digits
-            (400 otherwise). For a registered number, a PIN replaces the current one and signs
-            the parent out of every device (tokens get 401, registered push devices are
-            removed); empty or omitted keeps it.
+            returns 400); the dashboard generates it, the server never does and never returns it.
+            When set it must be 16 to 72 characters of printable ASCII (no spaces) with at least
+            one letter, one digit and one symbol (400 otherwise). For a registered number, a value
+            replaces the current one and signs the parent out of every device (tokens get 401,
+            registered push devices are removed); empty or omitted keeps it.
         rfid_tag:
           type: string
           maxLength: 50
@@ -3412,7 +3416,8 @@ components:
       description: |
         Malformed JSON; `id` (update) missing or 0; `name`, `parent_name` or `parent_phone`
         missing or blank; `parent_phone` not an Iraqi mobile number; `parent_pin` missing for a
-        new parent or not exactly 6 digits; or a field longer than its `maxLength`.
+        new parent or not 16 to 72 ASCII characters with a letter, a digit and a symbol; or a
+        field longer than its `maxLength`.
       content:
         application/json:
           schema:
@@ -3424,10 +3429,10 @@ components:
                 status: error
                 message: parent_pin is required for a new parent (parent_phone is not registered yet)
             pinFormat:
-              summary: PIN that is not 6 digits
+              summary: parent_pin too short, too long, with spaces or without a letter, digit and symbol
               value:
                 status: error
-                message: parent_pin must be exactly 6 digits (0-9)
+                message: parent_pin must be 16 to 72 characters (ASCII, no spaces) with at least one letter, one digit and one symbol
             tooLong:
               summary: A field longer than its limit
               value:

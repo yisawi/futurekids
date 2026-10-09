@@ -184,7 +184,7 @@ for i in {1..10}; do
     phone=$PARENT_A; [ $((i % 2)) -eq 0 ] && phone=$PARENT_B
     s_http=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/admin/students" \
       -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-      -d "{\"name\":\"E2E Student $i\",\"parent_name\":\"E2E Parent\",\"parent_phone\":\"$phone\",\"parent_pin\":\"581736\",\"rfid_tag\":\"$rfid\"}")
+      -d "{\"name\":\"E2E Student $i\",\"parent_name\":\"E2E Parent\",\"parent_phone\":\"$phone\",\"parent_pin\":\"Av3#Jm8x@Rk5tW2p\",\"rfid_tag\":\"$rfid\"}")
     assert_http "Create student $i" "$s_http"
 done
 
@@ -303,7 +303,7 @@ section "Phase 7 — Mobile Authentication"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 mob_login_res=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/mobile/login" \
   -H "Content-Type: application/json" \
-  -d "{\"phone\":\"$PARENT_A\",\"pin\":\"581736\"}")
+  -d "{\"phone\":\"$PARENT_A\",\"pin\":\"Av3#Jm8x@Rk5tW2p\"}")
 mob_login_http=$(echo "$mob_login_res" | tail -n1)
 mob_login_body=$(echo "$mob_login_res" | sed '$d')
 assert_http "Mobile login" "$mob_login_http"

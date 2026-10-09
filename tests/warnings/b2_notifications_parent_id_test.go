@@ -115,9 +115,9 @@ func TestB2NotificationHistory(t *testing.T) {
 		return out
 	}
 
-	p1, _ := newParent("B2 Parent One", "+9647000000921", "482193", "B2-1")
-	p2, s2 := newParent("B2 Parent Two", "+9647000000922", "593047", "B2-2")
-	t1, t2 := login("+9647000000921", "482193"), login("+9647000000922", "593047")
+	p1, _ := newParent("B2 Parent One", "+9647000000921", "Kq7#vR2m!Tx9pW4z", "B2-1")
+	p2, s2 := newParent("B2 Parent Two", "+9647000000922", "Ze4&uM9k?Ga2fC7x", "B2-2")
+	t1, t2 := login("+9647000000921", "Kq7#vR2m!Tx9pW4z"), login("+9647000000922", "Ze4&uM9k?Ga2fC7x")
 	insert(p1, "+9647000000921", 3, "one")
 	insert(p2, "+9647000000922", 150, "two")
 
@@ -247,7 +247,7 @@ func TestB2NotificationHistory(t *testing.T) {
 	t.Run("past notifications stay with the parent they were sent to", func(t *testing.T) {
 		mineBefore := len(idsOf(p2))
 		r := a14Do(t, srv, "PUT", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"id": s2, "name": "B2 Parent Two Child", "parent_name": "B2 Parent Three", "parent_phone": "+9647000000923", "parent_pin": "631874",
+			"id": s2, "name": "B2 Parent Two Child", "parent_name": "B2 Parent Three", "parent_phone": "+9647000000923", "parent_pin": "Uf5&Hz9c!Mr3eJ7a",
 		})
 		if r.status != 200 {
 			t.Fatalf("move student: %d %s", r.status, r.body)
@@ -261,11 +261,11 @@ func TestB2NotificationHistory(t *testing.T) {
 		expired, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 			"parent_id": p1, "role": "parent", "sv": 0, "exp": time.Now().Add(-time.Hour).Unix(), "iat": time.Now().Add(-2 * time.Hour).Unix(),
 		}).SignedString([]byte("g3"))
-		pinChanged := login("+9647000000929", "482193")
+		pinChanged := login("+9647000000929", "Kq7#vR2m!Tx9pW4z")
 		var student any
 		db.QueryRow(`SELECT id FROM students WHERE parent_id = $1`, p1).Scan(&student)
 		if r := a14Do(t, srv, "PUT", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"id": student, "name": "B2 Parent One Child", "parent_name": "B2 Parent One", "parent_phone": "+9647000000929", "parent_pin": "604158",
+			"id": student, "name": "B2 Parent One Child", "parent_name": "B2 Parent One", "parent_phone": "+9647000000929", "parent_pin": "Nc6?Fa3w@Ub8rZ5k",
 		}); r.status != 200 {
 			t.Fatalf("change PIN: %d %s", r.status, r.body)
 		}

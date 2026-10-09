@@ -88,11 +88,11 @@ func TestD1AdminAPIFixes(t *testing.T) {
 	})
 
 	t.Run("D1/a valid PIN creates the parent and is the stored PIN", func(t *testing.T) {
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Valid", "+9647000000963", "731962", "D1-VALID"))
+		code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Valid", "+9647000000963", "Pd8?Xt3m%Ka6wN2g", "D1-VALID"))
 		expect(t, "create", code, body, 200, "")
 		var hash string
 		db.QueryRow(`SELECT pin_code FROM parents WHERE phone_number = '+9647000000963'`).Scan(&hash)
-		if bcrypt.CompareHashAndPassword([]byte(hash), []byte("731962")) != nil {
+		if bcrypt.CompareHashAndPassword([]byte(hash), []byte("Pd8?Xt3m%Ka6wN2g")) != nil {
 			t.Errorf("the stored PIN does not match the one sent")
 		}
 	})
@@ -147,7 +147,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 	db.QueryRow(`SELECT id FROM students WHERE rfid_tag = 'D1-SIB-0'`).Scan(&sibling)
 
 	t.Run("D2/duplicate tag on create is 409 and writes nothing", func(t *testing.T) {
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D2 Dup", "+9647000000965", "482617", "D1-VALID"))
+		code, body := call(students, "POST", "/api/admin/students", admin, student("D2 Dup", "+9647000000965", "Yb4!Sq7e-Cv2hF9n", "D1-VALID"))
 		expect(t, "create", code, body, 409, "rfid_tag")
 		if n := count(`SELECT COUNT(*) FROM parents WHERE phone_number = '+9647000000965'`); n != 0 {
 			t.Errorf("a parent was written by a failed create")
@@ -166,7 +166,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Exec(`ALTER TABLE students DROP CONSTRAINT d1_no_boom`)
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D2 Boom", "+9647000000966", "482617", "D2-BOOM"))
+		code, body := call(students, "POST", "/api/admin/students", admin, student("D2 Boom", "+9647000000966", "Yb4!Sq7e-Cv2hF9n", "D2-BOOM"))
 		expect(t, "check violation", code, body, 500, "")
 		if n := count(`SELECT COUNT(*) FROM parents WHERE phone_number = '+9647000000966'`); n != 0 {
 			t.Errorf("a parent was written by a failed create")
@@ -251,7 +251,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 		} {
 			for _, k := range []int{c.limit, c.limit + 1} {
 				phone, rfid := next()
-				b := student("D5", phone, "482617", rfid)
+				b := student("D5", phone, "Yb4!Sq7e-Cv2hF9n", rfid)
 				c.set(b, ar(k))
 				code, body := call(students, "POST", "/api/admin/students", admin, b)
 				if k == c.limit {
@@ -262,7 +262,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			}
 		}
 		phone, _ := next()
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D5", phone, "482617", strings.Repeat("t", 50)+"   "))
+		code, body := call(students, "POST", "/api/admin/students", admin, student("D5", phone, "Yb4!Sq7e-Cv2hF9n", strings.Repeat("t", 50)+"   "))
 		expect(t, "rfid_tag of 50 with trailing spaces", code, body, 200, "")
 		code, body = call(students, "PUT", "/api/admin/students", admin, map[string]any{"id": sibling, "name": ar(101), "parent_name": "D1 Valid Parent", "parent_phone": "+9647000000963"})
 		expect(t, "update name of 101", code, body, 400, "name must be at most 100 characters")
@@ -291,7 +291,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 		}
 	})
 
-	t.Run("D1/a PIN that is set must be exactly 6 ASCII digits", func(t *testing.T) {
+	t.Run("D1/a PIN that is set must follow the parent_pin rule", func(t *testing.T) {
 		for i, c := range []struct {
 			pin  string
 			want int
@@ -303,13 +303,13 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			{" 482617", 400},
 			{"٤٨٢٦١٧", 400},
 			{"۴۸۲۶۱۷", 400},
-			{"482617", 200},
+			{"Yb4!Sq7e-Cv2hF9n", 200},
 		} {
 			phone := fmt.Sprintf("+96470000009%02d", 70+i)
 			code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Format", phone, c.pin, fmt.Sprintf("D1-FMT-%d", i)))
 			mention := ""
 			if c.want == 400 {
-				mention = "parent_pin must be exactly 6 digits"
+				mention = handlers.PINFormatMessage
 			}
 			expect(t, fmt.Sprintf("create with PIN %q", c.pin), code, body, c.want, mention)
 			if c.want == 400 && count(`SELECT COUNT(*) FROM parents WHERE phone_number = $1`, phone) != 0 {
@@ -317,7 +317,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			}
 		}
 		code, body := call(students, "PUT", "/api/admin/students", admin, map[string]any{"id": sibling, "name": "D1 Valid", "parent_name": "D1 Valid Parent", "parent_phone": "+9647000000963", "parent_pin": "7319"})
-		expect(t, "update with a 4-digit PIN", code, body, 400, "parent_pin must be exactly 6 digits")
+		expect(t, "update with a 4-digit PIN", code, body, 400, handlers.PINFormatMessage)
 	})
 
 	t.Run("D1/login still accepts a legacy 4-digit PIN", func(t *testing.T) {

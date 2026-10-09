@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -238,7 +237,7 @@ func validateStudentPayload(req *StudentPayload) string {
 		return InvalidParentPhoneMessage
 	}
 	req.ParentPhone = canonical
-	if strings.TrimSpace(req.ParentPin) != "" && !pinFormat.MatchString(req.ParentPin) {
+	if strings.TrimSpace(req.ParentPin) != "" && !validParentPin(req.ParentPin) {
 		return PINFormatMessage
 	}
 	grade, section := "", ""
@@ -260,12 +259,31 @@ func validateStudentPayload(req *StudentPayload) string {
 	)
 }
 
-// A PIN the admin sets is exactly 6 ASCII digits. Login does not check the format, so parents
-// whose PIN was set before this rule keep logging in with it.
-var pinFormat = regexp.MustCompile(`^[0-9]{6}$`)
+// validParentPin reports whether a credential the admin sets is 16 to 72 printable ASCII
+// characters (0x21 to 0x7E; 72 is the bcrypt byte limit) with at least one letter, one digit and
+// one symbol. Login does not check the format, so credentials set before this rule keep working.
+func validParentPin(pin string) bool {
+	if len(pin) < 16 || len(pin) > 72 {
+		return false
+	}
+	var letter, digit, symbol bool
+	for i := 0; i < len(pin); i++ {
+		switch c := pin[i]; {
+		case c < 0x21 || c > 0x7E:
+			return false
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z':
+			letter = true
+		case '0' <= c && c <= '9':
+			digit = true
+		default:
+			symbol = true
+		}
+	}
+	return letter && digit && symbol
+}
 
-// PINFormatMessage is the 400 message for a parent_pin that is set but not 6 ASCII digits.
-const PINFormatMessage = "parent_pin must be exactly 6 digits (0-9)"
+// PINFormatMessage is the 400 message for a parent_pin that is set but breaks validParentPin.
+const PINFormatMessage = "parent_pin must be 16 to 72 characters (ASCII, no spaces) with at least one letter, one digit and one symbol"
 
 // Messages for the student writes.
 const (

@@ -495,7 +495,7 @@ func TestF1Banners(t *testing.T) {
 	})
 
 	t.Run("the parent app sees active banners and their public pictures", func(t *testing.T) {
-		const parentPhone, parentPin = "+9647000001201", "604158"
+		const parentPhone, parentPin = "+9647000001201", "Nc6?Fa3w@Ub8rZ5k"
 		if r := a14Do(t, srv, "POST", "/api/admin/students", bearer, map[string]any{"name": "Sara Example", "parent_name": "Omar Example", "parent_phone": parentPhone, "parent_pin": parentPin}); r.status != 200 {
 			t.Fatalf("create student: %d %s", r.status, r.body)
 		}

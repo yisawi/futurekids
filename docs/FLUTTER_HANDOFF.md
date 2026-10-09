@@ -31,9 +31,14 @@ Production is shared separately at release. Don't hard-code URLs; make the base 
    - No client-side formatting is needed. All formats are the same number, and the response's
      `data.parent.phone` is always `+9647XXXXXXXXX`. Anything else (a landline, a foreign number)
      gets the same 401 as an unregistered number.
-   - `pin` is a string, sent exactly as typed. New PINs are 6 digits, but don't validate the
-     format in the app: parents whose PIN was set earlier may have a different one, and login
-     accepts it.
+   - `pin` is the parent's credential, a string sent **exactly as typed**: don't trim it and don't
+     check its format. New credentials are 16 characters with letters, digits and symbols (for
+     example `Kq7#vR2m!Tx9pW4z`), but older ones of 4 or 6 digits still exist and login accepts
+     them.
+   - **The login field is a normal text field**, not a numeric keypad: an obscured text field with
+     a show/hide toggle, paste allowed, autocorrect and suggestions off, no capitalisation.
+   - People on an Arabic keyboard must switch layouts to type Latin letters and symbols, which is
+     why the dashboard uses a small symbol set. The token lasts **30 days**, so typing it is rare.
 4. **Store the token:** keep `data.token` in secure storage, along with `data.parent`
    (`id`, `name`, `phone`). **Never store the PIN.**
 5. **Authenticate every other parent call:** send `Authorization: Bearer <token>`. The word
@@ -256,18 +261,33 @@ children goes to all of them, including children the school adds later.
 - **PIN for a new parent:** `POST`/`PUT /api/admin/students` with a `parent_phone` that isn't
   registered yet **needs `parent_pin`**.
   - Missing, empty or only spaces → 400 `parent_pin is required for a new parent …`. The server
-    never makes up a PIN.
-  - **Format:** exactly **6 ASCII digits** (`0-9`). Anything else, including Arabic-Indic or
-    Persian digits and spaces, gets 400 `parent_pin must be exactly 6 digits (0-9)`.
-  - **Generate it with a cryptographically secure random source.** In Dart that's
-    `Random.secure()`, e.g. `List.generate(6, (_) => Random.secure().nextInt(10)).join()`. Never
-    use `Random()` or anything derived from the phone number or date.
+    never makes one up.
+  - **Format:** **16 to 72 printable ASCII characters** (no spaces, nothing outside `!` to `~`)
+    with **at least one letter, one digit and one symbol**. Anything else gets 400 `parent_pin
+    must be 16 to 72 characters (ASCII, no spaces) with at least one letter, one digit and one
+    symbol`.
+  - **Generate 16 characters with a cryptographically secure random source:** `Random.secure()` in
+    Dart, never `Random()` or anything derived from the phone number or date. Draw from a set
+    without look-alikes and guarantee each kind by construction, for example:
+    ```dart
+    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz'; // no I, l, O, o
+    const digits = '23456789';                                          // no 0, 1
+    const symbols = '!@#\$%&*?-_';
+    String newParentCredential() {
+      final r = Random.secure();
+      String pick(String set) => set[r.nextInt(set.length)];
+      const all = letters + digits + symbols;
+      final chars = [pick(letters), pick(digits), pick(symbols),
+        for (var i = 0; i < 13; i++) pick(all)]..shuffle(r);
+      return chars.join();
+    }
+    ```
   - **Show it before saving:** hidden, with a reveal toggle and a copy button, so the admin can
     hand it to the parent.
-  - **The server can't show it again.** It stores only a hash and never returns the PIN. If it's
-    lost, set a new one, which also signs the parent out of every phone.
-  - **Existing parents:** leave `parent_pin` out to keep the current PIN. Sending one replaces it
-    and signs that parent out of every phone.
+  - **The server can't show it again.** It stores only a hash and never returns it. If it's lost,
+    set a new one, which also signs the parent out of every phone.
+  - **Existing parents:** leave `parent_pin` out to keep the current credential, even an older 6-
+    digit one. Sending one replaces it and signs that parent out of every phone.
 - **409 on a student create or update:** another student already uses that `rfid_tag` (the device
   User ID). Nothing was saved. Show "this device ID is already used by another student" and let
   the admin choose another.
@@ -297,7 +317,7 @@ children goes to all of them, including children the school adds later.
   | `rfid_tag`, `grade`, `section` | 50 |
   | device `serial_number`, `location_name` | 50 |
   | setting `key` | 100 |
-  | `parent_pin` | exactly 6 digits |
+  | `parent_pin` | 16 to 72 ASCII characters, with a letter, a digit and a symbol |
 
   Setting values and leave notes have no limit beyond the 64 KiB request body.
 - **Dates:** report and leave dates, and the parent's months, accept years 2000 to 2100 only.
@@ -414,7 +434,16 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.11.0 (this release):**
+**In API 1.12.0 (this release):**
+
+- **`parent_pin` must be 16 to 72 printable ASCII characters with at least one letter, one digit
+  and one symbol** whenever the admin sets or replaces it (400 otherwise). This breaks only a
+  dashboard that still sends 6-digit values: generate the new format (see the admin dashboard
+  notes). Field names are unchanged.
+- **Parent login is unchanged:** it accepts any stored credential, including older 4- and 6-digit
+  ones. Make the login field a normal text field, not a numeric keypad.
+
+**In API 1.11.0:**
 
 - **A student is counted from the day they were added.** The monthly records and summary no
   longer contain or count days before that; a month entirely before it leaves the child out.

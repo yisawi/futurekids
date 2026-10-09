@@ -202,8 +202,8 @@ func w10Endpoints(app *handlers.AppEnv) []w10Endpoint {
 
 		{"admin dashboard", "AdminDashboardHandler:", "GET", "/api/admin/dashboard", "", admin(app.AdminDashboardHandler), false},
 		{"admin login", "AdminLoginHandler:", "POST", "/api/admin/login", `{"username":"admin","password":"x"}`, app.AdminLoginHandler, false},
-		{"mobile login", "MobileLoginHandler:", "POST", "/api/mobile/login", `{"phone":"+9647000000501","pin":"581736"}`, app.MobileLoginHandler, false},
-		{"admin student create", "AdminStudentsHandler:", "POST", "/api/admin/students", `{"name":"K","parent_name":"P","parent_phone":"+9647000000502","parent_pin":"581736","rfid_tag":"T"}`, admin(app.AdminStudentsHandler), false},
+		{"mobile login", "MobileLoginHandler:", "POST", "/api/mobile/login", `{"phone":"+9647000000501","pin":"Av3#Jm8x@Rk5tW2p"}`, app.MobileLoginHandler, false},
+		{"admin student create", "AdminStudentsHandler:", "POST", "/api/admin/students", `{"name":"K","parent_name":"P","parent_phone":"+9647000000502","parent_pin":"Av3#Jm8x@Rk5tW2p","rfid_tag":"T"}`, admin(app.AdminStudentsHandler), false},
 		{"admin student update", "AdminStudentsHandler:", "PUT", "/api/admin/students", `{"id":1,"name":"K","parent_name":"P","parent_phone":"+9647000000502"}`, admin(app.AdminStudentsHandler), false},
 		{"admin student delete", "AdminStudentsHandler:", "DELETE", "/api/admin/students?id=1", "", admin(app.AdminStudentsHandler), false},
 		{"admin leave cancel", "AdminCreateLeaveHandler:", "DELETE", "/api/admin/leaves?student_id=1&date=2026-09-24", "", admin(app.AdminCreateLeaveHandler), false},

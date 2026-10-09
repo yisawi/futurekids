@@ -442,7 +442,7 @@ func TestE1AdminSchedule(t *testing.T) {
 	})
 
 	t.Run("the parent app shows exactly what the admin saved", func(t *testing.T) {
-		const parentPhone, parentPin = "+9647000001101", "604158"
+		const parentPhone, parentPin = "+9647000001101", "Nc6?Fa3w@Ub8rZ5k"
 		create := func(name, grade, section string) int {
 			t.Helper()
 			r := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{

@@ -24,7 +24,7 @@ func TestG1DeleteLeave(t *testing.T) {
 	const day, otherDay, noLeaveDay = "2026-09-21", "2026-09-22", "2026-09-23"
 	student := func(name string) int {
 		t.Helper()
-		r := a14Do(t, srv, "POST", "/api/admin/students", bearer, map[string]any{"name": name, "parent_name": "Omar Example", "parent_phone": "+9647000001301", "parent_pin": "604158"})
+		r := a14Do(t, srv, "POST", "/api/admin/students", bearer, map[string]any{"name": name, "parent_name": "Omar Example", "parent_phone": "+9647000001301", "parent_pin": "Nc6?Fa3w@Ub8rZ5k"})
 		if r.status != 200 {
 			t.Fatalf("create %s: %d %s", name, r.status, r.body)
 		}

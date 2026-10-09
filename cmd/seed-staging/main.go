@@ -18,7 +18,7 @@ import (
 
 const (
 	stagingURL = "https://futurekids-staging.up.railway.app"
-	seedPIN    = "314159"
+	seedPIN    = "Sd7!Kx4p#Wm9qT2h"
 	seedDevice = "SEED-FAKE-0001"
 	firstTag   = 1004
 	lastTag    = 1050

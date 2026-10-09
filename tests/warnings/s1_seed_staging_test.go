@@ -136,7 +136,7 @@ func TestS1SeedStaging(t *testing.T) {
 	for i, st := range []struct{ grade, section string }{{"G2", "A"}, {"G2", "A"}, {"G1", "B"}} {
 		body := map[string]any{"name": fmt.Sprintf("طالب حالي تجريبي %d", i+1), "parent_name": "ولي أمر حالي تجريبي", "parent_phone": "+9647000001401", "rfid_tag": strconv.Itoa(1001 + i), "grade": st.grade, "section": st.section}
 		if i == 0 {
-			body["parent_pin"] = "604158"
+			body["parent_pin"] = "Nc6?Fa3w@Ub8rZ5k"
 		}
 		if r := a14Do(t, srv, "POST", "/api/admin/students", admin, body); r.status != 200 {
 			t.Fatalf("pre-existing student %d: %d %s", 1001+i, r.status, r.body)
@@ -294,8 +294,8 @@ func TestS1SeedStaging(t *testing.T) {
 			t.Errorf("parents %d with children counts %v, want 37: 28×1, 8×2, 1×3", len(perParent), sizes)
 		}
 		for phone, hash := range pins {
-			if bcrypt.CompareHashAndPassword([]byte(hash), []byte("314159")) != nil {
-				t.Errorf("parent %s does not have PIN 314159", phone)
+			if bcrypt.CompareHashAndPassword([]byte(hash), []byte("Sd7!Kx4p#Wm9qT2h")) != nil {
+				t.Errorf("parent %s does not have the seed credential", phone)
 			}
 		}
 		if len(classes) != 12 || classes["G6/B"] == 0 {
@@ -402,7 +402,7 @@ func TestS1SeedStaging(t *testing.T) {
 		checked := 0
 		for _, l := range lines {
 			phone, pin, kids := l[1], strings.TrimSpace(l[2]), strings.Split(l[3], " ; ")
-			if pin != "314159" {
+			if pin != "Sd7!Kx4p#Wm9qT2h" {
 				t.Errorf("%s: PIN column %q", phone, pin)
 			}
 			if len(kids) < 2 && !strings.Contains(l[3], "G6/B") && phone != "+9647000002002" {
