@@ -5,9 +5,9 @@
 --   internal/handlers/mobile.go — MobileNotificationsHandler reads notifications.
 --   internal/handlers/hardware.go — notifyPunch saves check-in/out history via notify.
 --   internal/cron/absent_job.go — ProcessDailyAbsences saves absence history via notify.
---   internal/notify/announcement.go — CreateAnnouncement inserts into notifications and
---     PushAnnouncement reads them.
---   internal/handlers/announcements.go — the sent log counts read notifications.
+--   internal/notify/broadcast.go — CreateBroadcast inserts into notifications and
+--     PushBroadcast reads them.
+--   internal/handlers/broadcasts.go — the sent log counts read notifications.
 -- Data loss: the entire notification history shown to parents.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first

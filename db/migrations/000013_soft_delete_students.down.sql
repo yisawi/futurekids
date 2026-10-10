@@ -8,7 +8,7 @@
 --   internal/cron/absent_job.go — ProcessDailyAbsences.
 --   internal/handlers/schedule_excel.go — AdminScheduleClassesHandler, AdminScheduleExportHandler
 --     and AdminScheduleImportHandler count active students.
---   internal/notify/announcement.go — announcements to a class match only active students.
+--   internal/notify/broadcast.go — broadcasts to a class match only active students.
 -- Data loss: which students were deleted; soft-deleted students become indistinguishable from active ones.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Future Kids Attendance System API
-  version: 1.14.0
+  version: 1.14.1
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -457,7 +457,7 @@ paths:
       tags:
         - Parent App
       operationId: listBanners
-      summary: Active announcement banners
+      summary: Active banners (the pictures on the parent home screen)
       description: Active banners, newest first, for the home-screen carousel.
       security:
         - ParentJWT: []
@@ -484,7 +484,7 @@ paths:
       summary: Picture of an active banner
       description: |
         The uploaded picture of an **active** banner, exactly as uploaded. **No token needed**:
-        banners are announcements for every parent, so `Image.network(baseUrl + image_url)` works
+        banners are broadcasts for every parent, so `Image.network(baseUrl + image_url)` works
         as is. Reached through a banner's relative `image_url`. An inactive or unknown banner, or
         one without an uploaded picture, returns 404.
       security: []
@@ -1370,29 +1370,30 @@ paths:
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
           $ref: '#/components/responses/InternalError'
-  /api/admin/announcements:
+  /api/admin/broadcasts:
     get:
       tags:
         - Admin Dashboard
-      operationId: listAnnouncements
-      summary: The sent log of announcements
+      operationId: listBroadcasts
+      summary: The sent log of broadcast notifications
       description: |
-        Every announcement sent, newest first, 50 per page (`before`, `has_more` and
+        Broadcasts are notifications the admin sent to parents, not banners (pictures).
+        Every broadcast sent, newest first, 50 per page (`before`, `has_more` and
         `next_before` work as in `GET /api/mobile/notifications`), with its audience, how many
         parents received it and how many have read it.
       security:
         - AdminJWT: []
       parameters:
-        - $ref: '#/components/parameters/AnnouncementBefore'
+        - $ref: '#/components/parameters/BroadcastBefore'
       responses:
         '200':
           description: A page of the sent log.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AnnouncementPage'
+                $ref: '#/components/schemas/BroadcastPage'
         '400':
-          $ref: '#/components/responses/AnnouncementCursorBadRequest'
+          $ref: '#/components/responses/BroadcastCursorBadRequest'
         '401':
           $ref: '#/components/responses/AdminUnauthorized'
         '403':
@@ -1404,19 +1405,23 @@ paths:
     post:
       tags:
         - Admin Dashboard
-      operationId: createAnnouncement
-      summary: Send an announcement to parents
+      operationId: createBroadcast
+      summary: Send a broadcast notification to parents
       description: |
-        Sends a title and body to an audience of parents (see `AnnouncementAudience`): every
+        A broadcast is a notification the admin sends to parents (dashboard label "الإشعارات"). It is
+        not a banner: banners are the pictures on the parent home screen (`/api/admin/banners`,
+        dashboard label "الإعلانات").
+
+        Sends a title and body to an audience of parents (see `BroadcastAudience`): every
         parent, one parent, a grade, a section or a class. Each recipient gets an unread
         notification in `GET /api/mobile/notifications` (it counts in `unread_count` like any
         other), and a push to each of their devices. The push is sent in the background after
-        the announcement is saved; it never delays or fails this request, and without Firebase
+        the broadcast is saved; it never delays or fails this request, and without Firebase
         only the notifications are created.
 
         Send it twice: first with `dry_run: true` to get `recipient_count` for a confirmation
         dialog (nothing is written), then without it. The same title, body and audience within
-        60 seconds returns 409. **An announcement cannot be edited, recalled or deleted after it
+        60 seconds returns 409. **A broadcast cannot be edited, recalled or deleted after it
         is sent.**
       security:
         - AdminJWT: []
@@ -1425,24 +1430,24 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AnnouncementCreateRequest'
+              $ref: '#/components/schemas/BroadcastCreateRequest'
       responses:
         '200':
           description: Sent, or counted for a dry run.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AnnouncementCreateResponse'
+                $ref: '#/components/schemas/BroadcastCreateResponse'
         '400':
-          $ref: '#/components/responses/AnnouncementBadRequest'
+          $ref: '#/components/responses/BroadcastBadRequest'
         '401':
           $ref: '#/components/responses/AdminUnauthorized'
         '403':
           $ref: '#/components/responses/AdminForbidden'
         '404':
-          $ref: '#/components/responses/AnnouncementParentNotFound'
+          $ref: '#/components/responses/BroadcastParentNotFound'
         '409':
-          $ref: '#/components/responses/AnnouncementDuplicate'
+          $ref: '#/components/responses/BroadcastDuplicate'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '431':
@@ -1927,12 +1932,12 @@ components:
         format: int64
         minimum: 1
       example: 1402
-    AnnouncementBefore:
+    BroadcastBefore:
       name: before
       in: query
       required: false
       description: |
-        Cursor: return only announcements with an id lower than this. Pass the `next_before` of
+        Cursor: return only broadcasts with an id lower than this. Pass the `next_before` of
         the previous page. Omit it for the newest page. Not a positive integer: 400.
       schema:
         type: integer
@@ -3861,10 +3866,10 @@ components:
         has_more: false
         next_before: null
         unread_count: 1
-    AnnouncementAudience:
+    BroadcastAudience:
       type: object
       description: |
-        Who receives the announcement. `type` decides which other fields are allowed; a field
+        Who receives the broadcast. `type` decides which other fields are allowed; a field
         that is not allowed returns 400 even when blank, so a dashboard bug can never widen the
         audience. A field sent as null counts as not sent.
         - `all`: every parent in the system, including parents whose children are all
@@ -3904,7 +3909,7 @@ components:
         type: class
         grade: G3
         section: A
-    AnnouncementCreateRequest:
+    BroadcastCreateRequest:
       type: object
       properties:
         title:
@@ -3918,7 +3923,7 @@ components:
           maxLength: 500
           description: Required; surrounding spaces are removed; 1 to 500 characters (same rules as `title`).
         audience:
-          $ref: '#/components/schemas/AnnouncementAudience'
+          $ref: '#/components/schemas/BroadcastAudience'
         dry_run:
           type: boolean
           default: false
@@ -3938,7 +3943,7 @@ components:
           grade: G3
           section: A
         dry_run: true
-    AnnouncementCreateResponse:
+    BroadcastCreateResponse:
       type: object
       properties:
         status:
@@ -3947,7 +3952,7 @@ components:
             - success
         message:
           type: string
-          description: '`Announcement sent`, or `Preview only` for a dry run.'
+          description: '`Broadcast sent`, or `Preview only` for a dry run.'
         data:
           type: object
           properties:
@@ -3955,7 +3960,7 @@ components:
               type: integer
               format: int32
               nullable: true
-              description: The new announcement's id; null for a dry run.
+              description: The new broadcast's id; null for a dry run.
             recipient_count:
               type: integer
               format: int32
@@ -3978,7 +3983,7 @@ components:
           id: null
           recipient_count: 24
           dry_run: true
-    AnnouncementLogAudience:
+    BroadcastLogAudience:
       type: object
       description: |
         The audience as sent. Fields the type does not use are null. For `parent`,
@@ -4015,7 +4020,7 @@ components:
         section: null
         parent_name: Omar Example
         parent_phone: '+9647000000101'
-    AnnouncementLogItem:
+    BroadcastLogItem:
       type: object
       properties:
         id:
@@ -4026,7 +4031,7 @@ components:
         body:
           type: string
         audience:
-          $ref: '#/components/schemas/AnnouncementLogAudience'
+          $ref: '#/components/schemas/BroadcastLogAudience'
         recipient_count:
           type: integer
           format: int32
@@ -4062,7 +4067,7 @@ components:
         recipient_count: 24
         read_count: 17
         created_at: '2026-10-10T09:15:00+03:00'
-    AnnouncementPage:
+    BroadcastPage:
       type: object
       properties:
         status:
@@ -4074,10 +4079,10 @@ components:
           maxItems: 50
           description: Newest first (descending id).
           items:
-            $ref: '#/components/schemas/AnnouncementLogItem'
+            $ref: '#/components/schemas/BroadcastLogItem'
         has_more:
           type: boolean
-          description: True when older announcements exist.
+          description: True when older broadcasts exist.
         next_before:
           type: integer
           format: int32
@@ -4469,7 +4474,7 @@ components:
               value:
                 status: error
                 message: Request body too large
-    AnnouncementBadRequest:
+    BroadcastBadRequest:
       description: |
         Malformed JSON; `title` or `body` missing, blank, too long, not a string, or with NUL or
         invalid UTF-8; `audience` missing, of an unknown type, or with a field its type does not
@@ -4496,7 +4501,7 @@ components:
               value:
                 status: error
                 message: title must be at most 100 characters
-    AnnouncementParentNotFound:
+    BroadcastParentNotFound:
       description: The audience is one parent, and no parent has this phone number. Nothing was written or sent.
       content:
         application/json:
@@ -4505,9 +4510,9 @@ components:
           example:
             status: error
             message: No parent has this phone number
-    AnnouncementDuplicate:
+    BroadcastDuplicate:
       description: |
-        An announcement with the same title, body and audience was sent less than 60 seconds
+        A broadcast with the same title, body and audience was sent less than 60 seconds
         ago (usually a double tap). Nothing was written or sent. Not returned for a dry run.
       content:
         application/json:
@@ -4515,8 +4520,8 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             status: error
-            message: The same announcement was sent to this audience less than a minute ago
-    AnnouncementCursorBadRequest:
+            message: The same broadcast was sent to this audience less than a minute ago
+    BroadcastCursorBadRequest:
       description: '`before` is not a positive integer.'
       content:
         application/json:
@@ -4524,7 +4529,7 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             status: error
-            message: before must be a positive announcement id
+            message: before must be a positive broadcast id
     BannerWriteBadRequest:
       description: |
         Not `multipart/form-data` or a malformed body; a field sent twice; `image` missing (create),

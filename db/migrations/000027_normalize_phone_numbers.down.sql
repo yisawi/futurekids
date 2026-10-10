@@ -7,7 +7,7 @@
 --     can no longer log in, and MobileNotificationsHandler no longer finds that parent's history.
 --   internal/handlers/admin.go — AdminStudentsHandler links students by the normalised number,
 --     so creating a student for such a parent creates a second parent instead.
---   internal/handlers/announcements.go — normalises the audience parent_phone.
+--   internal/handlers/broadcasts.go — normalises the audience parent_phone.
 -- Data loss: none; numbers stored or changed after the up-migration keep their canonical form.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first

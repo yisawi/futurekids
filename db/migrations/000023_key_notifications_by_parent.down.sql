@@ -7,8 +7,8 @@
 --     by notifications.parent_id; every notification endpoint fails.
 --   internal/handlers/hardware.go and internal/cron/absent_job.go — pass the parent id to
 --     SaveNotificationHistory.
---   internal/notify/announcement.go — CreateAnnouncement writes notifications.parent_id and
---     PushAnnouncement joins on it.
+--   internal/notify/broadcast.go — CreateBroadcast writes notifications.parent_id and
+--     PushBroadcast joins on it.
 -- Data loss: which parent each notification belongs to. Old code matches history by
 --   parent_phone again, so a parent whose phone number changed after the up-migration no
 --   longer sees the history from before the change. Read state (is_read) is kept.

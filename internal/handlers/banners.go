@@ -504,7 +504,7 @@ func (app *AppEnv) AdminBannerImageHandler(w http.ResponseWriter, r *http.Reques
 }
 
 // MobileBannerImageHandler serves the uploaded picture of an active banner without
-// authentication: banners are announcements for every parent.
+// authentication: banners are shown to every parent.
 func (app *AppEnv) MobileBannerImageHandler(w http.ResponseWriter, r *http.Request) {
 	app.serveBannerImage(w, r, true, PublicBannerImageCache, "MobileBannerImageHandler: query failed")
 }

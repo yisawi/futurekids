@@ -234,8 +234,9 @@ shift or duplicate items. A `before` that isn't a positive integer returns 400.
 - **After either call,** refresh the list or update the badge from its next `unread_count`. A push
   that arrives later is unread again.
 
-Announcements the school sends from the dashboard arrive in this same list, unread, like any
-other notification.
+Broadcasts the school sends from the dashboard (see
+[Broadcast notifications to parents](#broadcast-notifications-to-parents-إرسال-إشعار-للأهل)) arrive in this same list, unread, like any other
+notification.
 
 ### History belongs to the account
 
@@ -495,11 +496,13 @@ be one of the first 10 rows, and title rows above it are fine):
 - Rows saved before API 1.13.0 on Friday or Saturday, or with a period above 6, aren't in the
   export; importing that class removes them.
 
-### Announcements and notifications (الإعلانات والإشعارات)
+### Broadcast notifications to parents (إرسال إشعار للأهل)
 
-The dashboard section the school names "الإعلانات والإشعارات" holds two things: the existing
-banners (pictures in the parent carousel; their endpoints and paths are unchanged, see
-[Banners](#banners)) and the new text announcements below. The new name is a label only.
+**Naming:** the dashboard section "الإعلانات والإشعارات" has two parts. "الإعلانات" are the
+**banners**: the pictures on the parent home screen (`/api/admin/banners`, see
+[Banners](#banners)). "الإشعارات" are the **broadcasts** below: notifications the admin sends to
+parents (`/api/admin/broadcasts`). The API, the code and these notes call them banners and
+broadcasts.
 
 **Compose form:**
 
@@ -522,32 +525,33 @@ banners (pictures in the parent carousel; their endpoints and paths are unchange
 
 **Send in two steps:**
 
-1. `POST /api/admin/announcements` with `"dry_run": true`. Nothing is written or sent; the answer
+1. `POST /api/admin/broadcasts` with `"dry_run": true`. Nothing is written or sent; the answer
    is `{"data": {"id": null, "recipient_count": 24, "dry_run": true}}`.
 2. Show a confirmation dialog: "send to 24 parents? It cannot be recalled." On confirm, send the
    same body without `dry_run`. The answer has the new `id` and the final `recipient_count`.
 
 **Errors:** 400 names the problem (including `No parents match this audience`); 404 means no
 parent has that phone number; **409** means the same title, text and audience was sent less than
-a minute ago (usually a double tap): show "already sent" and don't retry. **An announcement
+a minute ago (usually a double tap): show "already sent" and don't retry. **A broadcast
 can't be edited, recalled or deleted after it is sent**; there are no such endpoints.
 
-**Sent log:** `GET /api/admin/announcements` lists every announcement, newest first, 50 per page,
+**Sent log:** `GET /api/admin/broadcasts` lists every broadcast, newest first, 50 per page,
 with the same `before` / `has_more` / `next_before` paging as the parent notifications list. Each
 item has `title`, `body`, `audience` (`type`, `grade`, `section`, `parent_name`, `parent_phone`;
 unused fields are `null`), `recipient_count`, `read_count` (how many parents have marked it read
 so far) and `created_at`. Show "read by 17 of 24".
 
-**What parents see:** the announcement arrives as an ordinary notification in
+**What parents see:** the broadcast arrives as an ordinary notification in
 `GET /api/mobile/notifications`, unread, and raises `unread_count` like any other; nothing changes
 in the parent app's endpoints. Each of the parent's phones also gets a push, sent in the
-background after the announcement is saved. Push only arrives when the app has Firebase connected
+background after the broadcast is saved. Push only arrives when the app has Firebase connected
 and registered its token (see [Push notifications (FCM)](#push-notifications-fcm)), so test it on
 a real phone; the notification list works without it.
 
 ### Banners
 
-The school's announcements, shown to parents as a carousel. Every picture is uploaded from the
+The pictures the school shows parents as a carousel on the home screen (dashboard label
+"الإعلانات"). Every picture is uploaded from the
 dashboard; there are no pasted URLs.
 
 1. **List:** `GET /api/admin/banners` returns every banner, active or not, newest first, with
@@ -611,11 +615,17 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.14.0 (this release):** new admin endpoints `POST /api/admin/announcements` (send an
-announcement to all parents, one parent, a grade, a section or a class, with a `dry_run`
-preview) and `GET /api/admin/announcements` (the sent log with read counts). See
-[Announcements and notifications](#announcements-and-notifications-الإعلانات-والإشعارات). Nothing
-breaks: no existing endpoint or response changed.
+**In API 1.14.1 (this release):** the admin-to-parent notifications from 1.14.0 are renamed
+"broadcasts", so they aren't confused with banners: the paths are now `POST` and
+`GET /api/admin/broadcasts` (operations `createBroadcast` and `listBroadcasts`, schemas
+`Broadcast*`). Request and response fields are unchanged. This breaks only a client already
+using the 1.14.0 paths, and none exists.
+
+**In API 1.14.0:** new admin endpoints to send a notification to all parents, one parent, a
+grade, a section or a class, with a `dry_run` preview, and to list the sent log with read counts
+(now `/api/admin/broadcasts`; see
+[Broadcast notifications to parents](#broadcast-notifications-to-parents-إرسال-إشعار-للأهل)). Nothing breaks: no existing endpoint or response
+changed.
 
 **In API 1.13.1:** the schedule Excel export is one class per file
 (`grade` and `section` are required; 404 for an unknown class), and the import takes optional

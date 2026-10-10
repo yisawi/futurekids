@@ -17,31 +17,31 @@ import (
 	"future_kids/internal/tz"
 )
 
-// Announcement limits, counted in characters as PostgreSQL counts them.
+// Broadcast limits, counted in characters as PostgreSQL counts them.
 const (
-	MaxAnnouncementTitleChars = 100
-	MaxAnnouncementBodyChars  = 500
-	AnnouncementsPageSize     = 50
-	AnnouncementDuplicateWait = 60 * time.Second
+	MaxBroadcastTitleChars = 100
+	MaxBroadcastBodyChars  = 500
+	BroadcastsPageSize     = 50
+	BroadcastDuplicateWait = 60 * time.Second
 )
 
-type announcementAudienceRequest struct {
+type broadcastAudienceRequest struct {
 	Type        *string `json:"type"`
 	Grade       *string `json:"grade"`
 	Section     *string `json:"section"`
 	ParentPhone *string `json:"parent_phone"`
 }
 
-type announcementRequest struct {
-	Title    json.RawMessage              `json:"title"`
-	Body     json.RawMessage              `json:"body"`
-	Audience *announcementAudienceRequest `json:"audience"`
-	DryRun   json.RawMessage              `json:"dry_run"`
+type broadcastRequest struct {
+	Title    json.RawMessage           `json:"title"`
+	Body     json.RawMessage           `json:"body"`
+	Audience *broadcastAudienceRequest `json:"audience"`
+	DryRun   json.RawMessage           `json:"dry_run"`
 }
 
-// AnnouncementAudience is an announcement's audience in the sent log. Fields its type does not
+// BroadcastAudience is a broadcast's audience in the sent log. Fields its type does not
 // use are null; parent_name and parent_phone are the parent's current values.
-type AnnouncementAudience struct {
+type BroadcastAudience struct {
 	Type        string  `json:"type"`
 	Grade       *string `json:"grade"`
 	Section     *string `json:"section"`
@@ -49,20 +49,20 @@ type AnnouncementAudience struct {
 	ParentPhone *string `json:"parent_phone"`
 }
 
-// AnnouncementLogItem is one sent announcement.
-type AnnouncementLogItem struct {
-	ID             int                  `json:"id"`
-	Title          string               `json:"title"`
-	Body           string               `json:"body"`
-	Audience       AnnouncementAudience `json:"audience"`
-	RecipientCount int                  `json:"recipient_count"`
-	ReadCount      int                  `json:"read_count"`
-	CreatedAt      string               `json:"created_at"`
+// BroadcastLogItem is one sent broadcast.
+type BroadcastLogItem struct {
+	ID             int               `json:"id"`
+	Title          string            `json:"title"`
+	Body           string            `json:"body"`
+	Audience       BroadcastAudience `json:"audience"`
+	RecipientCount int               `json:"recipient_count"`
+	ReadCount      int               `json:"read_count"`
+	CreatedAt      string            `json:"created_at"`
 }
 
-// announcementText decodes a JSON string field, trims it and checks it is 1 to max characters
+// broadcastText decodes a JSON string field, trims it and checks it is 1 to max characters
 // of valid UTF-8 without NUL.
-func announcementText(name string, raw json.RawMessage, max int) (string, string) {
+func broadcastText(name string, raw json.RawMessage, max int) (string, string) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return "", name + " is required"
 	}
@@ -100,7 +100,7 @@ func audienceClassField(name string, v *string) (*string, string) {
 
 // parseAudience checks the audience fields for its type and returns the audience and, for a
 // parent, the canonical phone number to look up.
-func parseAudience(a *announcementAudienceRequest) (notify.Audience, string, string) {
+func parseAudience(a *broadcastAudienceRequest) (notify.Audience, string, string) {
 	if a == nil {
 		return notify.Audience{}, "", "audience is required"
 	}
@@ -145,28 +145,28 @@ func parseAudience(a *announcementAudienceRequest) (notify.Audience, string, str
 	return notify.Audience{}, "", "audience.type must be all, parent or class"
 }
 
-func (app *AppEnv) AdminAnnouncementsHandler(w http.ResponseWriter, r *http.Request) {
+func (app *AppEnv) AdminBroadcastsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		app.createAnnouncement(w, r)
+		app.createBroadcast(w, r)
 	case http.MethodGet:
-		app.listAnnouncements(w, r)
+		app.listBroadcasts(w, r)
 	default:
 		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 }
 
-func (app *AppEnv) createAnnouncement(w http.ResponseWriter, r *http.Request) {
-	var req announcementRequest
+func (app *AppEnv) createBroadcast(w http.ResponseWriter, r *http.Request) {
+	var req broadcastRequest
 	if !decodeJSONBody(w, r, &req, "Invalid request body") {
 		return
 	}
-	title, msg := announcementText("title", req.Title, MaxAnnouncementTitleChars)
+	title, msg := broadcastText("title", req.Title, MaxBroadcastTitleChars)
 	if msg != "" {
 		respondError(w, http.StatusBadRequest, msg)
 		return
 	}
-	body, msg := announcementText("body", req.Body, MaxAnnouncementBodyChars)
+	body, msg := broadcastText("body", req.Body, MaxBroadcastBodyChars)
 	if msg != "" {
 		respondError(w, http.StatusBadRequest, msg)
 		return
@@ -193,7 +193,7 @@ func (app *AppEnv) createAnnouncement(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusNotFound, "No parent has this phone number")
 			return
 		case err != nil:
-			respondInternalError(w, "Failed to send announcement", "AdminAnnouncementsHandler: parent lookup failed", err)
+			respondInternalError(w, "Failed to send broadcast", "AdminBroadcastsHandler: parent lookup failed", err)
 			return
 		}
 		audience.ParentID = &id
@@ -202,7 +202,7 @@ func (app *AppEnv) createAnnouncement(w http.ResponseWriter, r *http.Request) {
 	if dryRun {
 		n, err := notify.CountRecipients(r.Context(), app.DB, audience)
 		if err != nil {
-			respondInternalError(w, "Failed to send announcement", "AdminAnnouncementsHandler: recipient count failed", err, "audience", audience.Type)
+			respondInternalError(w, "Failed to send broadcast", "AdminBroadcastsHandler: recipient count failed", err, "audience", audience.Type)
 			return
 		}
 		if n == 0 {
@@ -225,43 +225,43 @@ func (app *AppEnv) createAnnouncement(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		defer tx.Rollback()
-		if err := notify.LockAnnouncements(r.Context(), tx); err != nil {
+		if err := notify.LockBroadcasts(r.Context(), tx); err != nil {
 			return err
 		}
-		if duplicate, err = notify.RecentDuplicate(r.Context(), tx, title, body, audience, AnnouncementDuplicateWait); err != nil || duplicate {
+		if duplicate, err = notify.RecentDuplicate(r.Context(), tx, title, body, audience, BroadcastDuplicateWait); err != nil || duplicate {
 			return err
 		}
-		if id, recipients, err = notify.CreateAnnouncement(r.Context(), tx, title, body, audience); err != nil {
+		if id, recipients, err = notify.CreateBroadcast(r.Context(), tx, title, body, audience); err != nil {
 			return err
 		}
 		return tx.Commit()
 	}()
 	switch {
 	case duplicate:
-		respondError(w, http.StatusConflict, "The same announcement was sent to this audience less than a minute ago")
+		respondError(w, http.StatusConflict, "The same broadcast was sent to this audience less than a minute ago")
 		return
 	case errors.Is(err, notify.ErrNoRecipients):
 		respondError(w, http.StatusBadRequest, "No parents match this audience")
 		return
 	case err != nil:
-		respondInternalError(w, "Failed to send announcement", "AdminAnnouncementsHandler: send failed", err, "audience", audience.Type)
+		respondInternalError(w, "Failed to send broadcast", "AdminBroadcastsHandler: send failed", err, "audience", audience.Type)
 		return
 	}
-	slog.Info("Announcement sent", "announcement_id", id, "audience", audience.Type, "recipients", recipients)
-	notify.PushAnnouncement(app.Background, app.FCMClient, app.DB, id, title, body)
+	slog.Info("Broadcast sent", "broadcast_id", id, "audience", audience.Type, "recipients", recipients)
+	notify.PushBroadcast(app.Background, app.FCMClient, app.DB, id, title, body)
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "success",
-		"message": "Announcement sent",
+		"message": "Broadcast sent",
 		"data":    map[string]interface{}{"id": id, "recipient_count": recipients, "dry_run": false},
 	})
 }
 
-func (app *AppEnv) listAnnouncements(w http.ResponseWriter, r *http.Request) {
+func (app *AppEnv) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 	var before sql.NullInt64
 	if v := r.URL.Query().Get("before"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || id < 1 {
-			respondError(w, http.StatusBadRequest, "before must be a positive announcement id")
+			respondError(w, http.StatusBadRequest, "before must be a positive broadcast id")
 			return
 		}
 		before = sql.NullInt64{Int64: id, Valid: true}
@@ -270,23 +270,23 @@ func (app *AppEnv) listAnnouncements(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.QueryContext(r.Context(), `
 		SELECT a.id, a.title, a.body, a.audience_type, a.audience_grade, a.audience_section,
 		       p.full_name, p.phone_number, a.recipient_count, a.created_at AT TIME ZONE 'Asia/Baghdad'
-		FROM announcements a
+		FROM broadcasts a
 		LEFT JOIN parents p ON p.id = a.audience_parent_id
 		WHERE ($1::bigint IS NULL OR a.id < $1)
 		ORDER BY a.id DESC
-		LIMIT $2`, before, AnnouncementsPageSize+1)
+		LIMIT $2`, before, BroadcastsPageSize+1)
 	if err != nil {
-		respondInternalError(w, "Database error", "AdminAnnouncementsHandler: query failed", err)
+		respondInternalError(w, "Database error", "AdminBroadcastsHandler: query failed", err)
 		return
 	}
 	defer rows.Close()
-	items := []AnnouncementLogItem{}
+	items := []BroadcastLogItem{}
 	for rows.Next() {
-		var it AnnouncementLogItem
+		var it BroadcastLogItem
 		var grade, section, parentName, parentPhone sql.NullString
 		var createdAt time.Time
 		if err := rows.Scan(&it.ID, &it.Title, &it.Body, &it.Audience.Type, &grade, &section, &parentName, &parentPhone, &it.RecipientCount, &createdAt); err != nil {
-			respondInternalError(w, "Database error", "AdminAnnouncementsHandler: scan failed", err)
+			respondInternalError(w, "Database error", "AdminBroadcastsHandler: scan failed", err)
 			return
 		}
 		for _, f := range []struct {
@@ -302,14 +302,14 @@ func (app *AppEnv) listAnnouncements(w http.ResponseWriter, r *http.Request) {
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
-		respondInternalError(w, "Database error", "AdminAnnouncementsHandler: rows iteration failed", err)
+		respondInternalError(w, "Database error", "AdminBroadcastsHandler: rows iteration failed", err)
 		return
 	}
-	hasMore := len(items) > AnnouncementsPageSize
+	hasMore := len(items) > BroadcastsPageSize
 	var nextBefore *int
 	if hasMore {
-		items = items[:AnnouncementsPageSize]
-		nextBefore = &items[AnnouncementsPageSize-1].ID
+		items = items[:BroadcastsPageSize]
+		nextBefore = &items[BroadcastsPageSize-1].ID
 	}
 
 	if len(items) > 0 {
@@ -320,25 +320,25 @@ func (app *AppEnv) listAnnouncements(w http.ResponseWriter, r *http.Request) {
 			index[it.ID] = i
 		}
 		counts, err := app.DB.QueryContext(r.Context(), `
-			SELECT announcement_id, COUNT(*) FILTER (WHERE is_read)
+			SELECT broadcast_id, COUNT(*) FILTER (WHERE is_read)
 			FROM notifications
-			WHERE announcement_id = ANY($1::int[])
-			GROUP BY announcement_id`, ids)
+			WHERE broadcast_id = ANY($1::int[])
+			GROUP BY broadcast_id`, ids)
 		if err != nil {
-			respondInternalError(w, "Database error", "AdminAnnouncementsHandler: read count query failed", err)
+			respondInternalError(w, "Database error", "AdminBroadcastsHandler: read count query failed", err)
 			return
 		}
 		defer counts.Close()
 		for counts.Next() {
 			var id, n int
 			if err := counts.Scan(&id, &n); err != nil {
-				respondInternalError(w, "Database error", "AdminAnnouncementsHandler: read count scan failed", err)
+				respondInternalError(w, "Database error", "AdminBroadcastsHandler: read count scan failed", err)
 				return
 			}
 			items[index[id]].ReadCount = n
 		}
 		if err := counts.Err(); err != nil {
-			respondInternalError(w, "Database error", "AdminAnnouncementsHandler: read count rows iteration failed", err)
+			respondInternalError(w, "Database error", "AdminBroadcastsHandler: read count rows iteration failed", err)
 			return
 		}
 	}

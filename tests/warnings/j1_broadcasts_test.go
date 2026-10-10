@@ -80,13 +80,13 @@ func j1Class(grade, section any) map[string]any {
 	return m
 }
 
-// j1Snapshot lists every announcement and every notification row.
+// j1Snapshot lists every broadcast and every notification row.
 func j1Snapshot(t *testing.T, db *sql.DB) string {
 	t.Helper()
 	var b strings.Builder
 	for _, q := range []string{
-		`SELECT id || '|' || title || '|' || body || '|' || audience_type || '|' || COALESCE(audience_grade, '-') || '|' || COALESCE(audience_section, '-') || '|' || COALESCE(audience_parent_id::text, '-') || '|' || recipient_count FROM announcements ORDER BY id`,
-		`SELECT id || '|' || COALESCE(parent_id::text, '-') || '|' || COALESCE(announcement_id::text, '-') || '|' || title || '|' || body || '|' || COALESCE(is_read::text, '-') FROM notifications ORDER BY id`,
+		`SELECT id || '|' || title || '|' || body || '|' || audience_type || '|' || COALESCE(audience_grade, '-') || '|' || COALESCE(audience_section, '-') || '|' || COALESCE(audience_parent_id::text, '-') || '|' || recipient_count FROM broadcasts ORDER BY id`,
+		`SELECT id || '|' || COALESCE(parent_id::text, '-') || '|' || COALESCE(broadcast_id::text, '-') || '|' || title || '|' || body || '|' || COALESCE(is_read::text, '-') FROM notifications ORDER BY id`,
 	} {
 		rows, err := db.Query(q)
 		if err != nil {
@@ -108,17 +108,17 @@ func j1ParentToken(t *testing.T, id int, phone string) map[string]string {
 	return a14Bearer(e1Sign(t, jwt.MapClaims{"parent_id": id, "phone": phone, "role": "parent", "sv": 0, "exp": time.Now().Add(time.Hour).Unix()}))
 }
 
-// TestJ1Announcements verifies Task J1 through the real API: POST /api/admin/announcements
-// validates the request and its audience, previews with dry_run, writes one announcement and one
+// TestJ1Broadcasts verifies Task J1 through the real API: POST /api/admin/broadcasts
+// validates the request and its audience, previews with dry_run, writes one broadcast and one
 // unread notification per recipient parent, refuses an identical send within a minute, rolls
-// back on failure, and GET /api/admin/announcements lists the sent log with read counts.
-func TestJ1Announcements(t *testing.T) {
+// back on failure, and GET /api/admin/broadcasts lists the sent log with read counts.
+func TestJ1Broadcasts(t *testing.T) {
 	srv, db := a14Server(t, "j1")
 	j1Seed(t, db)
 	admin := a14Bearer(a14AdminToken(t, srv))
 	send := func(body any) a14Response {
 		t.Helper()
-		return a14Do(t, srv, "POST", "/api/admin/announcements", admin, body)
+		return a14Do(t, srv, "POST", "/api/admin/broadcasts", admin, body)
 	}
 	dryCount := func(t *testing.T, audience map[string]any) int {
 		t.Helper()
@@ -156,7 +156,7 @@ func TestJ1Announcements(t *testing.T) {
 			} `json:"data"`
 		}
 		json.Unmarshal(r.body, &resp)
-		if resp.Message != "Announcement sent" || resp.Data.ID == nil || resp.Data.DryRun {
+		if resp.Message != "Broadcast sent" || resp.Data.ID == nil || resp.Data.DryRun {
 			t.Fatalf("send envelope %s", r.body)
 		}
 		return *resp.Data.ID, resp.Data.RecipientCount
@@ -279,11 +279,11 @@ func TestJ1Announcements(t *testing.T) {
 			t.Fatalf("recipient_count %d, want 2", n)
 		}
 		var a string
-		db.QueryRow(`SELECT title || '|' || body || '|' || audience_type || '|' || audience_grade || '|' || audience_section || '|' || (audience_parent_id IS NULL) || '|' || recipient_count FROM announcements WHERE id = $1`, id).Scan(&a)
+		db.QueryRow(`SELECT title || '|' || body || '|' || audience_type || '|' || audience_grade || '|' || audience_section || '|' || (audience_parent_id IS NULL) || '|' || recipient_count FROM broadcasts WHERE id = $1`, id).Scan(&a)
 		if a != "اجتماع أولياء الأمور|يوم الخميس الساعة العاشرة.|class|G1|A|true|2" {
-			t.Errorf("announcement row %q", a)
+			t.Errorf("broadcast row %q", a)
 		}
-		rows, _ := db.Query(`SELECT parent_id, parent_phone, title, body, COALESCE(is_read, false) FROM notifications WHERE announcement_id = $1 ORDER BY parent_id`, id)
+		rows, _ := db.Query(`SELECT parent_id, parent_phone, title, body, COALESCE(is_read, false) FROM notifications WHERE broadcast_id = $1 ORDER BY parent_id`, id)
 		var got []string
 		for rows.Next() {
 			var pid int
@@ -336,19 +336,19 @@ func TestJ1Announcements(t *testing.T) {
 		}
 		notify.SaveNotificationHistory(db, 3003, "+9647000003003", "إشعار حضور", "الطالب وصل")
 		var nulls, total int
-		db.QueryRow(`SELECT COUNT(*) FILTER (WHERE announcement_id IS NULL), COUNT(*) FROM notifications WHERE title = 'إشعار حضور'`).Scan(&nulls, &total)
+		db.QueryRow(`SELECT COUNT(*) FILTER (WHERE broadcast_id IS NULL), COUNT(*) FROM notifications WHERE title = 'إشعار حضور'`).Scan(&nulls, &total)
 		if nulls != 1 || total != 1 {
-			t.Errorf("a punch or absence notification has announcement_id set: %d of %d NULL", nulls, total)
+			t.Errorf("a punch or absence notification has broadcast_id set: %d of %d NULL", nulls, total)
 		}
 	})
 
-	t.Run("the same announcement within a minute is refused", func(t *testing.T) {
+	t.Run("the same broadcast within a minute is refused", func(t *testing.T) {
 		body := j1Body("تذكير", "إحضار الكتب.", j1Class(nil, "A"))
 		if _, n := sent(t, body); n != 4 {
 			t.Fatalf("first send: %d", n)
 		}
 		before := j1Snapshot(t, db)
-		e1Error(t, send(body), 409, "The same announcement was sent to this audience less than a minute ago")
+		e1Error(t, send(body), 409, "The same broadcast was sent to this audience less than a minute ago")
 		if after := j1Snapshot(t, db); after != before {
 			t.Errorf("a refused duplicate wrote rows")
 		}
@@ -361,14 +361,14 @@ func TestJ1Announcements(t *testing.T) {
 			j1Body("تذكير", "إحضار الكتب.", j1Class(nil, "B")),
 		} {
 			if r := send(other); r.status != 200 {
-				t.Errorf("a different announcement %v: %d %s", other, r.status, r.body)
+				t.Errorf("a different broadcast %v: %d %s", other, r.status, r.body)
 			}
 		}
-		if _, err := db.Exec(`UPDATE announcements SET created_at = created_at - INTERVAL '61 seconds' WHERE title = 'تذكير'`); err != nil {
+		if _, err := db.Exec(`UPDATE broadcasts SET created_at = created_at - INTERVAL '61 seconds' WHERE title = 'تذكير'`); err != nil {
 			t.Fatal(err)
 		}
 		if r := send(body); r.status != 200 {
-			t.Errorf("after a minute the same announcement must be allowed: %d %s", r.status, r.body)
+			t.Errorf("after a minute the same broadcast must be allowed: %d %s", r.status, r.body)
 		}
 
 		concurrent := j1Body("تنبيه متزامن", "رسالة واحدة فقط.", j1All())
@@ -380,7 +380,7 @@ func TestJ1Announcements(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				status, _, err := e1Send(srv, "POST", "/api/admin/announcements", strings.TrimPrefix(admin["Authorization"], "Bearer "), concurrent)
+				status, _, err := e1Send(srv, "POST", "/api/admin/broadcasts", strings.TrimPrefix(admin["Authorization"], "Bearer "), concurrent)
 				if err != nil {
 					status = -1
 				}
@@ -397,9 +397,9 @@ func TestJ1Announcements(t *testing.T) {
 			t.Errorf("20 concurrent identical sends: %v, want one 200 and nineteen 409", count)
 		}
 		var rows, notes int
-		db.QueryRow(`SELECT COUNT(*), (SELECT COUNT(*) FROM notifications n JOIN announcements a ON a.id = n.announcement_id WHERE a.title = 'تنبيه متزامن') FROM announcements WHERE title = 'تنبيه متزامن'`).Scan(&rows, &notes)
+		db.QueryRow(`SELECT COUNT(*), (SELECT COUNT(*) FROM notifications n JOIN broadcasts a ON a.id = n.broadcast_id WHERE a.title = 'تنبيه متزامن') FROM broadcasts WHERE title = 'تنبيه متزامن'`).Scan(&rows, &notes)
 		if rows != 1 || notes != 6 {
-			t.Errorf("concurrent sends stored %d announcements and %d notifications, want 1 and 6", rows, notes)
+			t.Errorf("concurrent sends stored %d broadcasts and %d notifications, want 1 and 6", rows, notes)
 		}
 	})
 
@@ -409,23 +409,23 @@ func TestJ1Announcements(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Exec(`ALTER TABLE notifications DROP CONSTRAINT j1_refuse_poison`)
-		e1Error(t, send(j1Body("Poison test", "Poison", j1All())), 500, "Failed to send announcement")
+		e1Error(t, send(j1Body("Poison test", "Poison", j1All())), 500, "Failed to send broadcast")
 		if after := j1Snapshot(t, db); after != before {
 			t.Errorf("a failed send changed the tables\nbefore:\n%s\nafter:\n%s", before, after)
 		}
-		if srv.out.index("AdminAnnouncementsHandler: send failed") < 0 {
+		if srv.out.index("AdminBroadcastsHandler: send failed") < 0 {
 			t.Errorf("the 500 was not logged")
 		}
 	})
 
-	t.Run("the sent log lists announcements newest first with audiences and read counts", func(t *testing.T) {
+	t.Run("the sent log lists broadcasts newest first with audiences and read counts", func(t *testing.T) {
 		parentID, _ := sent(t, j1Body("لقاء خاص", "نرجو الحضور.", j1Parent("07000003005")))
 		var nid int
-		db.QueryRow(`SELECT id FROM notifications WHERE announcement_id = $1 AND parent_id = 3001`, classID).Scan(&nid)
+		db.QueryRow(`SELECT id FROM notifications WHERE broadcast_id = $1 AND parent_id = 3001`, classID).Scan(&nid)
 		if r := a14Do(t, srv, "PUT", fmt.Sprintf("/api/mobile/notifications/read?id=%d", nid), j1ParentToken(t, 3001, "+9647000003001"), nil); r.status != 200 {
 			t.Fatalf("mark read: %d %s", r.status, r.body)
 		}
-		if _, err := db.Exec(`INSERT INTO announcements (title, body, audience_type, recipient_count, created_at)
+		if _, err := db.Exec(`INSERT INTO broadcasts (title, body, audience_type, recipient_count, created_at)
 			SELECT 'Old ' || g, 'Old body', 'all', 0, TIMESTAMP '2026-01-01 10:00' + g * INTERVAL '1 minute' FROM generate_series(1, 60) g`); err != nil {
 			t.Fatal(err)
 		}
@@ -452,7 +452,7 @@ func TestJ1Announcements(t *testing.T) {
 		}
 		get := func(query string) page {
 			t.Helper()
-			r := a14Do(t, srv, "GET", "/api/admin/announcements"+query, admin, nil)
+			r := a14Do(t, srv, "GET", "/api/admin/broadcasts"+query, admin, nil)
 			if r.status != 200 {
 				t.Fatalf("log%s: %d %s", query, r.status, r.body)
 			}
@@ -479,7 +479,7 @@ func TestJ1Announcements(t *testing.T) {
 			q = fmt.Sprintf("?before=%d", *p.NextBefore)
 		}
 		var total int
-		db.QueryRow(`SELECT COUNT(*) FROM announcements`).Scan(&total)
+		db.QueryRow(`SELECT COUNT(*) FROM broadcasts`).Scan(&total)
 		if len(all) != total {
 			t.Errorf("log has %d items, the table %d", len(all), total)
 		}
@@ -495,9 +495,9 @@ func TestJ1Announcements(t *testing.T) {
 				t.Errorf("created_at %q", it.CreatedAt)
 			}
 			var want int
-			db.QueryRow(`SELECT COUNT(*) FILTER (WHERE is_read) FROM notifications WHERE announcement_id = $1`, it.ID).Scan(&want)
+			db.QueryRow(`SELECT COUNT(*) FILTER (WHERE is_read) FROM notifications WHERE broadcast_id = $1`, it.ID).Scan(&want)
 			if it.ReadCount != want {
-				t.Errorf("announcement %d read_count %d, want %d", it.ID, it.ReadCount, want)
+				t.Errorf("broadcast %d read_count %d, want %d", it.ID, it.ReadCount, want)
 			}
 		}
 		c := byID[classID]
@@ -522,13 +522,13 @@ func TestJ1Announcements(t *testing.T) {
 			}
 		}
 		for _, bad := range []string{"abc", "0", "-1", "1.5", "99999999999999999999"} {
-			e1Error(t, a14Do(t, srv, "GET", "/api/admin/announcements?before="+url.QueryEscape(bad), admin, nil), 400, "before must be a positive announcement id")
+			e1Error(t, a14Do(t, srv, "GET", "/api/admin/broadcasts?before="+url.QueryEscape(bad), admin, nil), 400, "before must be a positive broadcast id")
 		}
 	})
 
 	t.Run("each send is logged without its text", func(t *testing.T) {
 		out := srv.out.String()
-		if !strings.Contains(out, `"msg":"Announcement sent"`) || strings.Contains(out, "اجتماع أولياء الأمور") || strings.Contains(out, "إحضار الكتب") {
+		if !strings.Contains(out, `"msg":"Broadcast sent"`) || strings.Contains(out, "اجتماع أولياء الأمور") || strings.Contains(out, "إحضار الكتب") {
 			t.Errorf("send logs must exist and must not contain the text")
 		}
 	})
@@ -553,7 +553,7 @@ func TestJ1Announcements(t *testing.T) {
 				{"expired token", a14Bearer(expired), 401, "Unauthorized"},
 				{"parent token", a14Bearer(parent), 403, "Forbidden"},
 			} {
-				r := a14Do(t, srv, m, "/api/admin/announcements", tc.header, body)
+				r := a14Do(t, srv, m, "/api/admin/broadcasts", tc.header, body)
 				if r.status != tc.status || r.json(t)["message"] != tc.msg {
 					t.Errorf("%s with %s: %d %s", m, tc.name, r.status, r.body)
 				}
@@ -567,14 +567,14 @@ func TestJ1Announcements(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, m := range calls {
-			if r := a14Do(t, srv, m, "/api/admin/announcements", admin, body); r.status != 401 {
+			if r := a14Do(t, srv, m, "/api/admin/broadcasts", admin, body); r.status != 401 {
 				t.Errorf("%s with a token from before the rotation: %d %s", m, r.status, r.body)
 			}
 		}
 		if after := j1Snapshot(t, db); after != before {
 			t.Errorf("rejected tokens wrote rows")
 		}
-		if r := a14Do(t, srv, "DELETE", "/api/admin/announcements", nil, nil); r.status != 405 || r.header.Get("Allow") != "GET, HEAD, POST" {
+		if r := a14Do(t, srv, "DELETE", "/api/admin/broadcasts", nil, nil); r.status != 405 || r.header.Get("Allow") != "GET, HEAD, POST" {
 			t.Errorf("DELETE: %d Allow=%q", r.status, r.header.Get("Allow"))
 		}
 	})
@@ -655,7 +655,7 @@ func j1InProcess(t *testing.T, label string) (*handlers.AppEnv, *sql.DB, string,
 func j1Post(t *testing.T, app *handlers.AppEnv, token string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	raw, _ := json.Marshal(body)
-	return serve(t, app.AdminMiddleware(app.AdminAnnouncementsHandler), "POST", "/api/admin/announcements", token, string(raw))
+	return serve(t, app.AdminMiddleware(app.AdminBroadcastsHandler), "POST", "/api/admin/broadcasts", token, string(raw))
 }
 
 // TestJ1ScaleAndQueries checks a send to 2,000 parents is one bulk insert finished within a few
@@ -690,21 +690,21 @@ func TestJ1ScaleAndQueries(t *testing.T) {
 		t.Errorf("a send to 2000 parents took %v", took)
 	}
 	var n int
-	db.QueryRow(`SELECT COUNT(DISTINCT parent_id) FROM notifications n JOIN announcements a ON a.id = n.announcement_id WHERE a.title = 'Big'`).Scan(&n)
+	db.QueryRow(`SELECT COUNT(DISTINCT parent_id) FROM notifications n JOIN broadcasts a ON a.id = n.broadcast_id WHERE a.title = 'Big'`).Scan(&n)
 	if n != 2000 {
 		t.Errorf("%d notification rows, want 2000", n)
 	}
 
-	list := app.AdminMiddleware(app.AdminAnnouncementsHandler)
+	list := app.AdminMiddleware(app.AdminBroadcastsHandler)
 	for _, size := range []int{1, 10, 50} {
-		if _, err := db.Exec(`DELETE FROM announcements`); err != nil {
+		if _, err := db.Exec(`DELETE FROM broadcasts`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO announcements (title, body, audience_type, recipient_count) SELECT 'Log ' || g, 'b', 'all', 0 FROM generate_series(1, $1) g`, size); err != nil {
+		if _, err := db.Exec(`INSERT INTO broadcasts (title, body, audience_type, recipient_count) SELECT 'Log ' || g, 'b', 'all', 0 FROM generate_series(1, $1) g`, size); err != nil {
 			t.Fatal(err)
 		}
 		before := counter.n.Load()
-		rec := serve(t, list, "GET", "/api/admin/announcements", token, "")
+		rec := serve(t, list, "GET", "/api/admin/broadcasts", token, "")
 		used := counter.n.Load() - before
 		if rec.Code != 200 || strings.Count(rec.Body.String(), `"read_count"`) != size {
 			t.Fatalf("log of %d: %d %s", size, rec.Code, rec.Body.String())
@@ -824,7 +824,7 @@ func TestJ1Push(t *testing.T) {
 		var batches []string
 		total := 0
 		for _, l := range capture.snapshot()[marker:] {
-			if l.Msg == "Announcement push batch" {
+			if l.Msg == "Broadcast push batch" {
 				batches = append(batches, l.Attrs["batch_size"])
 				var n int
 				fmt.Sscan(l.Attrs["batch_size"], &n)
@@ -842,7 +842,7 @@ func TestJ1Push(t *testing.T) {
 		}
 	})
 
-	t.Run("no Firebase client still sends the announcement", func(t *testing.T) {
+	t.Run("no Firebase client still sends the broadcast", func(t *testing.T) {
 		noFCM := &handlers.AppEnv{DB: app.DB, Background: app.Background}
 		marker := len(capture.snapshot())
 		rec := j1Post(t, noFCM, token, j1Body("No FCM", "Rows only", j1Class("P2", "A")))
@@ -852,12 +852,12 @@ func TestJ1Push(t *testing.T) {
 		settle()
 		skipped := 0
 		for _, l := range capture.snapshot()[marker:] {
-			if l.Msg == "Announcement push skipped: Firebase is not configured" && l.Level == slog.LevelInfo {
+			if l.Msg == "Broadcast push skipped: Firebase is not configured" && l.Level == slog.LevelInfo {
 				skipped++
 			}
 		}
 		var n int
-		db.QueryRow(`SELECT COUNT(*) FROM notifications n JOIN announcements a ON a.id = n.announcement_id WHERE a.title = 'No FCM'`).Scan(&n)
+		db.QueryRow(`SELECT COUNT(*) FROM notifications n JOIN broadcasts a ON a.id = n.broadcast_id WHERE a.title = 'No FCM'`).Scan(&n)
 		if skipped != 1 || n != 1 || len(fcm.take()) != 0 {
 			t.Errorf("skip lines %d, notification rows %d", skipped, n)
 		}
@@ -907,7 +907,7 @@ func TestJ1Push(t *testing.T) {
 		}
 		failed := false
 		for _, l := range capture.snapshot()[marker:] {
-			if l.Msg == "Announcement push finished" && l.Attrs["failed"] == "1" && l.Attrs["sent"] == "0" {
+			if l.Msg == "Broadcast push finished" && l.Attrs["failed"] == "1" && l.Attrs["sent"] == "0" {
 				failed = true
 			}
 		}
@@ -936,11 +936,11 @@ func TestJ1Push(t *testing.T) {
 	})
 }
 
-// TestJ1BeforePhoneNormalisation runs the new code on a database at 000025 without 000026, the
+// TestJ1BeforePhoneNormalisation runs the new code on a database at 000026 without 000027, the
 // state Staging is in between the steps of the README deploy notes.
 func TestJ1BeforePhoneNormalisation(t *testing.T) {
 	db, dsn := setupThrowawayDB(t, "j1v25")
-	if _, err := db.Exec(a14Migration(t, "000026_normalize_phone_numbers.down.sql")); err != nil {
+	if _, err := db.Exec(a14Migration(t, "000027_normalize_phone_numbers.down.sql")); err != nil {
 		t.Fatal(err)
 	}
 	j1Seed(t, db)
@@ -951,23 +951,25 @@ func TestJ1BeforePhoneNormalisation(t *testing.T) {
 	srv := g3Start(t, dsn, g3FreePort(t), true, "TRUSTED_PROXY_CIDRS=127.0.0.1/32", "ABSENCE_CRON_SCHEDULE=0 0 1 1 *")
 	admin := a14Bearer(a14AdminToken(t, srv))
 	for _, body := range []map[string]any{
-		j1Body("Before 000026", "Class", j1Class("G1", nil)),
-		j1Body("Before 000026", "One parent", j1Parent("07000003003")),
+		j1Body("Before 000027", "Class", j1Class("G1", nil)),
+		j1Body("Before 000027", "One parent", j1Parent("07000003003")),
 	} {
-		if r := a14Do(t, srv, "POST", "/api/admin/announcements", admin, body); r.status != 200 {
-			t.Errorf("send on 000025: %d %s", r.status, r.body)
+		if r := a14Do(t, srv, "POST", "/api/admin/broadcasts", admin, body); r.status != 200 {
+			t.Errorf("send on 000026: %d %s", r.status, r.body)
 		}
 	}
-	if r := a14Do(t, srv, "GET", "/api/admin/announcements", admin, nil); r.status != 200 || strings.Count(string(r.body), `"id"`) != 2 {
-		t.Errorf("log on 000025: %d %s", r.status, r.body)
+	if r := a14Do(t, srv, "GET", "/api/admin/broadcasts", admin, nil); r.status != 200 || strings.Count(string(r.body), `"id"`) != 2 {
+		t.Errorf("log on 000026: %d %s", r.status, r.body)
 	}
 }
 
-// TestJ1AnnouncementsMigration verifies migration 000025: it applies alone on a database at
-// 000024, rolls back keeping every notification, applies again, is reached by golang-migrate
-// from versions 20 to 24, and phone normalisation (now 000026) still applies after it, collision
-// abort included.
-func TestJ1AnnouncementsMigration(t *testing.T) {
+// TestJ1BroadcastsMigration verifies the broadcast migrations: 000025 (applied on Staging, under
+// its original names) applies alone on a database at 000024, rolls back keeping every
+// notification and applies again; 000026 renames everything to broadcasts keeping rows, links,
+// read state, constraints and the sequence, also from a partly renamed state, and rolls back to
+// the original names; golang-migrate reaches 26 from versions 20 to 25; and phone normalisation
+// (now 000027) still applies last, collision abort included.
+func TestJ1BroadcastsMigration(t *testing.T) {
 	migrate, err := exec.LookPath("migrate")
 	if err != nil {
 		t.Skip("golang-migrate CLI not installed")
@@ -975,7 +977,7 @@ func TestJ1AnnouncementsMigration(t *testing.T) {
 	fresh := func(t *testing.T, label string) (*sql.DB, func(args ...string) (string, error)) {
 		t.Helper()
 		cli, cliDSN := setupThrowawayDB(t, label)
-		for _, tbl := range []string{"announcements", "banner_images", "device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
+		for _, tbl := range []string{"broadcasts", "announcements", "banner_images", "device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
 			if _, err := cli.Exec("DROP TABLE IF EXISTS " + tbl + " CASCADE"); err != nil {
 				t.Fatal(err)
 			}
@@ -991,11 +993,42 @@ func TestJ1AnnouncementsMigration(t *testing.T) {
 			return strings.TrimSpace(string(out)), err
 		}
 	}
-	state := func(db *sql.DB) (table, column, phoneColumns bool) {
+	oldState := func(db *sql.DB) (table, column, phoneColumns bool) {
 		db.QueryRow(`SELECT to_regclass('announcements') IS NOT NULL,
 			EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'notifications' AND column_name = 'announcement_id'),
 			EXISTS (SELECT 1 FROM information_schema.columns WHERE column_name = 'phone_number_original')`).Scan(&table, &column, &phoneColumns)
 		return
+	}
+	// names lists every table, sequence, column, constraint and index whose name holds word.
+	names := func(t *testing.T, db *sql.DB, word string) []string {
+		t.Helper()
+		rows, err := db.Query(`
+			SELECT 'table ' || relname FROM pg_class WHERE relkind = 'r' AND relname LIKE '%' || $1 || '%'
+			UNION ALL SELECT 'sequence ' || relname FROM pg_class WHERE relkind = 'S' AND relname LIKE '%' || $1 || '%'
+			UNION ALL SELECT 'index ' || relname FROM pg_class WHERE relkind = 'i' AND relname LIKE '%' || $1 || '%'
+			UNION ALL SELECT 'column ' || table_name || '.' || column_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name LIKE '%' || $1 || '%'
+			UNION ALL SELECT 'constraint ' || conname FROM pg_constraint WHERE conname LIKE '%' || $1 || '%'
+			ORDER BY 1`, word)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var s string
+			rows.Scan(&s)
+			out = append(out, s)
+		}
+		sort.Strings(out)
+		return out
+	}
+	renamed := func(list []string, from, to string) []string {
+		out := make([]string, len(list))
+		for i, s := range list {
+			out[i] = strings.ReplaceAll(s, from, to)
+		}
+		sort.Strings(out)
+		return out
 	}
 
 	t.Run("000024 to 000025 adds only announcements; down keeps notifications; up again", func(t *testing.T) {
@@ -1003,7 +1036,7 @@ func TestJ1AnnouncementsMigration(t *testing.T) {
 		if out, err := run("goto", "24"); err != nil {
 			t.Fatalf("goto 24: %v\n%s", err, out)
 		}
-		if table, column, _ := state(db); table || column {
+		if table, column, _ := oldState(db); table || column {
 			t.Fatalf("announcements exist at 24")
 		}
 		if _, err := db.Exec(`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (3201, 'M', '+9647000003201', 'x');
@@ -1016,7 +1049,7 @@ func TestJ1AnnouncementsMigration(t *testing.T) {
 		if v, _ := run("version"); v != "25" {
 			t.Errorf("version %q, want 25", v)
 		}
-		if table, column, phone := state(db); !table || !column || phone {
+		if table, column, phone := oldState(db); !table || !column || phone {
 			t.Fatalf("at 25: table %v, column %v, phone columns %v", table, column, phone)
 		}
 		var oldLink sql.NullInt64
@@ -1054,55 +1087,183 @@ func TestJ1AnnouncementsMigration(t *testing.T) {
 		}
 		var after int
 		db.QueryRow(`SELECT COUNT(*) FROM notifications`).Scan(&after)
-		if table, column, _ := state(db); table || column || after != before {
+		if table, column, _ := oldState(db); table || column || after != before {
 			t.Errorf("after down: table %v, column %v, notifications %d of %d", table, column, after, before)
 		}
 		if out, err := run("up", "1"); err != nil {
 			t.Fatalf("up 1: %v\n%s", err, out)
 		}
-		if table, column, phone := state(db); !table || !column || phone {
+		if table, column, phone := oldState(db); !table || !column || phone {
 			t.Errorf("after up again: table %v, column %v, phone %v", table, column, phone)
 		}
 	})
 
-	for _, from := range []string{"20", "21", "22", "23", "24"} {
-		t.Run("golang-migrate from version "+from+" through 25 to 26", func(t *testing.T) {
+	t.Run("000025 to 000026 renames everything to broadcasts and keeps the data; down restores the old names", func(t *testing.T) {
+		db, run := fresh(t, "j1m25")
+		if out, err := run("goto", "25"); err != nil {
+			t.Fatalf("goto 25: %v\n%s", err, out)
+		}
+		oldNames := names(t, db, "announcement")
+		if len(oldNames) != 15 {
+			t.Fatalf("at 25: %d announcement names, want 15 (table, sequence, column, 2 indexes, 10 constraints): %v", len(oldNames), oldNames)
+		}
+		var sent, read, plain int
+		if err := db.QueryRow(`INSERT INTO parents (full_name, phone_number, pin_code) VALUES ('Rename', '+9647000003301', 'x') RETURNING id`).Scan(&plain); err != nil {
+			t.Fatal(err)
+		}
+		parent := plain
+		if err := db.QueryRow(`INSERT INTO announcements (title, body, audience_type, audience_parent_id, recipient_count) VALUES ('Staging test', 'Body', 'parent', $1, 1) RETURNING id`, parent).Scan(&sent); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(`INSERT INTO notifications (parent_id, parent_phone, title, body, announcement_id, is_read) VALUES ($1, '+9647000003301', 'Staging test', 'Body', $2, true) RETURNING id`, parent, sent).Scan(&read); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(`INSERT INTO notifications (parent_id, parent_phone, title, body) VALUES ($1, '+9647000003301', 'Punch', 'Arrived') RETURNING id`, parent).Scan(&plain); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := func(table, column string) string {
+			var s string
+			db.QueryRow(`SELECT (SELECT string_agg(id || '|' || title || '|' || audience_type || '|' || COALESCE(audience_parent_id::text, '-') || '|' || recipient_count || '|' || created_at, ',' ORDER BY id) FROM ` + table + `)
+				|| ' / ' || (SELECT string_agg(id || '|' || COALESCE(` + column + `::text, '-') || '|' || COALESCE(is_read::text, '-') || '|' || title, ',' ORDER BY id) FROM notifications)`).Scan(&s)
+			return s
+		}
+		before := snapshot("announcements", "announcement_id")
+
+		if out, err := run("up", "1"); err != nil {
+			t.Fatalf("up 1: %v\n%s", err, out)
+		}
+		if v, _ := run("version"); v != "26" {
+			t.Errorf("version %q, want 26", v)
+		}
+		if left := names(t, db, "announcement"); len(left) != 0 {
+			t.Errorf("old names left after 000026: %v", left)
+		}
+		if got, want := names(t, db, "broadcast"), renamed(oldNames, "announcement", "broadcast"); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("names after 000026\n got %v\nwant %v", got, want)
+		}
+		if after := snapshot("broadcasts", "broadcast_id"); after != before {
+			t.Errorf("000026 changed data\nbefore %s\nafter  %s", before, after)
+		}
+		var link sql.NullInt64
+		var isRead bool
+		db.QueryRow(`SELECT broadcast_id, is_read FROM notifications WHERE id = $1`, read).Scan(&link, &isRead)
+		if !link.Valid || int(link.Int64) != sent || !isRead {
+			t.Errorf("the linked read notification became %v read=%v", link, isRead)
+		}
+		db.QueryRow(`SELECT broadcast_id FROM notifications WHERE id = $1`, plain).Scan(&link)
+		if link.Valid {
+			t.Errorf("the plain notification got broadcast_id %d", link.Int64)
+		}
+		var indexDef string
+		db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_notifications_broadcast_id'`).Scan(&indexDef)
+		if !strings.Contains(indexDef, "(broadcast_id)") || !strings.Contains(indexDef, "WHERE (broadcast_id IS NOT NULL)") {
+			t.Errorf("partial index %q", indexDef)
+		}
+		if _, err := db.Exec(`INSERT INTO notifications (parent_id, parent_phone, title, body, broadcast_id) VALUES ($1, '+9647000003301', 'x', 'y', 999999)`, parent); err == nil {
+			t.Errorf("the foreign key to broadcasts is gone")
+		}
+		var next, max int
+		if err := db.QueryRow(`INSERT INTO broadcasts (title, body, audience_type, recipient_count) VALUES ('Next', 'b', 'all', 0) RETURNING id`).Scan(&next); err != nil {
+			t.Fatal(err)
+		}
+		db.QueryRow(`SELECT MAX(id) FROM broadcasts WHERE id <> $1`, next).Scan(&max)
+		if next != max+1 {
+			t.Errorf("the sequence gave %d after %d", next, max)
+		}
+		if _, err := db.Exec(`DELETE FROM broadcasts WHERE id = $1`, next); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO broadcasts (title, body, audience_type, audience_grade, recipient_count) VALUES ('t', 'b', 'all', 'G1', 0)`); err == nil {
+			t.Errorf("the audience CHECK is gone")
+		}
+		if _, err := db.Exec(`INSERT INTO notifications (parent_phone, title, body) VALUES ('+9647000003301', 'Old code', 'Punch insert')`); err != nil {
+			t.Errorf("a punch or absence insert fails on 26: %v", err)
+		}
+		if _, err := db.Exec(`DELETE FROM notifications WHERE title = 'Old code'`); err != nil {
+			t.Fatal(err)
+		}
+
+		if out, err := run("down", "1"); err != nil {
+			t.Fatalf("down 1: %v\n%s", err, out)
+		}
+		if left := names(t, db, "broadcast"); len(left) != 0 {
+			t.Errorf("new names left after down: %v", left)
+		}
+		if got := names(t, db, "announcement"); strings.Join(got, ",") != strings.Join(oldNames, ",") {
+			t.Errorf("names after down\n got %v\nwant %v", got, oldNames)
+		}
+		if after := snapshot("announcements", "announcement_id"); after != before {
+			t.Errorf("down changed data\nbefore %s\nafter  %s", before, after)
+		}
+		if out, err := run("up", "1"); err != nil {
+			t.Fatalf("up again: %v\n%s", err, out)
+		}
+		if after := snapshot("broadcasts", "broadcast_id"); after != before || len(names(t, db, "announcement")) != 0 {
+			t.Errorf("after up again: %s", after)
+		}
+	})
+
+	t.Run("000026 finishes a partly renamed database", func(t *testing.T) {
+		db, run := fresh(t, "j1mpart")
+		if out, err := run("goto", "25"); err != nil {
+			t.Fatalf("goto 25: %v\n%s", err, out)
+		}
+		oldNames := names(t, db, "announcement")
+		if _, err := db.Exec(`ALTER TABLE announcements RENAME TO broadcasts; ALTER TABLE notifications RENAME COLUMN announcement_id TO broadcast_id`); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := run("up", "1"); err != nil {
+			t.Fatalf("up 1 on a partly renamed database: %v\n%s", err, out)
+		}
+		if left := names(t, db, "announcement"); len(left) != 0 {
+			t.Errorf("old names left: %v", left)
+		}
+		if got, want := names(t, db, "broadcast"), renamed(oldNames, "announcement", "broadcast"); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("names\n got %v\nwant %v", got, want)
+		}
+	})
+
+	for _, from := range []string{"20", "21", "22", "23", "24", "25"} {
+		t.Run("golang-migrate from version "+from+" through 26 to 27", func(t *testing.T) {
 			db, run := fresh(t, "j1v"+from)
 			if out, err := run("goto", from); err != nil {
 				t.Fatalf("goto %s: %v\n%s", from, err, out)
 			}
-			if out, err := run("goto", "25"); err != nil {
-				t.Fatalf("goto 25: %v\n%s", err, out)
+			if out, err := run("goto", "26"); err != nil {
+				t.Fatalf("goto 26: %v\n%s", err, out)
 			}
-			if table, column, phone := state(db); !table || !column || phone {
-				t.Errorf("at 25: table %v, column %v, phone %v", table, column, phone)
+			if old := names(t, db, "announcement"); len(old) != 0 || len(names(t, db, "broadcast")) != 15 {
+				t.Errorf("at 26: old names %v, %d broadcast names", old, len(names(t, db, "broadcast")))
+			}
+			if _, _, phone := oldState(db); phone {
+				t.Errorf("phone normalisation ran before 27")
 			}
 			if out, err := run("up"); err != nil {
 				t.Fatalf("up: %v\n%s", err, out)
 			}
-			if v, _ := run("version"); v != "26" {
-				t.Errorf("version %q, want 26", v)
+			if v, _ := run("version"); v != "27" {
+				t.Errorf("version %q, want 27", v)
 			}
-			if table, column, phone := state(db); !table || !column || !phone {
-				t.Errorf("at 26: table %v, column %v, phone %v", table, column, phone)
+			if _, _, phone := oldState(db); !phone {
+				t.Errorf("at 27: phone columns missing")
 			}
 		})
 	}
 
-	t.Run("000026 still aborts on collisions after 000025", func(t *testing.T) {
+	t.Run("000027 still aborts on collisions after 000026", func(t *testing.T) {
 		db, run := fresh(t, "j1coll")
-		if out, err := run("goto", "25"); err != nil {
-			t.Fatalf("goto 25: %v\n%s", err, out)
+		if out, err := run("goto", "26"); err != nil {
+			t.Fatalf("goto 26: %v\n%s", err, out)
 		}
 		if _, err := db.Exec(`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (981, 'A', '07000000981', 'x'), (982, 'B', '+9647000000981', 'x')`); err != nil {
 			t.Fatal(err)
 		}
 		out, err := run("up")
 		if err == nil || !strings.Contains(out, "[981, 982]") {
-			t.Fatalf("000026 should abort listing [981, 982]: %v\n%s", err, out)
+			t.Fatalf("000027 should abort listing [981, 982]: %v\n%s", err, out)
 		}
-		if table, column, phone := state(db); !table || !column || phone {
-			t.Errorf("after the aborted 000026: table %v, column %v, phone %v", table, column, phone)
+		if _, _, phone := oldState(db); phone || len(names(t, db, "broadcast")) != 15 {
+			t.Errorf("after the aborted 000027: phone columns %v, broadcast names %d", phone, len(names(t, db, "broadcast")))
 		}
 	})
 }

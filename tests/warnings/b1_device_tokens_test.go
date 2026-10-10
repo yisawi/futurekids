@@ -550,7 +550,7 @@ func TestB1DeviceTokensMigration(t *testing.T) {
 			t.Skip("golang-migrate CLI not installed")
 		}
 		cli, cliDSN := setupThrowawayDB(t, "b1cli")
-		for _, tbl := range []string{"banner_images", "device_tokens", "settings", "notifications", "announcements", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
+		for _, tbl := range []string{"banner_images", "device_tokens", "settings", "notifications", "broadcasts", "announcements", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
 			if _, err := cli.Exec("DROP TABLE IF EXISTS " + tbl + " CASCADE"); err != nil {
 				t.Fatal(err)
 			}

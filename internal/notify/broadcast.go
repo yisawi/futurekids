@@ -12,14 +12,14 @@ import (
 	"firebase.google.com/go/v4/messaging"
 )
 
-// Audience types of an announcement.
+// Audience types of a broadcast.
 const (
 	AudienceAll    = "all"
 	AudienceParent = "parent"
 	AudienceClass  = "class"
 )
 
-// Audience selects the parents an announcement reaches: every parent (AudienceAll), the parent
+// Audience selects the parents a broadcast reaches: every parent (AudienceAll), the parent
 // ParentID (AudienceParent), or the parents of the active students whose grade and/or section
 // equal Grade and Section exactly (AudienceClass; a nil field matches any value).
 type Audience struct {
@@ -68,19 +68,19 @@ func CountRecipients(ctx context.Context, q execQuerier, a Audience) (int, error
 	return n, err
 }
 
-// LockAnnouncements serializes announcement creation until tx ends.
-func LockAnnouncements(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(ctx, `LOCK TABLE announcements IN SHARE ROW EXCLUSIVE MODE`)
+// LockBroadcasts serializes broadcast creation until tx ends.
+func LockBroadcasts(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `LOCK TABLE broadcasts IN SHARE ROW EXCLUSIVE MODE`)
 	return err
 }
 
-// RecentDuplicate reports whether an announcement with the same title, body and audience was
-// created less than within ago. Call it after LockAnnouncements in the same transaction.
+// RecentDuplicate reports whether a broadcast with the same title, body and audience was
+// created less than within ago. Call it after LockBroadcasts in the same transaction.
 func RecentDuplicate(ctx context.Context, tx *sql.Tx, title, body string, a Audience, within time.Duration) (bool, error) {
 	var found bool
 	err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM announcements
+			SELECT 1 FROM broadcasts
 			WHERE title = $1 AND body = $2 AND audience_type = $3
 			  AND audience_parent_id IS NOT DISTINCT FROM $4::int
 			  AND audience_grade IS NOT DISTINCT FROM $5::text
@@ -90,19 +90,19 @@ func RecentDuplicate(ctx context.Context, tx *sql.Tx, title, body string, a Audi
 	return found, err
 }
 
-// CreateAnnouncement records an announcement in the caller's transaction and gives every
+// CreateBroadcast records a broadcast in the caller's transaction and gives every
 // recipient parent an unread notification with its title and body, in one statement. It returns
-// the announcement id and the number of recipients, or ErrNoRecipients (roll back then). After
-// the transaction commits, call PushAnnouncement with the id.
-func CreateAnnouncement(ctx context.Context, tx *sql.Tx, title, body string, a Audience) (id, recipients int, err error) {
+// the broadcast id and the number of recipients, or ErrNoRecipients (roll back then). After
+// the transaction commits, call PushBroadcast with the id.
+func CreateBroadcast(ctx context.Context, tx *sql.Tx, title, body string, a Audience) (id, recipients int, err error) {
 	if err = tx.QueryRowContext(ctx, `
-		INSERT INTO announcements (title, body, audience_type, audience_parent_id, audience_grade, audience_section, recipient_count)
+		INSERT INTO broadcasts (title, body, audience_type, audience_parent_id, audience_grade, audience_section, recipient_count)
 		VALUES ($1, $2, $3, $4, $5, $6, 0)
 		RETURNING id`, title, body, a.Type, a.ParentID, a.Grade, a.Section).Scan(&id); err != nil {
 		return 0, 0, err
 	}
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO notifications (parent_id, parent_phone, title, body, announcement_id)
+		INSERT INTO notifications (parent_id, parent_phone, title, body, broadcast_id)
 		SELECT p.id, p.phone_number, $5, $6, $7 `+recipientsSQL+`
 		ORDER BY p.id`, append(a.args(), title, body, id)...)
 	if err != nil {
@@ -115,24 +115,24 @@ func CreateAnnouncement(ctx context.Context, tx *sql.Tx, title, body string, a A
 	if n == 0 {
 		return 0, 0, ErrNoRecipients
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE announcements SET recipient_count = $1 WHERE id = $2`, n, id); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE broadcasts SET recipient_count = $1 WHERE id = $2`, n, id); err != nil {
 		return 0, 0, err
 	}
 	return id, int(n), nil
 }
 
-// PushAnnouncement sends the announcement as a push to every device of its recipients, in the
+// PushBroadcast sends the broadcast as a push to every device of its recipients, in the
 // background, in batches of at most PushBatchSize. Tokens FCM reports as unregistered are
 // deleted; other failures are only logged. Without an FCM client it logs and does nothing.
-func PushAnnouncement(bg *background.Group, client *messaging.Client, db *sql.DB, id int, title, body string) {
+func PushBroadcast(bg *background.Group, client *messaging.Client, db *sql.DB, id int, title, body string) {
 	if client == nil {
-		slog.Info("Announcement push skipped: Firebase is not configured", "announcement_id", id)
+		slog.Info("Broadcast push skipped: Firebase is not configured", "broadcast_id", id)
 		return
 	}
-	bg.Go("announcement push", func() {
-		tokens, err := announcementTokens(db, id)
+	bg.Go("broadcast push", func() {
+		tokens, err := broadcastTokens(db, id)
 		if err != nil {
-			slog.Error("Announcement push: device tokens query failed", "announcement_id", id, "error", err)
+			slog.Error("Broadcast push: device tokens query failed", "broadcast_id", id, "error", err)
 			return
 		}
 		sent, failed, cleared, batches := 0, 0, 0, 0
@@ -145,10 +145,10 @@ func PushAnnouncement(bg *background.Group, client *messaging.Client, db *sql.DB
 				Notification: &messaging.Notification{Title: title, Body: body},
 			})
 			cancel()
-			slog.Debug("Announcement push batch", "announcement_id", id, "batch_size", len(batch))
+			slog.Debug("Broadcast push batch", "broadcast_id", id, "batch_size", len(batch))
 			if err != nil {
 				failed += len(batch)
-				slog.Error("Announcement push: batch failed", "announcement_id", id, "batch_size", len(batch), "error", err)
+				slog.Error("Broadcast push: batch failed", "broadcast_id", id, "batch_size", len(batch), "error", err)
 				continue
 			}
 			for i, r := range resp.Responses {
@@ -161,22 +161,22 @@ func PushAnnouncement(bg *background.Group, client *messaging.Client, db *sql.DB
 					clearDeadToken(db, batch[i])
 				default:
 					failed++
-					slog.Error("Announcement push: send failed", "announcement_id", id, "token", TokenFingerprint(batch[i]), "error", r.Error)
+					slog.Error("Broadcast push: send failed", "broadcast_id", id, "token", TokenFingerprint(batch[i]), "error", r.Error)
 				}
 			}
 		}
-		slog.Info("Announcement push finished", "announcement_id", id, "tokens", len(tokens), "batches", batches, "sent", sent, "failed", failed, "cleared", cleared)
+		slog.Info("Broadcast push finished", "broadcast_id", id, "tokens", len(tokens), "batches", batches, "sent", sent, "failed", failed, "cleared", cleared)
 	})
 }
 
-func announcementTokens(db *sql.DB, id int) ([]string, error) {
+func broadcastTokens(db *sql.DB, id int) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	rows, err := db.QueryContext(ctx, `
 		SELECT dt.token
 		FROM notifications n
 		JOIN device_tokens dt ON dt.parent_id = n.parent_id
-		WHERE n.announcement_id = $1
+		WHERE n.broadcast_id = $1
 		ORDER BY dt.id`, id)
 	if err != nil {
 		return nil, err
