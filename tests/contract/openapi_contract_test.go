@@ -51,6 +51,7 @@ type exchange struct {
 	header           http.Header
 	body             []byte
 	parts            []string
+	fields           []string
 }
 
 // formPart is one part of a multipart/form-data request; multipartBody is sent as one.
@@ -203,7 +204,7 @@ func (r *runner) callWith(op, name, query string, header map[string]string, body
 	method, path, _ := strings.Cut(op, " ")
 	h := http.Header{}
 	var raw []byte
-	var parts []string
+	var parts, fields []string
 	switch b := body.(type) {
 	case nil:
 	case string:
@@ -218,6 +219,10 @@ func (r *runner) callWith(op, name, query string, header map[string]string, body
 		var err error
 		if raw, err = json.Marshal(b); err != nil {
 			t.Fatal(err)
+		}
+		var top map[string]any
+		if json.Unmarshal(raw, &top) == nil && top != nil {
+			fields = sortedKeys(top)
 		}
 	}
 	if raw != nil && parts == nil {
@@ -234,7 +239,7 @@ func (r *runner) callWith(op, name, query string, header map[string]string, body
 	if err != nil {
 		t.Fatalf("%s [%s]: %v", op, name, err)
 	}
-	x := &exchange{name: name, op: op, target: path + query, status: status, header: respHeader, body: respBody, parts: parts}
+	x := &exchange{name: name, op: op, target: path + query, status: status, header: respHeader, body: respBody, parts: parts, fields: fields}
 	r.xs = append(r.xs, x)
 	if status != want {
 		t.Errorf("%s%s [%s]: status %d, want %d: %.300s", op, query, name, status, want, respBody)
@@ -372,6 +377,16 @@ func weekdayRank(day string) int {
 	return 8
 }
 
+// contractNow is the Asia/Baghdad time the server runs at: now, moved back to the latest
+// Sunday-to-Thursday date, which the server gets as FAKE_TODAY.
+func contractNow() time.Time {
+	now := tz.Now()
+	for now.Weekday() == time.Friday || now.Weekday() == time.Saturday {
+		now = now.AddDate(0, 0, -1)
+	}
+	return now
+}
+
 // schoolDays lists the Sunday–Thursday dates of today's month up to today, newest first.
 func schoolDays(today time.Time) []string {
 	var days []string
@@ -385,7 +400,7 @@ func schoolDays(today time.Time) []string {
 
 func (r *runner) scenario() {
 	t := r.t
-	now := tz.Now()
+	now := contractNow()
 	today := now.Format("2006-01-02")
 	month := now.Format("2006-01")
 	later, earlier := time.Now().Add(time.Hour), time.Now().Add(-time.Hour)
@@ -444,6 +459,9 @@ func (r *runner) scenario() {
 	idD, _ := create("other parent", map[string]any{"name": "Hadi Example", "parent_name": "Layla Example", "parent_phone": phone2, "parent_pin": "Ze4&uM9k?Ga2fC7x", "rfid_tag": "9004", "grade": "G3", "section": "A"})
 	idE, _ := create("to deactivate", map[string]any{"name": "Temp Example", "parent_name": "Nour Example", "parent_phone": phone3, "parent_pin": "Nc6?Fa3w@Ub8rZ5k", "rfid_tag": "9005"})
 	if _, err := r.db.Exec(`UPDATE students SET created_at = '2026-01-01 08:00' WHERE id IN ($1, $2, $3)`, idA, idB, idC); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.db.Exec(`UPDATE students SET created_at = $3::date + created_at::time WHERE id IN ($1, $2)`, idD, idE, today); err != nil {
 		t.Fatal(err)
 	}
 	r.call("POST /api/admin/students", "missing name", "", admin, map[string]any{"parent_name": "Omar Example", "parent_phone": phone1}, 400)
@@ -1340,6 +1358,111 @@ func (r *runner) scenario() {
 	r.call("GET /api/admin/broadcasts", "invalid cursor", "?before=abc", admin, nil, 400)
 	adminDenied("GET /api/admin/broadcasts", "", nil)
 
+	// ── School closures ────────────────────────────────────────────────────────
+	closure := func(kv ...any) map[string]any {
+		m := map[string]any{}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i].(string)] = kv[i+1]
+		}
+		return m
+	}
+	ymd := func(d time.Time) string { return d.Format("2006-01-02") }
+	_, d = r.call("POST /api/admin/holidays", "preview a holiday", "", admin, closure("kind", "holiday", "start_date", "2099-03-01", "end_date", "2099-03-05", "title", "عطلة الربيع", "dry_run", true), 200)
+	r.expect("preview", fmt.Sprint(at(d, "message"), " ", at(d, "data", "id"), " ", at(d, "data", "school_days"), " ", at(d, "data", "notified"), " ", toInt(at(d, "data", "recipient_count")) == parentCount), "Preview only <nil> 5 true true")
+	_, d = r.call("POST /api/admin/holidays", "future holiday without a notification", "", admin, closure("kind", "holiday", "start_date", "2099-03-01", "end_date", "2099-03-05", "title", "عطلة الربيع", "notify", false), 200)
+	futureHoliday := toInt(at(d, "data", "id"))
+	r.expect("future holiday", fmt.Sprint(at(d, "message"), " ", at(d, "data", "end_date"), " ", at(d, "data", "notified"), " ", at(d, "data", "recipient_count")), "Closure registered 2099-03-05 false 0")
+	_, d = r.call("POST /api/admin/holidays", "past one-day holiday sends nothing", "", admin, closure("kind", "holiday", "start_date", "2026-01-04", "title", "عطلة رسمية", "notes", "تصحيح السجل"), 200)
+	pastHoliday := toInt(at(d, "data", "id"))
+	r.expect("past holiday", fmt.Sprint(at(d, "data", "end_date"), " ", at(d, "data", "school_days"), " ", at(d, "data", "notified")), "2026-01-04 1 false")
+	_, d = r.call("POST /api/admin/holidays", "open-ended pause", "", admin, closure("kind", "pause", "start_date", "2099-06-01", "title", "العطلة الصيفية", "notify", false, "confirm", true), 200)
+	r.expect("open-ended pause", fmt.Sprint(at(d, "data", "end_date"), " ", at(d, "data", "school_days")), "<nil> <nil>")
+	r.call("POST /api/admin/holidays", "inside the open-ended pause", "", admin, closure("kind", "holiday", "start_date", "2099-07-01", "title", "x", "notify", false), 409)
+	_, d = r.call("POST /api/admin/holidays", "overlaps the future holiday", "", admin, closure("kind", "holiday", "start_date", "2099-02-26", "end_date", "2099-03-02", "title", "x", "notify", false), 409)
+	r.expect("overlap message", at(d, "message"), fmt.Sprintf("Overlaps closure %d %q (2099-03-01 to 2099-03-05); cancel it first or choose other dates", futureHoliday, "عطلة الربيع"))
+	for _, tc := range []struct {
+		name string
+		body any
+		msg  string
+	}{
+		{"kind missing", closure("start_date", "2099-01-04", "title", "x"), "kind is required"},
+		{"unknown kind", closure("kind", "strike", "start_date", "2099-01-04", "title", "x"), "kind must be holiday or pause"},
+		{"start_date not a date", closure("kind", "holiday", "start_date", "2099-02-30", "title", "x"), "start_date must be formatted as YYYY-MM-DD"},
+		{"end_date before start_date", closure("kind", "holiday", "start_date", "2099-01-05", "end_date", "2099-01-04", "title", "x"), "end_date must not be before start_date"},
+		{"holiday of 61 days", closure("kind", "holiday", "start_date", "2099-01-01", "end_date", "2099-03-02", "title", "x"), "a holiday can be at most 60 days; use a pause for a longer closure"},
+		{"pause without confirm", closure("kind", "pause", "start_date", "2099-09-01", "title", "x"), "confirm must be true for a pause"},
+		{"pause in the past", closure("kind", "pause", "start_date", "2026-01-04", "title", "x", "confirm", true), "a pause cannot start in the past"},
+		{"title over 80", closure("kind", "holiday", "start_date", "2099-01-04", "title", strings.Repeat("ع", 81)), "title must be at most 80 characters"},
+		{"notes over 500", closure("kind", "holiday", "start_date", "2099-01-04", "title", "x", "notes", strings.Repeat("ع", 501)), "notes must be at most 500 characters"},
+		{"notify not a boolean", closure("kind", "holiday", "start_date", "2099-01-04", "title", "x", "notify", "yes"), "notify must be true or false"},
+		{"malformed JSON", "{", "Invalid request body"},
+	} {
+		_, d = r.call("POST /api/admin/holidays", tc.name, "", admin, tc.body, 400)
+		r.expect("message for "+tc.name, at(d, "message"), tc.msg)
+	}
+	r.call("POST /api/admin/holidays", "oversized body", "", admin, oversized(), 413)
+	adminDenied("POST /api/admin/holidays", "", closure("kind", "holiday", "start_date", "2099-01-04", "title", "x"))
+
+	_, d = r.call("GET /api/admin/attendance", "a Saturday", "?date=2026-01-03", admin, nil, 200)
+	r.expect("Saturday report", fmt.Sprint(at(d, "day_type"), " ", at(d, "day_title"), " ", len(list(at(d, "data")))), "weekend <nil> 0")
+	_, d = r.call("GET /api/admin/attendance", "a holiday", "?date=2026-01-04", admin, nil, 200)
+	r.expect("holiday report", fmt.Sprint(at(d, "day_type"), " ", at(d, "day_title"), " ", at(d, "day_notes"), " ", len(list(at(d, "data")))), "holiday عطلة رسمية تصحيح السجل 0")
+	_, d = r.call("GET /api/admin/attendance", "a pause day", "?date=2099-06-02", admin, nil, 200)
+	r.expect("pause report", fmt.Sprint(at(d, "day_type"), " ", at(d, "day_title"), " ", len(list(at(d, "data")))), "pause العطلة الصيفية 0")
+
+	_, d = r.call("GET /api/admin/holidays", "current and upcoming", "", admin, nil, 200)
+	var upcoming []string
+	for _, it := range list(at(d, "data")) {
+		upcoming = append(upcoming, fmt.Sprint(at(it, "start_date"), " ", at(it, "active"), " ", at(it, "notified")))
+	}
+	r.expect("current and upcoming closures", upcoming, []string{"2099-03-01 false false", "2099-06-01 false false"})
+	_, d = r.call("GET /api/admin/holidays", "a month", "?month=2026-01", admin, nil, 200)
+	r.expect("January closures", fmt.Sprint(len(list(at(d, "data"))), " ", at(d, "data", 0, "id"), " ", at(d, "data", 0, "notes")), fmt.Sprint(1, " ", pastHoliday, " تصحيح السجل"))
+	r.call("GET /api/admin/holidays", "invalid month", "?month=2026-13", admin, nil, 400)
+	adminDenied("GET /api/admin/holidays", "", nil)
+
+	_, d = r.call("GET /api/mobile/holidays", "closed days of a month", "?month=2026-01", r.parent, nil, 200)
+	r.expect("closed days", fmt.Sprint(at(d, "month"), " ", len(list(at(d, "data"))), " ", at(d, "data", 0, "date"), " ", at(d, "data", 0, "kind"), " ", at(d, "data", 0, "title")), "2026-01 1 2026-01-04 holiday عطلة رسمية")
+	_, d = r.call("GET /api/mobile/holidays", "an open-ended pause lists every school weekday", "?month=2099-06", r.parent, nil, 200)
+	r.expect("June 2099 closed days", len(list(at(d, "data"))), 22)
+	r.call("GET /api/mobile/holidays", "invalid month", "?month=June", r.parent, nil, 400)
+	parentDenied("GET /api/mobile/holidays", "")
+
+	running := now.AddDate(0, 0, -1)
+	_, d = r.call("POST /api/admin/holidays", "holiday running today", "", admin, closure("kind", "holiday", "start_date", ymd(running), "end_date", ymd(now.AddDate(0, 0, 1)), "title", "عطلة طارئة", "notify", false), 200)
+	runningID := toInt(at(d, "data", "id"))
+	_, d = r.call("GET /api/admin/dashboard", "today closed by a holiday", "", admin, nil, 200)
+	r.expect("dashboard on a holiday", fmt.Sprint(at(d, "day_type"), " ", at(d, "day_title"), " ", at(d, "data", "present_today"), " ", toInt(at(d, "data", "total_students")) > 0), "holiday عطلة طارئة 0 true")
+	_, d = r.call("GET /api/mobile/attendance/today", "today closed by a holiday", "", r.parent, nil, 200)
+	r.expect("parent today on a holiday", fmt.Sprint(at(d, "day_type"), " ", len(list(at(d, "data")))), "holiday 0")
+	_, d = r.call("POST /api/admin/holidays/cancel", "preview ending a running holiday", "", admin, map[string]any{"id": runningID, "dry_run": true}, 200)
+	r.expect("cancel preview", fmt.Sprint(at(d, "message"), " ", at(d, "data", "action"), " ", at(d, "data", "end_date"), " ", at(d, "data", "dry_run")), "Preview only shortened "+ymd(running)+" true")
+	_, d = r.call("POST /api/admin/holidays/cancel", "end a running holiday", "", admin, map[string]any{"id": runningID, "notify": false}, 200)
+	r.expect("cancel running", fmt.Sprint(at(d, "message"), " ", at(d, "data", "action"), " ", at(d, "data", "end_date"), " ", at(d, "data", "notified")), "Closure cancelled shortened "+ymd(running)+" false")
+	_, d = r.call("GET /api/admin/dashboard", "today is a school day again", "", admin, nil, 200)
+	r.expect("dashboard after the cancel", at(d, "day_type"), "school")
+	_, d = r.call("POST /api/admin/holidays/cancel", "cancel a future holiday", "", admin, map[string]any{"id": futureHoliday, "notify": false}, 200)
+	r.expect("cancel future", fmt.Sprint(at(d, "data", "action"), " ", at(d, "data", "end_date")), "deleted <nil>")
+	r.call("POST /api/admin/holidays/cancel", "already cancelled", "", admin, map[string]any{"id": futureHoliday}, 404)
+	_, d = r.call("POST /api/admin/holidays/cancel", "a holiday already over", "", admin, map[string]any{"id": pastHoliday}, 409)
+	r.expect("already over message", at(d, "message"), "This closure is already over")
+	for _, tc := range []struct {
+		name string
+		body any
+		msg  string
+	}{
+		{"id missing", map[string]any{}, "id is required"},
+		{"id not positive", map[string]any{"id": 0}, "id must be a positive closure id"},
+		{"id a string", map[string]any{"id": "12"}, "id must be a positive closure id"},
+		{"dry_run not a boolean", map[string]any{"id": pastHoliday, "dry_run": 1}, "dry_run must be true or false"},
+		{"malformed JSON", "{", "Invalid request body"},
+	} {
+		_, d = r.call("POST /api/admin/holidays/cancel", tc.name, "", admin, tc.body, 400)
+		r.expect("message for "+tc.name, at(d, "message"), tc.msg)
+	}
+	r.call("POST /api/admin/holidays/cancel", "oversized body", "", admin, oversized(), 413)
+	adminDenied("POST /api/admin/holidays/cancel", "", map[string]any{"id": pastHoliday})
+
 	// ── System ─────────────────────────────────────────────────────────────────
 	r.call("GET /health", "liveness", "", "", nil, 200)
 
@@ -1379,7 +1502,7 @@ func (r *runner) scenario() {
 // then restores the database.
 func (r *runner) databaseFailures() {
 	t := r.t
-	today := tz.Today()
+	today := contractNow().Format("2006-01-02")
 	exec := func(q string) {
 		t.Helper()
 		if _, err := r.db.Exec(q); err != nil {
@@ -1388,14 +1511,14 @@ func (r *runner) databaseFailures() {
 	}
 	admin, parent := r.admin, r.parent
 
-	tables := []string{"students", "parents", "settings", "devices", "notifications", "banners", "admins", "device_tokens"}
+	tables := []string{"students", "parents", "settings", "devices", "notifications", "banners", "admins", "device_tokens", "school_closures"}
 	for _, tb := range tables {
 		exec("ALTER TABLE " + tb + " RENAME TO " + tb + "_offline")
 	}
 	for _, op := range []string{
 		"GET /api/mobile/students", "GET /api/mobile/attendance/today", "GET /api/mobile/attendance/summary",
 		"GET /api/mobile/attendance/monthly", "GET /api/mobile/schedule", "GET /api/mobile/notifications",
-		"GET /api/mobile/banners", "PUT /api/mobile/notifications/read-all",
+		"GET /api/mobile/banners", "PUT /api/mobile/notifications/read-all", "GET /api/mobile/holidays",
 	} {
 		r.call(op, "database error", "", parent, nil, 500)
 	}
@@ -1418,6 +1541,9 @@ func (r *runner) databaseFailures() {
 	r.call("GET /api/admin/schedule", "database error", "?grade=G4&section=C", admin, nil, 500)
 	r.call("GET /api/admin/schedule/classes", "database error", "", admin, nil, 500)
 	r.call("GET /api/admin/broadcasts", "database error", "", admin, nil, 500)
+	r.call("GET /api/admin/holidays", "database error", "", admin, nil, 500)
+	r.call("POST /api/admin/holidays", "database error", "", admin, map[string]any{"kind": "holiday", "start_date": "2099-01-04", "title": "Down", "notify": false}, 500)
+	r.call("POST /api/admin/holidays/cancel", "database error", "", admin, map[string]any{"id": 1, "notify": false}, 500)
 	r.call("POST /api/admin/broadcasts", "database error", "", admin, map[string]any{"title": "Down", "body": "Down", "audience": map[string]any{"type": "all"}}, 500)
 	r.call("GET /api/admin/schedule/export", "database error", "?grade=G3&section=A", admin, nil, 500)
 	r.call("POST /api/admin/schedule/import", "database error", "", admin, multipartBody{{"file", "schedule.xlsx", handlers.XLSXContentType, contractScheduleXLSX(t)}}, 500)
@@ -1493,6 +1619,8 @@ func (r *runner) transport(t *testing.T) {
 	record("wrong method on the schedule route", "DELETE", "/api/admin/schedule", nil, 405, "GET, HEAD, PUT")
 	record("wrong method on the schedule import route", "GET", "/api/admin/schedule/import", nil, 405, "POST")
 	record("wrong method on the broadcasts route", "DELETE", "/api/admin/broadcasts", nil, 405, "GET, HEAD, POST")
+	record("wrong method on the holidays route", "PUT", "/api/admin/holidays", nil, 405, "GET, HEAD, POST")
+	record("wrong method on the holiday cancel route", "GET", "/api/admin/holidays/cancel", nil, 405, "POST")
 	record("wrong method on the schedule export route", "POST", "/api/admin/schedule/export", nil, 405, "GET, HEAD")
 	record("wrong method on the banner picture route", "DELETE", "/api/mobile/banners/image", nil, 405, "GET, HEAD")
 	record("wrong method on a login route", "GET", "/api/admin/login", nil, 405, "POST")
@@ -1874,10 +2002,14 @@ func requestProblems(s *apiSpec, xs []*exchange) []string {
 	}
 	var problems []string
 	for _, x := range xs {
-		if x.parts == nil || x.status < 200 || x.status > 299 {
+		if (x.parts == nil && x.fields == nil) || x.status < 200 || x.status > 299 {
 			continue
 		}
 		where := fmt.Sprintf("%s [%s] request", x.op, x.name)
+		mediaType, kind, sentNames := "multipart/form-data", "part", x.parts
+		if x.parts == nil {
+			mediaType, kind, sentNames = "application/json", "field", x.fields
+		}
 		o, ok := ops[x.op]
 		if !ok {
 			problems = append(problems, where+": the operation is not in the spec")
@@ -1888,9 +2020,9 @@ func requestProblems(s *apiSpec, xs []*exchange) []string {
 			problems = append(problems, where+": "+err.Error())
 			continue
 		}
-		media := obj(obj(rb["content"])["multipart/form-data"])
+		media := obj(obj(rb["content"])[mediaType])
 		if media == nil {
-			problems = append(problems, where+": multipart/form-data is not documented")
+			problems = append(problems, where+": "+mediaType+" is not documented")
 			continue
 		}
 		schema, err := s.deref(obj(media["schema"]))
@@ -1900,10 +2032,10 @@ func requestProblems(s *apiSpec, xs []*exchange) []string {
 		}
 		props := obj(schema["properties"])
 		sent := map[string]bool{}
-		for _, p := range x.parts {
+		for _, p := range sentNames {
 			sent[p] = true
 			if props[p] == nil {
-				problems = append(problems, fmt.Sprintf("%s: part %q is not a documented field (documented: %v)", where, p, sortedKeys(props)))
+				problems = append(problems, fmt.Sprintf("%s: %s %q is not a documented field (documented: %v)", where, kind, p, sortedKeys(props)))
 			}
 		}
 		for _, req := range list(schema["required"]) {
@@ -2094,6 +2226,15 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		}},
 		{"createBroadcast loses its 409", []string{"responses"}, func(root map[string]any) {
 			delete(node(root, "paths", "/api/admin/broadcasts", "post", "responses"), "409")
+		}},
+		{"cancelHoliday loses its 409", []string{"responses"}, func(root map[string]any) {
+			delete(node(root, "paths", "/api/admin/holidays/cancel", "post", "responses"), "409")
+		}},
+		{"day_type loses weekend", []string{"responses"}, func(root map[string]any) {
+			node(schemas(root), "DayType")["enum"] = []any{"school", "holiday", "pause"}
+		}},
+		{"the create request loses confirm", []string{"requests"}, func(root map[string]any) {
+			delete(obj(node(schemas(root), "HolidayCreateRequest")["properties"]), "confirm")
 		}},
 		{"the import loses the grade part", []string{"requests"}, func(root map[string]any) {
 			delete(obj(node(schemas(root), "ScheduleImportRequest")["properties"]), "grade")

@@ -1,13 +1,15 @@
 package cron
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"future_kids/internal/background"
+	"future_kids/internal/handlers"
 	"future_kids/internal/notify"
-	"future_kids/internal/tz"
 
 	"firebase.google.com/go/v4/messaging"
 )
@@ -15,7 +17,19 @@ import (
 // ProcessDailyAbsences تُنفذ عند الساعة 12:00 ظهراً بتوقيت العراق
 func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client, bg *background.Group) {
 	// الاعتماد الصارم على توقيت بغداد
-	today := tz.Today()
+	today := handlers.Clock().Format("2006-01-02")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	day, err := handlers.DayOn(ctx, db, today)
+	cancel()
+	if err != nil {
+		slog.Error("ProcessDailyAbsences: day lookup failed; nothing sent", "date", today, "error", err)
+		return
+	}
+	if !day.School() {
+		slog.Info("ProcessDailyAbsences: skipped, not a school day", "date", today, "day_type", day.Type)
+		return
+	}
 
 	slog.Info("ProcessDailyAbsences: starting", "date", today)
 

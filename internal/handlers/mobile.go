@@ -81,7 +81,16 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	today := tz.Today()
+	today := today()
+	day, err := DayOn(r.Context(), app.DB, today)
+	if err != nil {
+		respondInternalError(w, "Database error", "MobileTodayAttendanceHandler: day lookup failed", err, "parent_id", parentID)
+		return
+	}
+	if !day.School() {
+		respondJSON(w, http.StatusOK, withDay(map[string]interface{}{"status": "success", "date": today, "data": []DailyAttendanceDTO{}}, day))
+		return
+	}
 
 	query := `
 		SELECT 
@@ -121,7 +130,7 @@ func (app *AppEnv) MobileTodayAttendanceHandler(w http.ResponseWriter, r *http.R
 		records = []DailyAttendanceDTO{}
 	}
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "date": today, "data": records})
+	respondJSON(w, http.StatusOK, withDay(map[string]interface{}{"status": "success", "date": today, "data": records}, day))
 }
 
 // GetActiveBannersHandler returns active banners ordered from newest to oldest.
@@ -215,7 +224,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	// CTE ذكي يحسب الأيام الفعلية للدوام حتى تاريخ اليوم (يستبعد الجمعة، السبت، والأيام المستقبلية)
+	// CTE ذكي يحسب الأيام الفعلية للدوام حتى تاريخ اليوم (يستبعد الجمعة، السبت، العطل والأيام المستقبلية)
 	query := `
 		WITH valid_days AS (
 			SELECT d::DATE AS m_date
@@ -224,7 +233,7 @@ func (app *AppEnv) MobileAttendanceSummaryHandler(w http.ResponseWriter, r *http
 				LEAST((DATE($1 || '-01') + INTERVAL '1 month - 1 day')::DATE, $3::DATE),
 				'1 day'::interval
 			) AS d
-			WHERE EXTRACT(DOW FROM d) NOT IN (5, 6)
+			WHERE ` + fmt.Sprintf(schoolDaySQL, "d::DATE") + `
 		)
 		SELECT 
 			s.id, 
@@ -294,7 +303,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	// استعلام CTE يولد أيام الشهر، يستبعد المستقبل وعطلة نهاية الأسبوع (5=الجمعة، 6=السبت)
+	// استعلام CTE يولد أيام الشهر، يستبعد المستقبل وعطلة نهاية الأسبوع (5=الجمعة، 6=السبت) والعطل
 	query := `
 		WITH month_dates AS (
 			SELECT generate_series(
@@ -315,7 +324,7 @@ func (app *AppEnv) MobileMonthlyAttendanceHandler(w http.ResponseWriter, r *http
 		CROSS JOIN LATERAL get_student_status(s.id, md.m_date) st
 		WHERE s.parent_id = $2 AND s.is_active = true
 		  AND md.m_date <= $3::DATE
-		  AND EXTRACT(DOW FROM md.m_date) NOT IN (5, 6)
+		  AND ` + fmt.Sprintf(schoolDaySQL, "md.m_date") + `
 		  AND ` + fmt.Sprintf(studentExistedOnSQL, "md.m_date") + `
 		  AND NOT ($4::boolean AND md.m_date = $3::DATE AND st.status = 'Absent')
 		ORDER BY s.id, md.m_date DESC

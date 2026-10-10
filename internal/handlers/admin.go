@@ -17,7 +17,6 @@ import (
 	"future_kids/internal/auth"
 	"future_kids/internal/phone"
 	"future_kids/internal/ratelimit"
-	"future_kids/internal/tz"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	excelize "github.com/xuri/excelize/v2"
@@ -54,7 +53,7 @@ type StudentPayload struct {
 func requestedDate(w http.ResponseWriter, r *http.Request) (date string, ok bool) {
 	d := r.URL.Query().Get("date")
 	if d == "" {
-		return tz.Today(), true
+		return today(), true
 	}
 	t, err := time.Parse("2006-01-02", d)
 	if err != nil {
@@ -172,7 +171,12 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	today := tz.Today()
+	today := today()
+	day, err := DayOn(r.Context(), app.DB, today)
+	if err != nil {
+		respondInternalError(w, "Database error", "AdminDashboardHandler: day lookup failed", err, "date", today)
+		return
+	}
 
 	// استعلام CTE ذكي يحسب جميع الإحصائيات دفعة واحدة وبأداء عالٍ جداً
 	query := `
@@ -193,9 +197,13 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 			GREATEST(0, total_students - present_today - excused_today) as absent_today
 		FROM stats
 	`
+	args := []any{today}
+	if !day.School() {
+		query, args = `SELECT (SELECT COUNT(*) FROM students s WHERE s.is_active = true), (SELECT COUNT(*) FROM parents), 0, 0, 0`, nil
+	}
 
 	var stats DashboardStats
-	err := app.DB.QueryRowContext(r.Context(), query, today).Scan(
+	err = app.DB.QueryRowContext(r.Context(), query, args...).Scan(
 		&stats.TotalStudents,
 		&stats.TotalParents,
 		&stats.PresentToday,
@@ -208,11 +216,11 @@ func (app *AppEnv) AdminDashboardHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{
+	respondJSON(w, http.StatusOK, withDay(map[string]interface{}{
 		"status": "success",
 		"date":   today,
 		"data":   stats,
-	})
+	}, day))
 }
 
 // InvalidParentPhoneMessage is the 400 message for a parent_phone that is not an Iraqi mobile number.
@@ -620,6 +628,15 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
+	day, err := DayOn(r.Context(), app.DB, dateParam)
+	if err != nil {
+		respondInternalError(w, "Database error", "AdminDailyAttendanceHandler: day lookup failed", err, "date", dateParam)
+		return
+	}
+	if !day.School() {
+		respondJSON(w, http.StatusOK, withDay(map[string]interface{}{"status": "success", "date": dateParam, "data": []DailyAttendanceDTO{}}, day))
+		return
+	}
 
 	// استعلام مركب يجلب كل الطلاب ويحدد حالتهم بناءً على الجداول المرتبطة
 	query := `
@@ -660,11 +677,11 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		records = []DailyAttendanceDTO{}
 	}
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{
+	respondJSON(w, http.StatusOK, withDay(map[string]interface{}{
 		"status": "success",
 		"date":   dateParam,
 		"data":   records,
-	})
+	}, day))
 }
 
 func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Request) {
@@ -681,6 +698,12 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 	schoolName, err := app.readSchoolName(r.Context(), "AdminExportExcelHandler")
 	if err != nil {
 		respondInternalError(w, "Database error", "AdminExportExcelHandler: school name query failed", err, "date", dateParam)
+		return
+	}
+
+	day, err := DayOn(r.Context(), app.DB, dateParam)
+	if err != nil {
+		respondInternalError(w, "Database error", "AdminExportExcelHandler: day lookup failed", err, "date", dateParam)
 		return
 	}
 
@@ -706,16 +729,29 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		ORDER BY st.status DESC, s.full_name ASC
 	`
 
+	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت الدخول", "وقت الخروج"}
+	f, sheet := newReportWorkbook(schoolName, fmt.Sprintf("تقرير الحضور والغياب اليومي الشامل - تاريخ: %s", dateParam), headers)
+	defer f.Close()
+
+	if !day.School() {
+		label := WeekendLabel
+		if day.Type != DayWeekend && day.Title != nil {
+			label = *day.Title
+		}
+		last, _ := excelize.ColumnNumberToName(len(headers))
+		f.MergeCell(sheet, "A4", last+"4")
+		f.SetCellValue(sheet, "A4", label)
+		f.SetCellStyle(sheet, "A4", last+"4", reportTitleStyle(f))
+		respondXLSX(w, f, fmt.Sprintf("attachment; filename=attendance_%s.xlsx", dateParam), "AdminExportExcelHandler", "date", dateParam)
+		return
+	}
+
 	rows, err := app.DB.QueryContext(r.Context(), query, dateParam)
 	if err != nil {
 		respondInternalError(w, "Database error", "AdminExportExcelHandler: query failed", err, "date", dateParam)
 		return
 	}
 	defer rows.Close()
-
-	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت الدخول", "وقت الخروج"}
-	f, sheet := newReportWorkbook(schoolName, fmt.Sprintf("تقرير الحضور والغياب اليومي الشامل - تاريخ: %s", dateParam), headers)
-	defer f.Close()
 
 	// تعبئة البيانات (ابتداءً من الصف السادس)
 	rowIndex := reportFirstDataRow
@@ -778,10 +814,7 @@ func newReportWorkbook(schoolName, title string, headers []string) (*excelize.Fi
 	f.SetSheetView(sheet, 0, &excelize.ViewOptions{RightToLeft: &rtlEnable})
 
 	// 2. إعداد تنسيق العناوين (توسيط وخط عريض)
-	titleStyle, _ := f.NewStyle(&excelize.Style{
-		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
-		Font:      &excelize.Font{Bold: true, Size: 14},
-	})
+	titleStyle := reportTitleStyle(f)
 
 	// 3. كتابة الترويسة الرسمية ودمج الخلايا حتى آخر عمود
 	last, _ := excelize.ColumnNumberToName(len(headers))
@@ -809,6 +842,14 @@ func newReportWorkbook(schoolName, title string, headers []string) (*excelize.Fi
 	}
 	f.SetCellStyle(sheet, "A"+strconv.Itoa(reportHeaderRow), last+strconv.Itoa(reportHeaderRow), headerStyle)
 	return f, sheet
+}
+
+func reportTitleStyle(f *excelize.File) int {
+	style, _ := f.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Font:      &excelize.Font{Bold: true, Size: 14},
+	})
+	return style
 }
 
 // respondXLSX writes the workbook with the given Content-Disposition. It is written to a buffer

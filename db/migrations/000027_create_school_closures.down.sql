@@ -1,0 +1,21 @@
+-- ⚠ APP-COMPATIBILITY WARNING
+-- Removes: table school_closures (with its index).
+-- Running this down-migration against the current main branch will break:
+--   internal/handlers/attendance.go — DayOn and schoolDaySQL read school_closures to decide
+--     whether a date is a school day.
+--   internal/handlers/holidays.go — POST /api/admin/holidays, POST /api/admin/holidays/cancel,
+--     GET /api/admin/holidays and GET /api/mobile/holidays.
+--   internal/handlers/admin.go — the daily report, the dashboard and the daily Excel export.
+--   internal/handlers/mobile.go — the parent's today, monthly and summary views.
+--   internal/handlers/hardware.go — punches are still stored and the device still gets OK, but
+--     the post-commit notification query fails, so no check-in or check-out notification is sent.
+--   internal/cron/absent_job.go — the noon absence job cannot tell whether today is a school day
+--     and does nothing.
+-- Data loss: every registered closure (holidays and pauses, with their titles and notes). The
+--   notifications sent to parents for them stay. With the code from before school closures,
+--   reports count every weekday as a school day again.
+-- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
+-- app code that no longer uses these objects. Do not run this migrate-down without first
+-- reverting or updating those files to match the pre-migration schema.
+
+DROP TABLE IF EXISTS school_closures;

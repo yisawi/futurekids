@@ -19,7 +19,7 @@ import (
 // and the admin report for today are unchanged.
 func TestH1TodayBeforeCheckInWindowEnd(t *testing.T) {
 	db, _ := setupThrowawayDB(t, "h1today")
-	realToday := tz.Today()
+	quietDay := "2026-03-19"
 	for _, q := range []string{
 		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'H1 Parent', '+9647000001601', 'x')`,
 		`INSERT INTO students (id, full_name, rfid_tag, parent_id, created_at) VALUES
@@ -107,12 +107,12 @@ func TestH1TodayBeforeCheckInWindowEnd(t *testing.T) {
 	})
 
 	t.Run("today endpoint, dashboard and today's admin report still say Absent before 09:31", func(t *testing.T) {
-		at(realToday + " 07:15:00")
+		at(quietDay + " 07:15:00")
 		rec := serve(t, app.AuthMiddleware(app.MobileTodayAttendanceHandler), http.MethodGet, "/api/mobile/attendance/today", parent, "")
 		if !strings.Contains(rec.Body.String(), `"full_name":"H1 Absent","status":"Absent"`) {
 			t.Errorf("parent today: %s", rec.Body.String())
 		}
-		rec = serve(t, app.AdminMiddleware(app.AdminDailyAttendanceHandler), http.MethodGet, "/api/admin/attendance?date="+realToday, admin, "")
+		rec = serve(t, app.AdminMiddleware(app.AdminDailyAttendanceHandler), http.MethodGet, "/api/admin/attendance?date="+quietDay, admin, "")
 		if strings.Count(rec.Body.String(), `"status":"Absent"`) != 3 {
 			t.Errorf("admin report for today: %s", rec.Body.String())
 		}

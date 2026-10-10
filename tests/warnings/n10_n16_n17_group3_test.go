@@ -217,7 +217,7 @@ func TestGroup3N17IdempotentMigrations(t *testing.T) {
 		}
 		db, dsn := setupThrowawayDB(t, "g3n17e")
 		reference := g3Schema(t, db)
-		for _, tbl := range []string{"banner_images", "device_tokens", "settings", "notifications", "broadcasts", "announcements", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
+		for _, tbl := range []string{"banner_images", "device_tokens", "settings", "notifications", "school_closures", "broadcasts", "announcements", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
 			if _, err := db.Exec("DROP TABLE IF EXISTS " + tbl + " CASCADE"); err != nil {
 				t.Fatal(err)
 			}
@@ -562,7 +562,7 @@ func TestGroup3N16GracefulShutdown(t *testing.T) {
 			CREATE TRIGGER g3_slow_note BEFORE INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION g3_slow_note();`); err != nil {
 			t.Fatal(err)
 		}
-		srv := g3Start(t, dsn, g3FreePort(t), true, "ABSENCE_CRON_SCHEDULE=@every 1s")
+		srv := g3Start(t, dsn, g3FreePort(t), true, "ABSENCE_CRON_SCHEDULE=@every 1s", "FAKE_TODAY=2026-09-24")
 		deadline := time.Now().Add(10 * time.Second)
 		for srv.out.index("ProcessDailyAbsences: starting") < 0 {
 			if time.Now().After(deadline) {

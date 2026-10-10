@@ -81,8 +81,13 @@ func TestW5ADMSErrorHandling(t *testing.T) {
 
 	day := 0
 	nextDay := func() string {
-		day++
-		return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, day).Format("2006-01-02")
+		for {
+			day++
+			d := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, day)
+			if d.Weekday() != time.Friday && d.Weekday() != time.Saturday {
+				return d.Format("2006-01-02")
+			}
+		}
 	}
 	// batch5 builds five punches (students 1..5) at 07:01..07:05 on a fresh day.
 	batch5 := func() (string, []string) {

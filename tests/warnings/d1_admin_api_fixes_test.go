@@ -382,6 +382,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (9703, 'D7 C', 'D7-3', 9700), (9701, 'D7 A', 'D7-1', 9700), (9704, 'D7 D', 'D7-4', 9700), (9702, 'D7 B', 'D7-2', 9700)`); err != nil {
 			t.Fatal(err)
 		}
+		pinToday(t, "2026-09-24 13:00")
 		tok, _ := auth.GenerateParentToken(9700, "+9647000000970", 0)
 		rec := serve(t, app.AuthMiddleware(app.MobileTodayAttendanceHandler), "GET", "/api/mobile/attendance/today", tok, "")
 		var resp struct {

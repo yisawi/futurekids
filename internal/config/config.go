@@ -41,6 +41,10 @@ type Config struct {
 	// TrustedProxies (TRUSTED_PROXY_CIDRS) are the proxy addresses whose X-Real-IP and
 	// X-Forwarded-For headers are believed. Empty unless set, on Railway too.
 	TrustedProxies []netip.Prefix
+
+	// FakeToday (FAKE_TODAY, YYYY-MM-DD) pins the date the server takes as today, for tests only.
+	// It is refused on Railway.
+	FakeToday string
 }
 
 // Defaults for the lifecycle settings. 25s of shutdown fits inside a 30s Railway draining period.
@@ -88,6 +92,16 @@ func LoadConfig() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid TRUSTED_PROXY_CIDRS: %w", err)
 	}
+	fakeToday := strings.TrimSpace(os.Getenv("FAKE_TODAY"))
+	if fakeToday != "" {
+		if onRailway {
+			return nil, fmt.Errorf("FAKE_TODAY is for tests only and must not be set on Railway")
+		}
+		d, err := time.Parse("2006-01-02", fakeToday)
+		if err != nil || d.Format("2006-01-02") != fakeToday || d.Year() < 2000 || d.Year() > 2100 {
+			return nil, fmt.Errorf("invalid FAKE_TODAY %q: want a date YYYY-MM-DD from 2000 to 2100", fakeToday)
+		}
+	}
 	cronSchedule := strings.TrimSpace(os.Getenv("ABSENCE_CRON_SCHEDULE"))
 	if cronSchedule == "" {
 		cronSchedule = DefaultAbsenceCronSchedule
@@ -107,6 +121,7 @@ func LoadConfig() (*Config, error) {
 		OnRailway:           onRailway,
 		RailwayDraining:     railwayDraining,
 		TrustedProxies:      trusted,
+		FakeToday:           fakeToday,
 	}, nil
 }
 

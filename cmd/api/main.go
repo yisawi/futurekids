@@ -132,6 +132,7 @@ func run() int {
 	mux.HandleFunc("GET /api/mobile/notifications", appEnv.AuthMiddleware(appEnv.MobileNotificationsHandler))
 	mux.HandleFunc("PUT /api/mobile/notifications/read", appEnv.AuthMiddleware(appEnv.MarkNotificationReadHandler))
 	mux.HandleFunc("PUT /api/mobile/notifications/read-all", appEnv.AuthMiddleware(appEnv.MarkAllNotificationsReadHandler))
+	mux.HandleFunc("GET /api/mobile/holidays", appEnv.AuthMiddleware(appEnv.MobileHolidaysHandler))
 	mux.HandleFunc("GET /api/mobile/banners", appEnv.AuthMiddleware(appEnv.GetActiveBannersHandler))
 	mux.HandleFunc("GET /api/mobile/banners/image", appEnv.MobileBannerImageHandler)
 	mux.HandleFunc("PUT /api/mobile/device-token", appEnv.AuthMiddleware(appEnv.RegisterDeviceTokenHandler))
@@ -161,12 +162,23 @@ func run() int {
 	mux.HandleFunc("POST /api/admin/schedule/import", appEnv.AdminMiddleware(appEnv.AdminScheduleImportHandler))
 	mux.HandleFunc("GET /api/admin/broadcasts", appEnv.AdminMiddleware(appEnv.AdminBroadcastsHandler))
 	mux.HandleFunc("POST /api/admin/broadcasts", appEnv.AdminMiddleware(appEnv.AdminBroadcastsHandler))
+	mux.HandleFunc("GET /api/admin/holidays", appEnv.AdminMiddleware(appEnv.AdminHolidaysHandler))
+	mux.HandleFunc("POST /api/admin/holidays", appEnv.AdminMiddleware(appEnv.AdminHolidaysHandler))
+	mux.HandleFunc("POST /api/admin/holidays/cancel", appEnv.AdminMiddleware(appEnv.AdminCancelHolidayHandler))
 	mux.HandleFunc("GET /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
 	mux.HandleFunc("POST /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
 	mux.HandleFunc("PUT /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
 	mux.HandleFunc("DELETE /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
 	mux.HandleFunc("GET /api/admin/banners/image", appEnv.AdminMiddleware(appEnv.AdminBannerImageHandler))
 
+	if cfg.FakeToday != "" {
+		day, _ := time.ParseInLocation("2006-01-02", cfg.FakeToday, tz.Baghdad)
+		handlers.Clock = func() time.Time {
+			now := tz.Now()
+			return time.Date(day.Year(), day.Month(), day.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), tz.Baghdad)
+		}
+		slog.Warn("FAKE_TODAY is set: today is pinned for tests", "date", cfg.FakeToday)
+	}
 	if tz.FromTZDatabase {
 		slog.Info("Timezone loaded", "location", tz.Baghdad.String())
 	} else {

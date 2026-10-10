@@ -7,6 +7,9 @@
 --     write broadcasts and notifications.broadcast_id.
 --   internal/handlers/broadcasts.go — POST and GET /api/admin/broadcasts (the send and the sent
 --     log with its read counts).
+--   internal/handlers/holidays.go — registering or cancelling a closure sends its notification as
+--     a broadcast, and the closures list reads recipient counts through
+--     school_closures.broadcast_id (000027's rollback, which drops that table, runs first).
 -- Data loss: none. Every row, value, link and sequence position is kept; only names change.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first

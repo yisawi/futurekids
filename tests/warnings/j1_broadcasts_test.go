@@ -936,11 +936,11 @@ func TestJ1Push(t *testing.T) {
 	})
 }
 
-// TestJ1BeforePhoneNormalisation runs the new code on a database at 000026 without 000027, the
+// TestJ1BeforePhoneNormalisation runs the new code on a database at 000027 without 000028, the
 // state Staging is in between the steps of the README deploy notes.
 func TestJ1BeforePhoneNormalisation(t *testing.T) {
 	db, dsn := setupThrowawayDB(t, "j1v25")
-	if _, err := db.Exec(a14Migration(t, "000027_normalize_phone_numbers.down.sql")); err != nil {
+	if _, err := db.Exec(a14Migration(t, "000028_normalize_phone_numbers.down.sql")); err != nil {
 		t.Fatal(err)
 	}
 	j1Seed(t, db)
@@ -951,15 +951,15 @@ func TestJ1BeforePhoneNormalisation(t *testing.T) {
 	srv := g3Start(t, dsn, g3FreePort(t), true, "TRUSTED_PROXY_CIDRS=127.0.0.1/32", "ABSENCE_CRON_SCHEDULE=0 0 1 1 *")
 	admin := a14Bearer(a14AdminToken(t, srv))
 	for _, body := range []map[string]any{
-		j1Body("Before 000027", "Class", j1Class("G1", nil)),
-		j1Body("Before 000027", "One parent", j1Parent("07000003003")),
+		j1Body("Before 000028", "Class", j1Class("G1", nil)),
+		j1Body("Before 000028", "One parent", j1Parent("07000003003")),
 	} {
 		if r := a14Do(t, srv, "POST", "/api/admin/broadcasts", admin, body); r.status != 200 {
-			t.Errorf("send on 000026: %d %s", r.status, r.body)
+			t.Errorf("send on 000027: %d %s", r.status, r.body)
 		}
 	}
 	if r := a14Do(t, srv, "GET", "/api/admin/broadcasts", admin, nil); r.status != 200 || strings.Count(string(r.body), `"id"`) != 2 {
-		t.Errorf("log on 000026: %d %s", r.status, r.body)
+		t.Errorf("log on 000027: %d %s", r.status, r.body)
 	}
 }
 
@@ -968,7 +968,7 @@ func TestJ1BeforePhoneNormalisation(t *testing.T) {
 // notification and applies again; 000026 renames everything to broadcasts keeping rows, links,
 // read state, constraints and the sequence, also from a partly renamed state, and rolls back to
 // the original names; golang-migrate reaches 26 from versions 20 to 25; and phone normalisation
-// (now 000027) still applies last, collision abort included.
+// (now 000028) still applies last, collision abort included.
 func TestJ1BroadcastsMigration(t *testing.T) {
 	migrate, err := exec.LookPath("migrate")
 	if err != nil {
@@ -977,7 +977,7 @@ func TestJ1BroadcastsMigration(t *testing.T) {
 	fresh := func(t *testing.T, label string) (*sql.DB, func(args ...string) (string, error)) {
 		t.Helper()
 		cli, cliDSN := setupThrowawayDB(t, label)
-		for _, tbl := range []string{"broadcasts", "announcements", "banner_images", "device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
+		for _, tbl := range []string{"school_closures", "broadcasts", "announcements", "banner_images", "device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
 			if _, err := cli.Exec("DROP TABLE IF EXISTS " + tbl + " CASCADE"); err != nil {
 				t.Fatal(err)
 			}
@@ -1006,8 +1006,8 @@ func TestJ1BroadcastsMigration(t *testing.T) {
 			SELECT 'table ' || relname FROM pg_class WHERE relkind = 'r' AND relname LIKE '%' || $1 || '%'
 			UNION ALL SELECT 'sequence ' || relname FROM pg_class WHERE relkind = 'S' AND relname LIKE '%' || $1 || '%'
 			UNION ALL SELECT 'index ' || relname FROM pg_class WHERE relkind = 'i' AND relname LIKE '%' || $1 || '%'
-			UNION ALL SELECT 'column ' || table_name || '.' || column_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name LIKE '%' || $1 || '%'
-			UNION ALL SELECT 'constraint ' || conname FROM pg_constraint WHERE conname LIKE '%' || $1 || '%'
+			UNION ALL SELECT 'column ' || table_name || '.' || column_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name LIKE '%' || $1 || '%' AND table_name <> 'school_closures'
+			UNION ALL SELECT 'constraint ' || conname FROM pg_constraint WHERE conname LIKE '%' || $1 || '%' AND conname NOT LIKE 'school_closures%'
 			ORDER BY 1`, word)
 		if err != nil {
 			t.Fatal(err)
@@ -1224,7 +1224,7 @@ func TestJ1BroadcastsMigration(t *testing.T) {
 	})
 
 	for _, from := range []string{"20", "21", "22", "23", "24", "25"} {
-		t.Run("golang-migrate from version "+from+" through 26 to 27", func(t *testing.T) {
+		t.Run("golang-migrate from version "+from+" through 26 to 28", func(t *testing.T) {
 			db, run := fresh(t, "j1v"+from)
 			if out, err := run("goto", from); err != nil {
 				t.Fatalf("goto %s: %v\n%s", from, err, out)
@@ -1236,21 +1236,21 @@ func TestJ1BroadcastsMigration(t *testing.T) {
 				t.Errorf("at 26: old names %v, %d broadcast names", old, len(names(t, db, "broadcast")))
 			}
 			if _, _, phone := oldState(db); phone {
-				t.Errorf("phone normalisation ran before 27")
+				t.Errorf("phone normalisation ran before 28")
 			}
 			if out, err := run("up"); err != nil {
 				t.Fatalf("up: %v\n%s", err, out)
 			}
-			if v, _ := run("version"); v != "27" {
-				t.Errorf("version %q, want 27", v)
+			if v, _ := run("version"); v != "28" {
+				t.Errorf("version %q, want 28", v)
 			}
 			if _, _, phone := oldState(db); !phone {
-				t.Errorf("at 27: phone columns missing")
+				t.Errorf("at 28: phone columns missing")
 			}
 		})
 	}
 
-	t.Run("000027 still aborts on collisions after 000026", func(t *testing.T) {
+	t.Run("000028 still aborts on collisions after 000026", func(t *testing.T) {
 		db, run := fresh(t, "j1coll")
 		if out, err := run("goto", "26"); err != nil {
 			t.Fatalf("goto 26: %v\n%s", err, out)
@@ -1260,10 +1260,10 @@ func TestJ1BroadcastsMigration(t *testing.T) {
 		}
 		out, err := run("up")
 		if err == nil || !strings.Contains(out, "[981, 982]") {
-			t.Fatalf("000027 should abort listing [981, 982]: %v\n%s", err, out)
+			t.Fatalf("000028 should abort listing [981, 982]: %v\n%s", err, out)
 		}
 		if _, _, phone := oldState(db); phone || len(names(t, db, "broadcast")) != 15 {
-			t.Errorf("after the aborted 000027: phone columns %v, broadcast names %d", phone, len(names(t, db, "broadcast")))
+			t.Errorf("after the aborted 000028: phone columns %v, broadcast names %d", phone, len(names(t, db, "broadcast")))
 		}
 	})
 }

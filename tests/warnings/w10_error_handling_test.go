@@ -232,6 +232,7 @@ func TestW10ErrorHandling(t *testing.T) {
 	slog.SetDefault(slog.New(capture))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
+	pinToday(t, "2026-09-24 13:00")
 	auth.InitAuth("w10-test-secret")
 	parentToken, _ := auth.GenerateParentToken(1, "+9647000000500", 0)
 	adminToken, _ := auth.GenerateAdminToken("admin", 0)

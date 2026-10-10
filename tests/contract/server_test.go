@@ -114,6 +114,7 @@ func startAPI(t *testing.T, dsn string) *apiServer {
 		"DATABASE_URL=" + dsn, "JWT_SECRET=" + contractSecret, fmt.Sprintf("PORT=%d", port),
 		"FIREBASE_CREDENTIALS_JSON=" + firebaseCredentials(t),
 		"ABSENCE_CRON_SCHEDULE=0 0 1 1 *",
+		"FAKE_TODAY=" + contractNow().Format("2006-01-02"),
 	}
 	srv.cmd.Stdout, srv.cmd.Stderr = srv.out, srv.out
 	if err := srv.cmd.Start(); err != nil {

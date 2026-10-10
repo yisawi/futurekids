@@ -222,7 +222,7 @@ func TestH1AttendanceStartDate(t *testing.T) {
 			{"2026-03-10", map[int]string{2: "Absent"}},
 			{"2026-03-11", map[int]string{1: "Absent", 2: "Absent"}},
 			{"2026-03-12", map[int]string{1: "Present", 2: "Absent"}},
-			{"2026-03-13", map[int]string{1: "Absent", 2: "Absent", 3: "Absent"}},
+			{"2026-03-13", map[int]string{}},
 			{"2026-03-15", map[int]string{1: "Absent", 2: "Absent", 3: "Absent"}},
 			{"2026-04-05", map[int]string{1: "Absent", 2: "Absent", 3: "Absent", 4: "Absent"}},
 		} {

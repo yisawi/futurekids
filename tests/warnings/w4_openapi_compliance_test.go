@@ -22,8 +22,8 @@ func TestW4OpenAPICompliance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load Asia/Baghdad: %v", err)
 	}
-	now := time.Now().In(baghdad)
-	today := now.Format("2006-01-02")
+	today := pinToday(t, "2026-09-24 13:00")
+	now, _ := time.ParseInLocation("2006-01-02 15:04", today+" 13:00", baghdad)
 
 	seed := []string{
 		`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1, 'W4 Parent', '` + w4ParentPhone + `', 'unused')`,

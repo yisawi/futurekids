@@ -8,7 +8,7 @@ import (
 
 // Ignored are removed before parsing: spaces (including no-break and thin spaces), dashes,
 // parentheses, dots and the invisible direction marks that Arabic keyboards insert. The SQL
-// copy in db/migrations/000027_normalize_phone_numbers.up.sql must remove the same set.
+// copy in db/migrations/000028_normalize_phone_numbers.up.sql must remove the same set.
 const Ignored = " \t-().   ‎‏‌‍"
 
 var digits = strings.NewReplacer(

@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.14.1"
+  version: "1.15.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -33,6 +33,11 @@ info:
       notification timestamps RFC 3339 with a `+03:00` offset.
     - Every date and month parameter or field accepts years 2000 to 2100 only; any other year
       returns 400.
+    - **School days** are the Sunday-to-Thursday dates that no school closure (holiday or
+      pause, see `createHoliday`) covers. Friday and Saturday are never school days. A day that
+      is not a school day has no attendance: the daily views return empty `data` and zero
+      counts with its `day_type`, closed days are left out of the monthly views, the noon
+      absence notification is not sent, and punches are stored without notifications.
     - IDs are integers. JSON request bodies are limited to 64 KiB (413). Request headers are
       limited to 64 KiB plus up to 8 KiB of read-buffer tolerance; beyond that the answer is
       431 in plain text. Unknown JSON fields in a request body are ignored.
@@ -187,6 +192,17 @@ components:
         type: string
         pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
       example: "2026-09"
+    HolidayListMonth:
+      name: month
+      in: query
+      required: false
+      description: |
+        Month, `YYYY-MM`, with a year from 2000 to 2100: the closures that cover at least one day
+        of it. Omitted: the closures running today or starting later. Any other value returns 400.
+      schema:
+        type: string
+        pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+      example: "2026-03"
     Before:
       name: before
       in: query
@@ -520,6 +536,15 @@ components:
         excused_today: 10
         absent_today: 20
 
+    DayType:
+      type: string
+      enum: [school, weekend, holiday, pause]
+      description: |
+        What the day is, in this precedence: `weekend` (Friday or Saturday), `pause` (covered by
+        a pause), `holiday` (covered by a holiday), otherwise `school`. Only a `school` day has
+        attendance.
+      example: school
+
     DashboardResponse:
       type: object
       properties:
@@ -531,12 +556,25 @@ components:
           format: date
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
           description: Today in Asia/Baghdad.
+        day_type:
+          $ref: '#/components/schemas/DayType'
+        day_title:
+          type: string
+          nullable: true
+          description: The closure's title on a `holiday` or `pause` day; null on a school day or a weekend.
+        day_notes:
+          type: string
+          nullable: true
+          description: The closure's notes on a `holiday` or `pause` day, when it has any; otherwise null.
         data:
           $ref: '#/components/schemas/DashboardStats'
-      required: [status, date, data]
+      required: [status, date, day_type, day_title, day_notes, data]
       example:
         status: success
         date: "2026-09-21"
+        day_type: school
+        day_title: null
+        day_notes: null
         data:
           total_students: 150
           total_parents: 80
@@ -796,14 +834,28 @@ components:
           type: string
           format: date
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        day_type:
+          $ref: '#/components/schemas/DayType'
+        day_title:
+          type: string
+          nullable: true
+          description: The closure's title on a `holiday` or `pause` day; null on a school day or a weekend.
+        day_notes:
+          type: string
+          nullable: true
+          description: The closure's notes on a `holiday` or `pause` day, when it has any; otherwise null.
         data:
           type: array
+          description: Empty when `day_type` is not `school`.
           items:
             $ref: '#/components/schemas/DailyAttendanceDTO'
-      required: [status, date, data]
+      required: [status, date, day_type, day_title, day_notes, data]
       example:
         status: success
         date: "2026-09-21"
+        day_type: school
+        day_title: null
+        day_notes: null
         data:
           - student_id: 42
             full_name: Sara Example
@@ -2186,6 +2238,342 @@ components:
         has_more: false
         next_before: null
 
+    # ── School closures ───────────────────────────────────────────────────────
+    HolidayCreateRequest:
+      type: object
+      description: |
+        A `holiday` is one day or a date range of at most 60 calendar days. A `pause` is a long
+        closure (for example the summer break), open-ended unless `end_date` is sent, that lasts
+        until it is cancelled. A closure may not share a date with another one (409). There is
+        no edit: cancel the closure and create it again.
+      properties:
+        kind:
+          type: string
+          enum: [holiday, pause]
+          description: Required. Anything else returns 400.
+        start_date:
+          type: string
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          description: |
+            Required; a real date with a year from 2000 to 2100. A holiday may start in the past
+            (it corrects past reports); a pause may not (400).
+        end_date:
+          type: string
+          nullable: true
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          description: |
+            Optional, inclusive, not before `start_date` (400). Holiday: omitted or null means one
+            day, and more than 60 days from start to end inclusive returns 400. Pause: omitted or
+            null means open-ended.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: |
+            Required; surrounding spaces are removed; 1 to 80 characters (blank, longer, not a
+            string, NUL or invalid UTF-8 returns 400). It is also the notification's title.
+        notes:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: |
+            Optional; surrounding spaces are removed and blank means none; at most 500 characters
+            (same text rules as `title`). It is also the notification's body.
+        notify:
+          type: boolean
+          default: true
+          description: |
+            Optional. Send one notification to every parent. When the whole range is before
+            today nothing is sent and `notified` is false. Anything but `true`, `false` or null
+            returns 400.
+        confirm:
+          type: boolean
+          default: false
+          description: |
+            Must be `true` for a pause (400 otherwise), sent after the admin has accepted the
+            warning; not needed for a holiday or a dry run. Same type rule as `notify`.
+        dry_run:
+          type: boolean
+          default: false
+          description: |
+            Optional. With `true` everything is checked, overlaps included, and the recipients are
+            counted, but nothing is written or sent. Same type rule as `notify`.
+      required: [kind, start_date, title]
+      example:
+        kind: holiday
+        start_date: "2026-03-22"
+        end_date: "2026-03-26"
+        title: عطلة الربيع
+        notes: null
+        notify: true
+        dry_run: true
+
+    HolidayCreateResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: '`Closure registered`, or `Preview only` for a dry run.'
+        data:
+          type: object
+          properties:
+            id:
+              type: integer
+              format: int32
+              nullable: true
+              description: The new closure's id; null for a dry run.
+            kind:
+              type: string
+              enum: [holiday, pause]
+            start_date:
+              type: string
+              format: date
+              pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+            end_date:
+              type: string
+              nullable: true
+              format: date
+              pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+              description: The stored last day; a one-day holiday has `end_date` equal to `start_date`. Null for an open-ended pause.
+            school_days:
+              type: integer
+              format: int32
+              nullable: true
+              minimum: 0
+              description: Sunday-to-Thursday days in the range; null when open-ended.
+            notified:
+              type: boolean
+              description: True when a notification was sent (for a dry run, would be sent).
+            recipient_count:
+              type: integer
+              format: int32
+              minimum: 0
+              description: Parents who received the notification (or would); 0 when none is sent.
+            dry_run:
+              type: boolean
+          required: [id, kind, start_date, end_date, school_days, notified, recipient_count, dry_run]
+      required: [status, message, data]
+      example:
+        status: success
+        message: Preview only
+        data:
+          id: null
+          kind: holiday
+          start_date: "2026-03-22"
+          end_date: "2026-03-26"
+          school_days: 5
+          notified: true
+          recipient_count: 120
+          dry_run: true
+
+    HolidayCancelRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Required; the closure's id. Not a positive integer returns 400; an unknown id returns 404.
+        notify:
+          type: boolean
+          default: true
+          description: Optional. Send one notification to every parent. Anything but `true`, `false` or null returns 400.
+        notes:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: Optional; added to the notification's text after a blank line. At most 500 characters; blank means none.
+        dry_run:
+          type: boolean
+          default: false
+          description: Optional. With `true` the result is computed and the recipients are counted, but nothing is written or sent.
+      required: [id]
+      example:
+        id: 12
+        notify: true
+        dry_run: true
+
+    HolidayCancelResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: '`Closure cancelled`, or `Preview only` for a dry run.'
+        data:
+          type: object
+          properties:
+            id:
+              type: integer
+              format: int32
+            action:
+              type: string
+              enum: [deleted, shortened]
+              description: |
+                `deleted`: the closure had not started, or started today. `shortened`: it was
+                running, and now ends yesterday, so the days already passed stay closed.
+            end_date:
+              type: string
+              nullable: true
+              format: date
+              pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+              description: The closure's new last day after `shortened` (yesterday); null after `deleted`.
+            notified:
+              type: boolean
+            recipient_count:
+              type: integer
+              format: int32
+              minimum: 0
+            dry_run:
+              type: boolean
+          required: [id, action, end_date, notified, recipient_count, dry_run]
+      required: [status, message, data]
+      example:
+        status: success
+        message: Closure cancelled
+        data:
+          id: 12
+          action: shortened
+          end_date: "2026-07-14"
+          notified: true
+          recipient_count: 120
+          dry_run: false
+
+    HolidayItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+        kind:
+          type: string
+          enum: [holiday, pause]
+        start_date:
+          type: string
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        end_date:
+          type: string
+          nullable: true
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          description: Inclusive; null for an open-ended pause.
+        title:
+          type: string
+        notes:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          description: When it was registered, RFC 3339 with the `+03:00` offset.
+        active:
+          type: boolean
+          description: True when the closure covers today; use it for the "closure in progress" banner.
+        notified:
+          type: boolean
+          description: True when a notification was sent when it was registered.
+        recipient_count:
+          type: integer
+          format: int32
+          nullable: true
+          description: Parents who received that notification; null when none was sent.
+      required: [id, kind, start_date, end_date, title, notes, created_at, active, notified, recipient_count]
+      example:
+        id: 12
+        kind: pause
+        start_date: "2026-06-15"
+        end_date: null
+        title: العطلة الصيفية
+        notes: نتمنى لكم عطلة سعيدة.
+        created_at: "2026-06-10T10:00:00+03:00"
+        active: true
+        notified: true
+        recipient_count: 120
+
+    HolidayListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: array
+          description: Ordered by `start_date`, then `id`. Not paginated.
+          items:
+            $ref: '#/components/schemas/HolidayItem'
+      required: [status, data]
+      example:
+        status: success
+        data:
+          - id: 12
+            kind: pause
+            start_date: "2026-06-15"
+            end_date: null
+            title: العطلة الصيفية
+            notes: null
+            created_at: "2026-06-10T10:00:00+03:00"
+            active: true
+            notified: true
+            recipient_count: 120
+
+    ParentHolidayDay:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        kind:
+          type: string
+          enum: [holiday, pause]
+        title:
+          type: string
+        notes:
+          type: string
+          nullable: true
+      required: [date, kind, title, notes]
+      example:
+        date: "2026-03-22"
+        kind: holiday
+        title: عطلة الربيع
+        notes: null
+
+    ParentHolidaysResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        month:
+          type: string
+          pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+        data:
+          type: array
+          description: One item per closed Sunday-to-Thursday date of the month, in date order. Weekends are not listed.
+          items:
+            $ref: '#/components/schemas/ParentHolidayDay'
+      required: [status, month, data]
+      example:
+        status: success
+        month: "2026-03"
+        data:
+          - date: "2026-03-22"
+            kind: holiday
+            title: عطلة الربيع
+            notes: null
+          - date: "2026-03-23"
+            kind: holiday
+            title: عطلة الربيع
+            notes: null
+
     MarkAllReadResponse:
       type: object
       properties:
@@ -2598,6 +2986,76 @@ components:
           example:
             status: error
             message: before must be a positive broadcast id
+    HolidayBadRequest:
+      description: |
+        Malformed JSON; `kind` missing or not `holiday` or `pause`; `start_date` missing; a date
+        that is not a real `YYYY-MM-DD` with a year from 2000 to 2100; `end_date` before
+        `start_date`; a holiday longer than 60 days; a pause without `confirm: true` or starting
+        before today; `title` missing, blank or longer than 80 characters; `notes` longer than
+        500; a field of the wrong type, or text with NUL or invalid UTF-8. Nothing was written or
+        sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            holidayTooLong:
+              summary: A holiday over 60 days
+              value:
+                status: error
+                message: a holiday can be at most 60 days; use a pause for a longer closure
+            pauseNotConfirmed:
+              summary: A pause without confirm
+              value:
+                status: error
+                message: confirm must be true for a pause
+            pauseInPast:
+              summary: A pause starting before today
+              value:
+                status: error
+                message: a pause cannot start in the past
+    HolidayOverlap:
+      description: |
+        The dates share at least one day with an existing closure (an open-ended pause covers
+        every day from its start). `message` names that closure. Nothing was written or sent.
+        Cancel the other closure first, or choose other dates.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Overlaps closure 12 "عطلة الربيع" (2026-03-22 to 2026-03-26); cancel it first or choose other dates
+    HolidayCancelBadRequest:
+      description: |
+        Malformed JSON; `id` missing or not a positive integer; `notes` longer than 500
+        characters, not a string, or with NUL or invalid UTF-8; `notify` or `dry_run` not a
+        boolean. Nothing was changed or sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: id must be a positive closure id
+    HolidayNotFound:
+      description: No closure has this id (it may have been cancelled already). Nothing was changed or sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Closure not found
+    HolidayAlreadyOver:
+      description: The closure ended before today. Days that have passed stay closed and cannot be cancelled. Nothing was changed or sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: This closure is already over
     BannerWriteBadRequest:
       description: |
         Not `multipart/form-data` or a malformed body; a field sent twice; `image` missing (create),
@@ -2878,7 +3336,9 @@ paths:
       summary: Today's attendance for the parent's children
       description: |
         One DailyAttendanceDTO per active child for today in Asia/Baghdad (`date`), ordered by
-        `student_id` ascending like the other parent lists.
+        `student_id` ascending like the other parent lists. When today is not a school day
+        (`day_type` is `weekend`, `holiday` or `pause`), `data` is empty: show the closure
+        (`day_title`, `day_notes`) or the weekend instead of attendance.
       security:
         - ParentJWT: []
       responses:
@@ -2904,7 +3364,8 @@ paths:
       summary: Monthly attendance totals per child
       description: |
         Present, Excused and Absent counts per active child over the month's school days
-        (Sunday–Thursday) up to today. Children by ascending id.
+        (Sunday–Thursday, except days covered by a holiday or pause) up to today. Children by
+        ascending id. Closed days are not counted at all.
         - **A child is counted from the day it was added** (its creation date in Asia/Baghdad,
           inclusive). Earlier days are not counted at all, even if punches or leaves exist for
           them.
@@ -2943,8 +3404,9 @@ paths:
       operationId: getMonthlyAttendance
       summary: Day-by-day attendance per child for a month
       description: |
-        One record per school day (Sunday–Thursday) of the month up to today, newest first,
-        grouped by child in ascending id.
+        One record per school day (Sunday–Thursday, except days covered by a holiday or pause)
+        of the month up to today, newest first, grouped by child in ascending id. Closed days
+        have no record; draw them from `GET /api/mobile/holidays`.
         - **A child's records start on the day it was added** (its creation date in
           Asia/Baghdad, inclusive), so a month may start after its first school day. Earlier
           days have no record, even if punches or leaves exist for them.
@@ -2965,6 +3427,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MonthlyAttendanceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/mobile/holidays:
+    get:
+      tags: [Parent App]
+      operationId: listParentHolidays
+      summary: Closed school days of a month
+      description: |
+        The Sunday-to-Thursday dates of the month that a holiday or pause closes, one item per
+        date in date order, with the closure's title and notes, for the calendar. An open-ended
+        or long closure is listed on every school weekday it covers in the month. Weekends are
+        not listed: Friday and Saturday are never school days.
+      security:
+        - ParentJWT: []
+      parameters:
+        - $ref: '#/components/parameters/Month'
+      responses:
+        '200':
+          description: The closed days.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParentHolidaysResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3365,7 +3859,11 @@ paths:
       tags: [Admin Dashboard]
       operationId: getDashboard
       summary: Today's totals
-      description: Student, parent and attendance totals for today in Asia/Baghdad.
+      description: |
+        Student, parent and attendance totals for today in Asia/Baghdad. When today is not a
+        school day (`day_type` is `weekend`, `holiday` or `pause`), `present_today`,
+        `excused_today` and `absent_today` are 0; `total_students` and `total_parents` keep
+        their values.
       security:
         - AdminJWT: []
       responses:
@@ -3553,7 +4051,9 @@ paths:
         in Asia/Baghdad), ordered Present, then Excused, then Absent, by name within each status,
         and by `student_id` for equal names. A student added after the day is not listed. For
         today, a student without a punch is `Absent` even before the check-in window closes at
-        09:31; show it as "not arrived yet" until then.
+        09:31; show it as "not arrived yet" until then. For a date that is not a school day
+        (`day_type` is `weekend`, `holiday` or `pause`), `data` is empty: show "عطلة نهاية
+        الأسبوع" or the closure's `day_title` instead of absences.
       security:
         - AdminJWT: []
       parameters:
@@ -3586,7 +4086,8 @@ paths:
         check-in/check-out times for every active student that existed on the day (added on or
         before it, by creation date in Asia/Baghdad), including students without a linked
         parent. A student added after the day is not listed. The header shows the `school_name`
-        setting.
+        setting. For a date that is not a school day the file has no student rows, and row 4
+        names the day: `عطلة نهاية الأسبوع` or the closure's title.
       security:
         - AdminJWT: []
       parameters:
@@ -4128,6 +4629,141 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/admin/holidays:
+    get:
+      tags: [Admin Dashboard]
+      operationId: listHolidays
+      summary: School closures (holidays and pauses)
+      description: |
+        Without `month`: the closures running today or starting later, for the "closure in
+        progress" banner (`active`) and the upcoming list. With `month`: every closure that
+        covers a day of that month. Ordered by `start_date`.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/HolidayListMonth'
+      responses:
+        '200':
+          description: The closures.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HolidayListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Admin Dashboard]
+      operationId: createHoliday
+      summary: Register a holiday or a pause
+      description: |
+        A closed day is not a school day for everyone: no absences are counted, the noon
+        absence notification is not sent, and punches are stored without check-in or check-out
+        notifications. Logins, leaves, broadcasts and storing punches are not affected.
+        Register a closure for today before 12:00: the noon absence notification and the
+        morning punch notifications already sent cannot be recalled.
+
+        With `notify` (the default) every parent gets one notification, in the same transaction
+        as the closure, and a push after it is saved, even for a future date. Its title is
+        `title`, its body `notes`, or without notes:
+        - one-day holiday: `عطلة رسمية يوم <start_date>`;
+        - holiday range: `عطلة رسمية من <start_date> إلى <end_date>`;
+        - pause: `تعطيل الدوام اعتباراً من <start_date>`, followed by ` حتى <end_date>` when it
+          has an end.
+
+        Nothing is sent for a holiday entirely before today, or when there are no parents
+        (`notified` false, `recipient_count` 0). Call it first with `dry_run: true` for the
+        confirmation dialog (school days and recipients). There is no edit: cancel and create
+        again.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HolidayCreateRequest'
+      responses:
+        '200':
+          description: Registered, or checked for a dry run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HolidayCreateResponse'
+        '400':
+          $ref: '#/components/responses/HolidayBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '409':
+          $ref: '#/components/responses/HolidayOverlap'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/holidays/cancel:
+    post:
+      tags: [Admin Dashboard]
+      operationId: cancelHoliday
+      summary: Cancel a closure from today onward
+      description: |
+        One rule for holidays and pauses: a closure that has not started is deleted; one that
+        is running is shortened to end yesterday, so the days already passed stay closed and
+        past reports do not change (deleted when it started today); one that ended before today
+        returns 409.
+
+        With `notify` (the default) every parent gets one notification:
+        - not started: title `تم إلغاء العطلة`, body `تم إلغاء: <title>`;
+        - started: title `تم إنهاء العطلة واستئناف الدوام`, body `عاد الدوام اعتباراً من
+          <date>: <title>`, where the date is the first Sunday-to-Thursday on or after today.
+
+        `notes`, when sent, follow after a blank line; the closure's title inside the body is
+        shortened when the text would exceed 500 characters. Use `dry_run: true` for the
+        confirmation dialog.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HolidayCancelRequest'
+      responses:
+        '200':
+          description: Cancelled, or computed for a dry run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HolidayCancelResponse'
+        '400':
+          $ref: '#/components/responses/HolidayCancelBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/HolidayNotFound'
+        '409':
+          $ref: '#/components/responses/HolidayAlreadyOver'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/admin/banners:
     get:
       tags: [Admin Dashboard]
@@ -4552,7 +5188,8 @@ paths:
         The server stores the batch in one transaction, skipping (and logging) malformed
         lines, unknown PINs and records the database rejects; duplicates are ignored. After
         the commit it sends the check-in or check-out notification for each punch that is the
-        first of its window. A device that is not registered, or is disabled, is also answered
+        first of its window on a school day; a punch dated on a Friday, a Saturday or a closed
+        day is stored the same way, without a notification. A device that is not registered, or is disabled, is also answered
         `OK` but nothing is stored.
 
         The answer is always plain-text `OK`, except when the database is temporarily

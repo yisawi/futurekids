@@ -18,7 +18,6 @@ import (
 	"future_kids/internal/cron"
 	"future_kids/internal/handlers"
 	"future_kids/internal/testdb"
-	"future_kids/internal/tz"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -233,7 +232,7 @@ func TestB2NotificationHistory(t *testing.T) {
 			t.Fatalf("mark all: %d", r.status)
 		}
 		before := len(idsOf(p2))
-		a14Do(t, srv, "POST", "/iclock/cdata?SN=B2-DEV&table=ATTLOG", nil, "B2-2\t"+tz.Today()+" 07:15:00\t1\t1\n")
+		a14Do(t, srv, "POST", "/iclock/cdata?SN=B2-DEV&table=ATTLOG", nil, "B2-2\t2026-09-23 07:15:00\t1\t1\n")
 		deadline := time.Now().Add(5 * time.Second)
 		for len(idsOf(p2)) == before && time.Now().Before(deadline) {
 			time.Sleep(20 * time.Millisecond)
@@ -367,7 +366,7 @@ func TestB2InsertsWriteParentID(t *testing.T) {
 			t.Fatalf("seed: %v", err)
 		}
 	}
-	today := tz.Today()
+	today := pinToday(t, "2026-09-24 13:00")
 	punch := func(at string) {
 		rec := httptest.NewRecorder()
 		app.ADMSHandler(rec, httptest.NewRequest("POST", "/iclock/cdata?SN=B2-DEV&table=ATTLOG", strings.NewReader("B2-P1\t"+today+" "+at+"\t1\t1\n")))
@@ -407,7 +406,7 @@ func TestB2InsertsWriteParentID(t *testing.T) {
 // TestB2NotificationsMigration verifies migration 000023: the backfill links rows by phone,
 // keeps and reports rows matching no parent, the trigger links rows the old code inserts,
 // re-running changes nothing, down and up again work, golang-migrate reaches it from versions
-// 20, 21 and 22, and 000027 (phone normalisation) still applies after it, collision abort
+// 20, 21 and 22, and 000028 (phone normalisation) still applies after it, collision abort
 // included.
 func TestB2NotificationsMigration(t *testing.T) {
 	db, dsn := setupThrowawayDB(t, "b2mig")
@@ -509,7 +508,7 @@ func TestB2NotificationsMigration(t *testing.T) {
 	fresh := func(t *testing.T, label string) (*sql.DB, func(args ...string) (string, error)) {
 		t.Helper()
 		cli, cliDSN := setupThrowawayDB(t, label)
-		for _, tbl := range []string{"banner_images", "device_tokens", "settings", "notifications", "broadcasts", "announcements", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
+		for _, tbl := range []string{"banner_images", "device_tokens", "settings", "notifications", "school_closures", "broadcasts", "announcements", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
 			if _, err := cli.Exec("DROP TABLE IF EXISTS " + tbl + " CASCADE"); err != nil {
 				t.Fatal(err)
 			}
@@ -545,15 +544,15 @@ func TestB2NotificationsMigration(t *testing.T) {
 				t.Errorf("after 000023: %d linked, %d unmatched; want 1 and 1", linked, orphan)
 			}
 			if out, err := run("up"); err != nil {
-				t.Fatalf("up (000027): %v\n%s", err, out)
+				t.Fatalf("up (000028): %v\n%s", err, out)
 			}
-			if v, _ := run("version"); v != "27" {
-				t.Errorf("version %q, want 27", v)
+			if v, _ := run("version"); v != "28" {
+				t.Errorf("version %q, want 28", v)
 			}
 		})
 	}
 
-	t.Run("000027 still aborts on collisions after 000023", func(t *testing.T) {
+	t.Run("000028 still aborts on collisions after 000023", func(t *testing.T) {
 		cli, run := fresh(t, "b2coll")
 		if out, err := run("goto", "23"); err != nil {
 			t.Fatalf("goto 23: %v\n%s", err, out)
@@ -563,12 +562,12 @@ func TestB2NotificationsMigration(t *testing.T) {
 		}
 		out, err := run("up")
 		if err == nil || !strings.Contains(out, "[961, 962]") {
-			t.Fatalf("000027 should abort listing [961, 962]: %v\n%s", err, out)
+			t.Fatalf("000028 should abort listing [961, 962]: %v\n%s", err, out)
 		}
 		var originals bool
 		cli.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'parents' AND column_name = 'phone_number_original')`).Scan(&originals)
 		if originals {
-			t.Errorf("the aborted 000027 left changes behind")
+			t.Errorf("the aborted 000028 left changes behind")
 		}
 	})
 }

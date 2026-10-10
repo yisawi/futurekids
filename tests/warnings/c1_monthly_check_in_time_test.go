@@ -22,7 +22,9 @@ const (
 )
 
 // c1GoldenMonthly and c1GoldenDaily are the exact response bodies the code produced for c1Setup
-// before the rename (monthly records then named the check-in time "check_time").
+// before the rename (monthly records then named the check-in time "check_time"). c1DayFields are
+// the keys school closures added to the daily report; 2026-03-01 is a Sunday, a school day.
+const c1DayFields = `"day_notes":null,"day_title":null,"day_type":"school",`
 
 // c1Setup seeds one parent with two children in March 2026 (a past month, so responses are
 // fixed): child one punches in and out on 1 March, only out on 2 March, has a leave on 3 March;
@@ -104,14 +106,19 @@ func TestC1MonthlyCheckInTime(t *testing.T) {
 		}
 	})
 
-	t.Run("the admin daily report is unchanged", func(t *testing.T) {
+	t.Run("the admin daily report is unchanged but for the day fields", func(t *testing.T) {
 		daily := serve(t, app.AdminMiddleware(app.AdminDailyAttendanceHandler), http.MethodGet, c1DailyPath, admin, "")
-		if daily.Code != http.StatusOK || daily.Body.String() != c1GoldenDaily {
-			t.Errorf("HTTP %d; body changed:\ngot  %s\nwant %s", daily.Code, daily.Body.String(), c1GoldenDaily)
+		want := strings.Replace(c1GoldenDaily, `"date":"2026-03-01",`, `"date":"2026-03-01",`+c1DayFields, 1)
+		if daily.Code != http.StatusOK || daily.Body.String() != want {
+			t.Errorf("HTTP %d; body changed:\ngot  %s\nwant %s", daily.Code, daily.Body.String(), want)
+		}
+		if without := strings.Replace(daily.Body.String(), c1DayFields, "", 1); without != c1GoldenDaily {
+			t.Errorf("without the day fields the body differs from before:\ngot  %s\nwant %s", without, c1GoldenDaily)
 		}
 	})
 
 	t.Run("the parent's today records keep their keys", func(t *testing.T) {
+		pinToday(t, "2026-03-04 13:00")
 		today := serve(t, app.AuthMiddleware(app.MobileTodayAttendanceHandler), http.MethodGet, "/api/mobile/attendance/today", parent, "")
 		var resp struct {
 			Data []map[string]json.RawMessage `json:"data"`

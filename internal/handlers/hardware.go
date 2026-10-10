@@ -518,8 +518,9 @@ func (app *AppEnv) notifyPunches(ctx context.Context, punches []storedPunch) {
 }
 
 // notifyPunchesSQL returns, for the given (student_id, check_time) punches, only those that
-// are the first punch of their check-in or check-out window, with what the notification needs:
-// the student's name, every device token of the student's parent, and the parent's phone.
+// are the first punch of their check-in or check-out window on a school day, with what the
+// notification needs: the student's name, every device token of the student's parent, and the
+// parent's phone.
 var notifyPunchesSQL = `
 	SELECT p.student_id, p.check_time, s.full_name, ` + fmt.Sprintf(notify.ParentDeviceTokensSQL, "s.parent_id") + `, par.id, par.phone_number,
 	       COALESCE(st.last_check = TO_CHAR(p.check_time, 'HH12:MI AM'), false) AS is_check_out
@@ -532,7 +533,8 @@ var notifyPunchesSQL = `
 		SELECT 1 FROM attendance_logs a
 		WHERE a.student_id = p.student_id AND a.check_time < p.check_time
 		  AND date_trunc('minute', a.check_time) = date_trunc('minute', p.check_time)
-	  )`
+	  )
+	  AND ` + fmt.Sprintf(schoolDaySQL, "p.check_time::date")
 
 func (app *AppEnv) sendPunchNotification(studentID int, checkTime time.Time, studentName string, deviceTokens []string, parentID sql.NullInt64, parentPhone sql.NullString, isCheckOut bool) {
 	title := "إشعار دخول"

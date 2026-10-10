@@ -115,6 +115,10 @@ These strings are never null but may be `""`:
   | `created_at` (notifications) | RFC 3339 with `+03:00`, e.g. `2026-09-21T07:15:04+03:00`. `DateTime.parse` handles it. |
 
 - **School week:** Sunday to Thursday. Friday and Saturday never appear in monthly data.
+- **Closed days:** a day that a holiday or pause closes (see
+  [School closures](#school-closures-العطل-الرسمية)) isn't a school day either: it has no monthly
+  record, isn't counted in the summary, and the daily views return `"data": []` with its
+  `day_type`. Draw it from `GET /api/mobile/holidays`, with its title, not as an absence.
 - **Punch windows:** a punch counts only in the **check-in window (06:30–09:30)** or the
   **check-out window (11:30–13:30)**.
 - **Status:**
@@ -146,6 +150,7 @@ These strings are never null but may be `""`:
 | `GET /api/mobile/schedule` | Child (`id` ascending), then **Sunday → Thursday, then Friday, Saturday**, then `period_number`. Unrecognized day names come last. |
 | `GET /api/mobile/notifications` | Newest first |
 | `GET /api/mobile/banners` | Newest first |
+| `GET /api/mobile/holidays` | By `date`, one item per closed Sunday–Thursday date |
 
 - **Schedule days:** `day_of_week` is the day name as stored. Schedules saved from the admin
   dashboard (screen or Excel import) always use `الأحد`, `الإثنين`, `الثلاثاء`, `الأربعاء`, `الخميس`; rows the school
@@ -548,6 +553,118 @@ background after the broadcast is saved. Push only arrives when the app has Fire
 and registered its token (see [Push notifications (FCM)](#push-notifications-fcm)), so test it on
 a real phone; the notification list works without it.
 
+### School closures (العطل الرسمية)
+
+The "Attendance and leaves" screen gets three actions: **a one-day holiday**, **a holiday for a
+date range** and **a "pause" switch** for a long closure such as the summer break. A closed day
+isn't a school day: Friday and Saturday never are, and need no closure.
+
+**What a closure stops, and what it doesn't** (show this list in the pause warning dialog):
+
+| Stops on closed days | Keeps working |
+|---|---|
+| Absences: the day isn't counted or listed in any attendance view | Punches are still stored (the devices answer as always) |
+| The noon absence notification | Logins and every other screen |
+| Check-in and check-out notifications for punches | Leaves (allowed and harmless) |
+| | Broadcasts |
+
+**Register before 12:00.** The noon absence notification, and the punch notifications sent
+earlier that morning, can't be recalled. A closure for today registered in the afternoon fixes
+the reports but not what parents already received.
+
+**Closures can't overlap or be nested.** A new closure that shares any date with an existing one,
+including a range inside another or anything after the start of an open-ended pause, returns
+**409** naming the other one (`Overlaps closure 12 "عطلة الربيع" (2026-03-22 to 2026-03-26); …`).
+Show the message, and offer to cancel the other closure first.
+
+**The form** (`POST /api/admin/holidays`):
+
+| Field | One-day holiday | Holiday for a range | Pause |
+|---|---|---|---|
+| `kind` | `holiday` | `holiday` | `pause` |
+| `start_date` | the day (may be in the past: it corrects reports) | the first day (may be in the past) | today or later |
+| `end_date` | leave out | the last day, at most 60 days from the start inclusive | leave out for "until I switch it off", or a last day |
+| `title` | required, 1–80 characters | same | same |
+| `notes` | optional, up to 500 characters | same | same |
+| `notify` | default `true`: one notification to every parent | same | same |
+| `confirm` | — | — | **must be `true`**: send it only after the admin accepted the warning |
+
+**Confirmation dialog:** send the same body with `"dry_run": true` first. Nothing is written or
+sent; `data` has `school_days` (Sunday–Thursday days in the range, `null` when open-ended),
+`notified` and `recipient_count`. Show "N school days, notify M parents". On confirm, send it
+without `dry_run`. A `dry_run` checks overlaps too (409) and needs no `confirm`.
+
+**400** names the problem: for example `a holiday can be at most 60 days; use a pause for a longer
+closure`, `confirm must be true for a pause`, `a pause cannot start in the past`, `end_date must
+not be before start_date`, `title must be at most 80 characters`.
+
+**The notification** goes to every parent when the closure is registered, even for a future
+date, with the closure's `title` as its title. Its body is `notes`, or without notes:
+
+| Closure | Body |
+|---|---|
+| One-day holiday | `عطلة رسمية يوم 2026-03-22` |
+| Holiday range | `عطلة رسمية من 2026-03-22 إلى 2026-03-26` |
+| Pause | `تعطيل الدوام اعتباراً من 2026-06-15`, plus ` حتى 2026-09-01` when it has an end |
+
+Nothing is sent for a holiday entirely in the past or with `"notify": false` (`notified` is
+`false`). It appears in the broadcasts sent log like any broadcast.
+
+**No edit:** to change a closure, cancel it and create it again.
+
+**Cancel or end** (`POST /api/admin/holidays/cancel` with `{"id": 12}`; also `notify`, `notes`
+and `dry_run`): one rule for both kinds, "cancel from today onward". Days already passed stay
+closed, so past reports never change.
+
+| The closure | Result (`data.action`, `data.end_date`) |
+|---|---|
+| hasn't started | `deleted`, `null` |
+| started today | `deleted`, `null` |
+| is running | `shortened`: it now ends yesterday |
+| ended before today | **409** `This closure is already over` |
+| unknown id (cancelled already) | **404** `Closure not found` |
+
+The pause switch "off" is this call. The notification (with `notify`, the default):
+
+- not started: `تم إلغاء العطلة` / `تم إلغاء: <title>`;
+- started: `تم إنهاء العطلة واستئناف الدوام` / `عاد الدوام اعتباراً من <date>: <title>`, where the date
+  is the first Sunday–Thursday from today (cancelled on a Saturday, it says Sunday).
+
+`notes`, when sent, follow after a blank line.
+
+**Closures list:** `GET /api/admin/holidays` (no `month`) returns the closures running today or
+starting later, ordered by `start_date`. Show a banner "closure in progress" for the item with
+`"active": true`, with its title and the off switch for a pause. With `?month=YYYY-MM` it returns
+the closures covering that month, for a calendar. Each item has `id`, `kind`, `start_date`,
+`end_date` (`null` = open-ended), `title`, `notes`, `created_at`, `active`, `notified` and
+`recipient_count` (`null` when no notification was sent).
+
+**The day's type on the daily views:** `GET /api/admin/attendance`, `GET /api/admin/dashboard` and
+`GET /api/mobile/attendance/today` have three more top-level fields, on every day:
+
+| `day_type` | Meaning | `day_title`, `day_notes` | `data` |
+|---|---|---|---|
+| `school` | a school day | `null` | as before |
+| `weekend` | Friday or Saturday | `null` | empty, counts 0 |
+| `holiday` | a holiday covers it | the closure's title and notes | empty, counts 0 |
+| `pause` | a pause covers it | the closure's title and notes | empty, counts 0 |
+
+On the admin report, show "عطلة نهاية الأسبوع" or `day_title` instead of a list of absences. On the
+dashboard, `present_today`, `excused_today` and `absent_today` are 0 while `total_students` and
+`total_parents` keep their values. The Excel export of such a day has only its header rows, and
+row 4 names the day.
+
+**In the parent app:**
+
+- **Calendar:** `GET /api/mobile/holidays?month=YYYY-MM` returns one item per closed
+  Sunday–Thursday date (`date`, `kind`, `title`, `notes`). An open-ended pause appears on every
+  school weekday of the month. Draw those days with their title; they have no attendance record.
+  Weekends aren't listed: take Friday and Saturday from the weekday.
+- **Home screen:** when `day_type` of `GET /api/mobile/attendance/today` isn't `school`, show the
+  closure (`day_title`, `day_notes`) or "weekend" instead of the children's attendance.
+- **Notifications:** registering or cancelling a closure sends an ordinary notification; nothing
+  else changes in the notifications list.
+
 ### Banners
 
 The pictures the school shows parents as a carousel on the home screen (dashboard label
@@ -615,7 +732,16 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.14.1 (this release):** the admin-to-parent notifications from 1.14.0 are renamed
+**In API 1.15.0 (this release):** school closures. New: `POST /api/admin/holidays`,
+`POST /api/admin/holidays/cancel`, `GET /api/admin/holidays` and `GET /api/mobile/holidays` (see
+[School closures](#school-closures-العطل-الرسمية)). Additive: `day_type`, `day_title` and
+`day_notes` on `GET /api/admin/attendance`, `GET /api/admin/dashboard` and
+`GET /api/mobile/attendance/today`. **Behaviour change:** on a Friday, Saturday or closed day those
+three return `"data": []` and zero daily counts (the report used to list everyone as `Absent` on a
+Saturday), closed days drop out of the monthly records and the summary, and punches on them send
+no notification. No field was removed or renamed.
+
+**In API 1.14.1:** the admin-to-parent notifications from 1.14.0 are renamed
 "broadcasts", so they aren't confused with banners: the paths are now `POST` and
 `GET /api/admin/broadcasts` (operations `createBroadcast` and `listBroadcasts`, schemas
 `Broadcast*`). Request and response fields are unchanged. This breaks only a client already

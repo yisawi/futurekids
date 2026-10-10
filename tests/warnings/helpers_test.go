@@ -7,8 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"future_kids/internal/handlers"
 	"future_kids/internal/testdb"
+	"future_kids/internal/tz"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -17,6 +20,20 @@ import (
 func setupThrowawayDB(t *testing.T, label string) (*sql.DB, string) {
 	t.Helper()
 	return testdb.New(t, label)
+}
+
+// pinToday makes handlers.Clock return the Asia/Baghdad time at (YYYY-MM-DD HH:MM) until the
+// test ends, and returns its date.
+func pinToday(t *testing.T, at string) string {
+	t.Helper()
+	ts, err := time.ParseInLocation("2006-01-02 15:04", at, tz.Baghdad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := handlers.Clock
+	t.Cleanup(func() { handlers.Clock = restore })
+	handlers.Clock = func() time.Time { return ts }
+	return ts.Format("2006-01-02")
 }
 
 // openDB opens a pool on dsn and closes it before the throwaway database is dropped.

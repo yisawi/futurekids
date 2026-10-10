@@ -14,8 +14,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"future_kids/internal/tz"
-
 	excelize "github.com/xuri/excelize/v2"
 )
 
@@ -213,7 +211,7 @@ func (app *AppEnv) AdminScheduleExportHandler(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	respondXLSX(w, f, scheduleFileDisposition(grade, section, tz.Today()), "AdminScheduleExportHandler", "grade", grade, "section", section)
+	respondXLSX(w, f, scheduleFileDisposition(grade, section, today()), "AdminScheduleExportHandler", "grade", grade, "section", section)
 }
 
 // ScheduleImportError is one problem in an uploaded schedule workbook: the worksheet, the Excel

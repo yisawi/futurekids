@@ -124,7 +124,7 @@ func TestW11TestIsolation(t *testing.T) {
 
 	t.Run("fresh database has the full, clean schema", func(t *testing.T) {
 		db, _ := setupThrowawayDB(t, "w11")
-		for _, table := range []string{"students", "parents", "devices", "attendance_logs", "student_leaves", "notifications", "banners", "banner_images", "broadcasts", "admins", "settings", "weekly_schedules"} {
+		for _, table := range []string{"students", "parents", "devices", "attendance_logs", "student_leaves", "notifications", "banners", "banner_images", "broadcasts", "school_closures", "admins", "settings", "weekly_schedules"} {
 			var ok bool
 			if err := db.QueryRow(`SELECT to_regclass('public.' || $1) IS NOT NULL`, table).Scan(&ok); err != nil || !ok {
 				t.Errorf("table %s missing (err=%v)", table, err)

@@ -136,7 +136,11 @@ PORT=18080
 while lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; do PORT=$((PORT + 1)); done
 API_URL="http://localhost:${PORT}"
 go build -o "$WORK_DIR/api" ./cmd/api || fail "Server build failed"
-DATABASE_URL="$DB_URL" PORT="$PORT" JWT_SECRET="${JWT_SECRET:-e2e-test-secret}" \
+# The server's today is the latest Sunday–Thursday in Asia/Baghdad (Friday and Saturday are not
+# school days), passed as FAKE_TODAY so every check below runs on a school day.
+case "$(TZ=Asia/Baghdad date +%u)" in 5) BACK=1 ;; 6) BACK=2 ;; *) BACK=0 ;; esac
+TODAY=$(TZ=Asia/Baghdad date -v-"${BACK}"d +"%Y-%m-%d" 2>/dev/null || TZ=Asia/Baghdad date -d "${BACK} days ago" +"%Y-%m-%d")
+DATABASE_URL="$DB_URL" PORT="$PORT" JWT_SECRET="${JWT_SECRET:-e2e-test-secret}" FAKE_TODAY="$TODAY" \
     "$WORK_DIR/api" >"$WORK_DIR/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 60); do
@@ -187,6 +191,8 @@ for i in {1..10}; do
       -d "{\"name\":\"E2E Student $i\",\"parent_name\":\"E2E Parent\",\"parent_phone\":\"$phone\",\"parent_pin\":\"Av3#Jm8x@Rk5tW2p\",\"rfid_tag\":\"$rfid\"}")
     assert_http "Create student $i" "$s_http"
 done
+psql "$DB_URL" -q -v ON_ERROR_STOP=1 -c "UPDATE students SET created_at = DATE '$TODAY' + created_at::time" >/dev/null \
+    || fail "Could not date the students on $TODAY"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 section "Phase 3 — Hardware ADMS Push (ZKTeco Behavioral Time-Window Test)"
@@ -202,7 +208,6 @@ section "Phase 3 — Hardware ADMS Push (ZKTeco Behavioral Time-Window Test)"
 #
 # Students 1–4 get a simple valid check-in + check-out.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TODAY=$(date +"%Y-%m-%d")
 
 # Student 0: Full behavioral sequence (time-window + dead-zone + spam proof)
 BEHAVIORAL_RFID="${RFID_TAGS[0]}"
@@ -251,6 +256,7 @@ att_body=$(echo "$att_res" | sed '$d')
 assert_http "Admin daily attendance" "$att_http"
 assert_eq  "Admin attendance status field" "$(echo "$att_body" | jq -r '.status')" "success"
 assert_eq  "Admin attendance date field"   "$(echo "$att_body" | jq -r '.date')"   "$TODAY"
+assert_eq  "Admin attendance day_type"     "$(echo "$att_body" | jq -r '.day_type')" "school"
 
 # Find the behavioral student (student[0] = RFID_TAGS[0]) by rfid in the name match
 # The API returns students ordered by status desc, name asc — find student[0]'s record.
