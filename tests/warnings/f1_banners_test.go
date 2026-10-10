@@ -707,11 +707,11 @@ func TestF1Banners(t *testing.T) {
 	})
 }
 
-// TestF1BeforePhoneNormalisation runs the new code on a database at 000024 without 000025,
+// TestF1BeforePhoneNormalisation runs the new code on a database at 000025 without 000026,
 // the state Staging is in between the steps of the README deploy notes.
 func TestF1BeforePhoneNormalisation(t *testing.T) {
 	db, dsn := setupThrowawayDB(t, "f1v24")
-	if _, err := db.Exec(a14Migration(t, "000025_normalize_phone_numbers.down.sql")); err != nil {
+	if _, err := db.Exec(a14Migration(t, "000026_normalize_phone_numbers.down.sql")); err != nil {
 		t.Fatal(err)
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(a14AdminPassword), bcrypt.DefaultCost)
@@ -724,7 +724,7 @@ func TestF1BeforePhoneNormalisation(t *testing.T) {
 	srv := g3Start(t, dsn, g3FreePort(t), true, "TRUSTED_PROXY_CIDRS=127.0.0.1/32", "ABSENCE_CRON_SCHEDULE=0 0 1 1 *")
 	admin := a14Bearer(a14AdminToken(t, srv))
 	pic := f1PNG(t, 20)
-	ct, body := f1Form(f1Image(pic), f1Text("title", "Before 000025"))
+	ct, body := f1Form(f1Image(pic), f1Text("title", "Before 000026"))
 	r := f1Do(t, srv, "POST", "/api/admin/banners", admin, ct, body)
 	id := f1ID(t, r)
 	parent := a14Bearer(e1Sign(t, jwt.MapClaims{"parent_id": 1201, "phone": "+9647000001201", "role": "parent", "sv": 0, "exp": time.Now().Add(time.Hour).Unix()}))
@@ -739,7 +739,7 @@ func TestF1BeforePhoneNormalisation(t *testing.T) {
 
 // TestF1BannerImagesMigration verifies migration 000024: it applies alone on a database at
 // 000023, rolls back by deactivating banners that lose their picture, applies again, is reached
-// by golang-migrate from versions 20 to 23, and phone normalisation (now 000025) still applies
+// by golang-migrate from versions 20 to 23, and phone normalisation (now 000026) still applies
 // after it, collision abort included.
 func TestF1BannerImagesMigration(t *testing.T) {
 	migrate, err := exec.LookPath("migrate")
@@ -749,7 +749,7 @@ func TestF1BannerImagesMigration(t *testing.T) {
 	fresh := func(t *testing.T, label string) (*sql.DB, func(args ...string) (string, error)) {
 		t.Helper()
 		cli, cliDSN := setupThrowawayDB(t, label)
-		for _, tbl := range []string{"banner_images", "device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
+		for _, tbl := range []string{"banner_images", "device_tokens", "settings", "notifications", "announcements", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
 			if _, err := cli.Exec("DROP TABLE IF EXISTS " + tbl + " CASCADE"); err != nil {
 				t.Fatal(err)
 			}
@@ -811,7 +811,7 @@ func TestF1BannerImagesMigration(t *testing.T) {
 	})
 
 	for _, from := range []string{"20", "21", "22", "23"} {
-		t.Run("golang-migrate from version "+from+" through 24 to 25", func(t *testing.T) {
+		t.Run("golang-migrate from version "+from+" through 24 to 26", func(t *testing.T) {
 			db, run := fresh(t, "f1v"+from)
 			if out, err := run("goto", from); err != nil {
 				t.Fatalf("goto %s: %v\n%s", from, err, out)
@@ -822,8 +822,8 @@ func TestF1BannerImagesMigration(t *testing.T) {
 			if out, err := run("up"); err != nil {
 				t.Fatalf("up: %v\n%s", err, out)
 			}
-			if v, _ := run("version"); v != "25" {
-				t.Errorf("version %q, want 25", v)
+			if v, _ := run("version"); v != "26" {
+				t.Errorf("version %q, want 26", v)
 			}
 			if table, phone := state(db); !table || !phone {
 				t.Errorf("at 25: banner_images %v, phone columns %v", table, phone)
@@ -831,7 +831,7 @@ func TestF1BannerImagesMigration(t *testing.T) {
 		})
 	}
 
-	t.Run("000025 still aborts on collisions after 000024", func(t *testing.T) {
+	t.Run("000026 still aborts on collisions after 000024", func(t *testing.T) {
 		db, run := fresh(t, "f1coll")
 		if out, err := run("goto", "24"); err != nil {
 			t.Fatalf("goto 24: %v\n%s", err, out)
@@ -841,10 +841,10 @@ func TestF1BannerImagesMigration(t *testing.T) {
 		}
 		out, err := run("up")
 		if err == nil || !strings.Contains(out, "[971, 972]") {
-			t.Fatalf("000025 should abort listing [971, 972]: %v\n%s", err, out)
+			t.Fatalf("000026 should abort listing [971, 972]: %v\n%s", err, out)
 		}
 		if table, phone := state(db); !table || phone {
-			t.Errorf("after the aborted 000025: banner_images %v, phone columns %v; want true, false", table, phone)
+			t.Errorf("after the aborted 000026: banner_images %v, phone columns %v; want true, false", table, phone)
 		}
 	})
 }

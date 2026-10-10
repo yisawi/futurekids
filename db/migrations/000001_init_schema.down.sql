@@ -10,6 +10,7 @@
 --   internal/handlers/schedule_excel.go — AdminScheduleClassesHandler, AdminScheduleExportHandler
 --     and AdminScheduleImportHandler read students.
 --   internal/cron/absent_job.go — ProcessDailyAbsences reads students.
+--   internal/notify/announcement.go — CreateAnnouncement and CountRecipients read students.
 -- Data loss: every student, device and attendance punch is deleted permanently. Only run this
 --   when tearing down the whole database.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy

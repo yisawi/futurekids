@@ -351,7 +351,7 @@ var a14InvalidPhones = []string{
 // TestA2PhoneNormalisation verifies Task A2: every accepted format of an Iraqi mobile number is
 // one canonical number for login, the rate limiter, admin student create/update and storage;
 // invalid numbers get 400 from the admin API and the unknown-phone 401 from login; and
-// migration 000025 rewrites stored numbers exactly as the Go code does, failing loudly on
+// migration 000026 rewrites stored numbers exactly as the Go code does, failing loudly on
 // numbers it cannot convert or that collide.
 func TestA2PhoneNormalisation(t *testing.T) {
 	t.Run("normaliser", func(t *testing.T) {
@@ -462,7 +462,7 @@ func TestA2PhoneNormalisation(t *testing.T) {
 		a14Retry(t, r, 900)
 	})
 
-	t.Run("migration 000025", func(t *testing.T) {
+	t.Run("migration 000026", func(t *testing.T) {
 		a14MigrationTest(t, db)
 	})
 }
@@ -477,8 +477,8 @@ func a14Migration(t *testing.T, name string) string {
 }
 
 func a14MigrationTest(t *testing.T, db *sql.DB) {
-	up := a14Migration(t, "000025_normalize_phone_numbers.up.sql")
-	down := a14Migration(t, "000025_normalize_phone_numbers.down.sql")
+	up := a14Migration(t, "000026_normalize_phone_numbers.up.sql")
+	down := a14Migration(t, "000026_normalize_phone_numbers.down.sql")
 	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -930,15 +930,15 @@ func TestA1TrustedProxyDefault(t *testing.T) {
 	})
 }
 
-// TestA14BeforePhoneNormalisation runs the new code on a database migrated to 000024 (session
-// versions, device tokens, notifications by parent, banner images) without 000025 (phone
+// TestA14BeforePhoneNormalisation runs the new code on a database migrated to 000025 (session
+// versions, device tokens, notifications by parent, banner images, announcements) without 000026 (phone
 // normalisation), the state Staging is in between
 // the steps of the README deploy notes. Sessions, rate limits and route errors work; a parent
-// whose number is still stored in another format cannot log in until 000025 runs, which then
+// whose number is still stored in another format cannot log in until 000026 runs, which then
 // fixes it.
 func TestA14BeforePhoneNormalisation(t *testing.T) {
 	db, dsn := setupThrowawayDB(t, "a14v22")
-	if _, err := db.Exec(a14Migration(t, "000025_normalize_phone_numbers.down.sql")); err != nil {
+	if _, err := db.Exec(a14Migration(t, "000026_normalize_phone_numbers.down.sql")); err != nil {
 		t.Fatal(err)
 	}
 	var phoneColumns, sessionColumns int
@@ -1017,15 +1017,15 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 		}
 	})
 
-	t.Run("a parent stored in another format cannot log in until 000025 runs", func(t *testing.T) {
+	t.Run("a parent stored in another format cannot log in until 000026 runs", func(t *testing.T) {
 		for _, in := range []string{"07000000702", "+9647000000702"} {
 			if _, code := login(in, "593047"); code != 401 {
-				t.Errorf("legacy-format parent with %q: %d, want 401 until 000025 runs", in, code)
+				t.Errorf("legacy-format parent with %q: %d, want 401 until 000026 runs", in, code)
 			}
 		}
 	})
 
-	t.Run("adding a student for that parent creates a canonical duplicate that 000025 reports", func(t *testing.T) {
+	t.Run("adding a student for that parent creates a canonical duplicate that 000026 reports", func(t *testing.T) {
 		r := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
 			"name": "Legacy Sibling", "parent_name": "Legacy Parent", "parent_phone": "07000000702", "parent_pin": "Uf5&Hz9c!Mr3eJ7a", "rfid_tag": "V21-3",
 		})
@@ -1037,11 +1037,11 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 		if dupID == 0 {
 			t.Fatalf("no canonical duplicate was created")
 		}
-		_, err := db.Exec(a14Migration(t, "000025_normalize_phone_numbers.up.sql"))
+		_, err := db.Exec(a14Migration(t, "000026_normalize_phone_numbers.up.sql"))
 		ids := []int{702, dupID}
 		sort.Ints(ids)
 		if want := fmt.Sprintf("[%d, %d]", ids[0], ids[1]); err == nil || !strings.Contains(err.Error(), want) {
-			t.Fatalf("000025 error %v, want the collision group %s", err, want)
+			t.Fatalf("000026 error %v, want the collision group %s", err, want)
 		}
 		if _, err := db.Exec(`UPDATE students SET parent_id = 702 WHERE parent_id = $1`, dupID); err != nil {
 			t.Fatal(err)
@@ -1051,13 +1051,13 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 		}
 	})
 
-	t.Run("after 000025 the parent logs in with any format", func(t *testing.T) {
-		if _, err := db.Exec(a14Migration(t, "000025_normalize_phone_numbers.up.sql")); err != nil {
-			t.Fatalf("000025: %v", err)
+	t.Run("after 000026 the parent logs in with any format", func(t *testing.T) {
+		if _, err := db.Exec(a14Migration(t, "000026_normalize_phone_numbers.up.sql")); err != nil {
+			t.Fatalf("000026: %v", err)
 		}
 		for _, in := range []string{"07000000702", "+9647000000702", "009647000000702"} {
 			if _, code := login(in, "593047"); code != 200 {
-				t.Errorf("login with %q after 000025: %d, want 200", in, code)
+				t.Errorf("login with %q after 000026: %d, want 200", in, code)
 			}
 		}
 	})

@@ -234,6 +234,9 @@ shift or duplicate items. A `before` that isn't a positive integer returns 400.
 - **After either call,** refresh the list or update the badge from its next `unread_count`. A push
   that arrives later is unread again.
 
+Announcements the school sends from the dashboard arrive in this same list, unread, like any
+other notification.
+
 ### History belongs to the account
 
 History follows the parent account, not the phone number: it survives a change of the parent's
@@ -492,6 +495,56 @@ be one of the first 10 rows, and title rows above it are fine):
 - Rows saved before API 1.13.0 on Friday or Saturday, or with a period above 6, aren't in the
   export; importing that class removes them.
 
+### Announcements and notifications (الإعلانات والإشعارات)
+
+The dashboard section the school names "الإعلانات والإشعارات" holds two things: the existing
+banners (pictures in the parent carousel; their endpoints and paths are unchanged, see
+[Banners](#banners)) and the new text announcements below. The new name is a label only.
+
+**Compose form:**
+
+- **Title** (required, up to 100 characters) and **text** (required, up to 500 characters).
+  Surrounding spaces are removed.
+- **Audience** selector, sent as `audience`:
+
+  | Choice | `audience` | Who receives it |
+  |---|---|---|
+  | All parents | `{"type": "all"}` | Every parent in the system, **including parents whose children are all deactivated** |
+  | One parent | `{"type": "parent", "parent_phone": "+9647000000101"}` | That parent. Pick from the students list (`GET /api/admin/students` has each student's `parent_phone`); any format parent login accepts works |
+  | A grade | `{"type": "class", "grade": "G3"}` | Parents of active students in every section of G3 |
+  | A section | `{"type": "class", "section": "A"}` | Parents of active students in section A of every grade |
+  | A class | `{"type": "class", "grade": "G3", "section": "A"}` | Parents of active students in G3 / A |
+
+  Grade and section match exactly (case-sensitive), as the weekly schedule does; take them from
+  `GET /api/admin/schedule/classes`. A parent with two children in the audience gets one
+  notification. Send only the fields of the chosen type: an extra field (even blank) is a 400,
+  so a form bug can never turn "one class" into "everyone".
+
+**Send in two steps:**
+
+1. `POST /api/admin/announcements` with `"dry_run": true`. Nothing is written or sent; the answer
+   is `{"data": {"id": null, "recipient_count": 24, "dry_run": true}}`.
+2. Show a confirmation dialog: "send to 24 parents? It cannot be recalled." On confirm, send the
+   same body without `dry_run`. The answer has the new `id` and the final `recipient_count`.
+
+**Errors:** 400 names the problem (including `No parents match this audience`); 404 means no
+parent has that phone number; **409** means the same title, text and audience was sent less than
+a minute ago (usually a double tap): show "already sent" and don't retry. **An announcement
+can't be edited, recalled or deleted after it is sent**; there are no such endpoints.
+
+**Sent log:** `GET /api/admin/announcements` lists every announcement, newest first, 50 per page,
+with the same `before` / `has_more` / `next_before` paging as the parent notifications list. Each
+item has `title`, `body`, `audience` (`type`, `grade`, `section`, `parent_name`, `parent_phone`;
+unused fields are `null`), `recipient_count`, `read_count` (how many parents have marked it read
+so far) and `created_at`. Show "read by 17 of 24".
+
+**What parents see:** the announcement arrives as an ordinary notification in
+`GET /api/mobile/notifications`, unread, and raises `unread_count` like any other; nothing changes
+in the parent app's endpoints. Each of the parent's phones also gets a push, sent in the
+background after the announcement is saved. Push only arrives when the app has Firebase connected
+and registered its token (see [Push notifications (FCM)](#push-notifications-fcm)), so test it on
+a real phone; the notification list works without it.
+
 ### Banners
 
 The school's announcements, shown to parents as a carousel. Every picture is uploaded from the
@@ -558,7 +611,13 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.13.1 (this release):** the schedule Excel export is one class per file
+**In API 1.14.0 (this release):** new admin endpoints `POST /api/admin/announcements` (send an
+announcement to all parents, one parent, a grade, a section or a class, with a `dry_run`
+preview) and `GET /api/admin/announcements` (the sent log with read counts). See
+[Announcements and notifications](#announcements-and-notifications-الإعلانات-والإشعارات). Nothing
+breaks: no existing endpoint or response changed.
+
+**In API 1.13.1:** the schedule Excel export is one class per file
 (`grade` and `section` are required; 404 for an unknown class), and the import takes optional
 `grade` and `section` parts that restrict the file to that class. Breaking only for a client
 that called the export without them.

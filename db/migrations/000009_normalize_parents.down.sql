@@ -9,6 +9,9 @@
 --   internal/handlers/middleware.go — AuthMiddleware reads parents.session_version on every parent request.
 --   internal/cron/absent_job.go — ProcessDailyAbsences joins parents.
 --   cmd/migrate-pins/main.go — reads and updates parents.
+--   internal/notify/announcement.go — announcement recipients are parents.
+--   internal/handlers/announcements.go — looks up a parent by phone and shows the parent in the
+--     sent log.
 -- Data loss: parents with no student and parents.created_at are lost; the rest is copied back to
 --   students.parent_phone, parent_pin and parent_name.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy

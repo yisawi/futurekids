@@ -1283,6 +1283,63 @@ func (r *runner) scenario() {
 	r.call("POST /api/admin/schedule/import", "body over the limit", "", admin, multipartBody{upload(valid), {name: "padding", data: bytes.Repeat([]byte("p"), 3<<20)}}, 413)
 	adminDenied("POST /api/admin/schedule/import", "", multipartBody{upload(valid)})
 
+	// ── Announcements ──────────────────────────────────────────────────────────
+	var announcedParent int
+	if err := r.db.QueryRow(`INSERT INTO parents (full_name, phone_number, pin_code) VALUES ('Announcement Parent', '+9647000000306', 'x') RETURNING id`).Scan(&announcedParent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.db.Exec(`INSERT INTO students (full_name, rfid_tag, parent_id, grade, section) VALUES ('Announcement Kid', 'ANN-0001', $1, 'AN', 'X')`, announcedParent); err != nil {
+		t.Fatal(err)
+	}
+	var announcedTokens int
+	r.db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = $1`, announcedParent).Scan(&announcedTokens)
+	if announcedTokens != 0 {
+		t.Fatalf("the announcement fixture parent must have no device tokens, so the server never contacts FCM")
+	}
+	announce := func(title string, audience map[string]any, extra ...any) map[string]any {
+		m := map[string]any{"title": title, "body": "نص الإعلان", "audience": audience}
+		for i := 0; i+1 < len(extra); i += 2 {
+			m[extra[i].(string)] = extra[i+1]
+		}
+		return m
+	}
+	classAN := map[string]any{"type": "class", "grade": "AN", "section": "X"}
+	_, d = r.call("POST /api/admin/announcements", "preview for every parent", "", admin, announce("للجميع", map[string]any{"type": "all"}, "dry_run", true), 200)
+	r.expect("preview has no id", at(d, "data", "id"), nil)
+	r.expect("preview message", at(d, "message"), "Preview only")
+	var parentCount int
+	r.db.QueryRow(`SELECT COUNT(*) FROM parents`).Scan(&parentCount)
+	r.expect("preview counts every parent", toInt(at(d, "data", "recipient_count")), parentCount)
+	_, d = r.call("POST /api/admin/announcements", "send to a class", "", admin, announce("اجتماع", classAN), 200)
+	r.expect("class send", fmt.Sprint(at(d, "message"), " ", at(d, "data", "recipient_count"), " ", at(d, "data", "dry_run")), "Announcement sent 1 false")
+	r.call("POST /api/admin/announcements", "the same announcement again", "", admin, announce("اجتماع", classAN), 409)
+	_, d = r.call("POST /api/admin/announcements", "send to one parent", "", admin, announce("ملاحظة", map[string]any{"type": "parent", "parent_phone": "0700 000 0306"}), 200)
+	r.expect("parent send", toInt(at(d, "data", "recipient_count")), 1)
+	for _, tc := range []struct {
+		name   string
+		body   any
+		status int
+		msg    string
+	}{
+		{"title over 100", announce(strings.Repeat("ع", 101), classAN), 400, "title must be at most 100 characters"},
+		{"all with a grade", announce("x", map[string]any{"type": "all", "grade": "AN"}), 400, "audience.grade, audience.section and audience.parent_phone must not be sent when audience.type is all"},
+		{"class without grade or section", announce("x", map[string]any{"type": "class"}), 400, "audience.grade or audience.section is required when audience.type is class"},
+		{"no parent matches", announce("x", map[string]any{"type": "class", "grade": "ZZ"}), 400, "No parents match this audience"},
+		{"dry_run not a boolean", announce("x", classAN, "dry_run", "yes"), 400, "dry_run must be true or false"},
+		{"malformed JSON", "{", 400, "Invalid request body"},
+		{"unknown phone", announce("x", map[string]any{"type": "parent", "parent_phone": "07000000999"}), 404, "No parent has this phone number"},
+	} {
+		_, d = r.call("POST /api/admin/announcements", tc.name, "", admin, tc.body, tc.status)
+		r.expect("message for "+tc.name, at(d, "message"), tc.msg)
+	}
+	r.call("POST /api/admin/announcements", "oversized body", "", admin, oversized(), 413)
+	adminDenied("POST /api/admin/announcements", "", announce("x", classAN))
+	_, d = r.call("GET /api/admin/announcements", "sent log", "", admin, nil, 200)
+	r.expect("sent log: newest first", fmt.Sprint(at(d, "data", 0, "title"), " ", at(d, "data", 0, "audience", "parent_phone"), " ", at(d, "data", 1, "title"), " ", at(d, "data", 1, "audience", "grade")), "ملاحظة +9647000000306 اجتماع AN")
+	r.expect("sent log page", fmt.Sprint(at(d, "has_more"), " ", at(d, "next_before")), "false <nil>")
+	r.call("GET /api/admin/announcements", "invalid cursor", "?before=abc", admin, nil, 400)
+	adminDenied("GET /api/admin/announcements", "", nil)
+
 	// ── System ─────────────────────────────────────────────────────────────────
 	r.call("GET /health", "liveness", "", "", nil, 200)
 
@@ -1360,6 +1417,8 @@ func (r *runner) databaseFailures() {
 	r.call("PUT /api/admin/settings", "database error", "", admin, map[string]string{"key": "internal_note", "value": "x"}, 500)
 	r.call("GET /api/admin/schedule", "database error", "?grade=G4&section=C", admin, nil, 500)
 	r.call("GET /api/admin/schedule/classes", "database error", "", admin, nil, 500)
+	r.call("GET /api/admin/announcements", "database error", "", admin, nil, 500)
+	r.call("POST /api/admin/announcements", "database error", "", admin, map[string]any{"title": "Down", "body": "Down", "audience": map[string]any{"type": "all"}}, 500)
 	r.call("GET /api/admin/schedule/export", "database error", "?grade=G3&section=A", admin, nil, 500)
 	r.call("POST /api/admin/schedule/import", "database error", "", admin, multipartBody{{"file", "schedule.xlsx", handlers.XLSXContentType, contractScheduleXLSX(t)}}, 500)
 	bannerPicture := multipartBody{{"image", "banner.jpg", "image/jpeg", contractJPEG(t, 4)}}
@@ -1433,6 +1492,7 @@ func (r *runner) transport(t *testing.T) {
 	record("wrong method on an admin route", "PATCH", "/api/admin/devices", nil, 405, "DELETE, GET, HEAD, POST, PUT")
 	record("wrong method on the schedule route", "DELETE", "/api/admin/schedule", nil, 405, "GET, HEAD, PUT")
 	record("wrong method on the schedule import route", "GET", "/api/admin/schedule/import", nil, 405, "POST")
+	record("wrong method on the announcements route", "DELETE", "/api/admin/announcements", nil, 405, "GET, HEAD, POST")
 	record("wrong method on the schedule export route", "POST", "/api/admin/schedule/export", nil, 405, "GET, HEAD")
 	record("wrong method on the banner picture route", "DELETE", "/api/mobile/banners/image", nil, 405, "GET, HEAD")
 	record("wrong method on a login route", "GET", "/api/admin/login", nil, 405, "POST")
@@ -2025,6 +2085,15 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		}},
 		{"the export's grade parameter is no longer required", []string{"parameters"}, func(root map[string]any) {
 			node(root, "components", "parameters", "ScheduleExportGrade")["required"] = false
+		}},
+		{"an announcement log item loses read_count", []string{"responses"}, func(root map[string]any) {
+			delete(obj(node(schemas(root), "AnnouncementLogItem")["properties"]), "read_count")
+		}},
+		{"the new announcement id is no longer nullable", []string{"responses"}, func(root map[string]any) {
+			delete(node(schemas(root), "AnnouncementCreateResponse", "properties", "data", "properties", "id"), "nullable")
+		}},
+		{"createAnnouncement loses its 409", []string{"responses"}, func(root map[string]any) {
+			delete(node(root, "paths", "/api/admin/announcements", "post", "responses"), "409")
 		}},
 		{"the import loses the grade part", []string{"requests"}, func(root map[string]any) {
 			delete(obj(node(schemas(root), "ScheduleImportRequest")["properties"]), "grade")

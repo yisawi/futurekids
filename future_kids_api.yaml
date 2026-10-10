@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.13.1"
+  version: "1.14.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -199,6 +199,18 @@ components:
         format: int64
         minimum: 1
       example: 1402
+    AnnouncementBefore:
+      name: before
+      in: query
+      required: false
+      description: |
+        Cursor: return only announcements with an id lower than this. Pass the `next_before` of
+        the previous page. Omit it for the newest page. Not a positive integer: 400.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 120
     NotificationIdQuery:
       name: id
       in: query
@@ -1958,6 +1970,222 @@ components:
         next_before: null
         unread_count: 1
 
+    AnnouncementAudience:
+      type: object
+      description: |
+        Who receives the announcement. `type` decides which other fields are allowed; a field
+        that is not allowed returns 400 even when blank, so a dashboard bug can never widen the
+        audience. A field sent as null counts as not sent.
+        - `all`: every parent in the system, including parents whose children are all
+          deactivated. `grade`, `section` and `parent_phone` must not be sent.
+        - `parent`: one parent. `parent_phone` is required, in any format parent login accepts
+          (`07…`, `+964…`, `00964…`, Arabic-Indic digits, spaces); `grade` and `section` must
+          not be sent. Not an Iraqi mobile number: 400. No parent has it: 404.
+        - `class`: the distinct parents of the **active** students whose grade and/or section
+          match exactly (case-sensitive, surrounding spaces ignored), as the weekly schedule
+          matches them. `grade` only: the whole grade (every section); `section` only: that
+          section in every grade; both: one class. At least one is required, 1 to 50 characters
+          each; `parent_phone` must not be sent. A parent with several matching children gets
+          one notification.
+      properties:
+        type:
+          type: string
+          enum: [all, parent, class]
+        grade:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 50
+        section:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 50
+        parent_phone:
+          type: string
+          nullable: true
+      required: [type]
+      example:
+        type: class
+        grade: G3
+        section: A
+
+    AnnouncementCreateRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required; surrounding spaces are removed; 1 to 100 characters (blank, longer, NUL or invalid UTF-8 returns 400).
+        body:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Required; surrounding spaces are removed; 1 to 500 characters (same rules as `title`).
+        audience:
+          $ref: '#/components/schemas/AnnouncementAudience'
+        dry_run:
+          type: boolean
+          default: false
+          description: |
+            Optional. With `true` the request is checked and the recipients are counted, but
+            nothing is written and nothing is sent. Use it for the confirmation dialog. Anything
+            but `true`, `false` or null returns 400.
+      required: [title, body, audience]
+      example:
+        title: اجتماع أولياء الأمور
+        body: يوم الخميس الساعة العاشرة صباحاً في قاعة المدرسة.
+        audience:
+          type: class
+          grade: G3
+          section: A
+        dry_run: true
+
+    AnnouncementCreateResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: '`Announcement sent`, or `Preview only` for a dry run.'
+        data:
+          type: object
+          properties:
+            id:
+              type: integer
+              format: int32
+              nullable: true
+              description: The new announcement's id; null for a dry run.
+            recipient_count:
+              type: integer
+              format: int32
+              minimum: 1
+              description: How many parents receive it (or would, for a dry run).
+            dry_run:
+              type: boolean
+          required: [id, recipient_count, dry_run]
+      required: [status, message, data]
+      example:
+        status: success
+        message: Preview only
+        data:
+          id: null
+          recipient_count: 24
+          dry_run: true
+
+    AnnouncementLogAudience:
+      type: object
+      description: |
+        The audience as sent. Fields the type does not use are null. For `parent`,
+        `parent_name` and `parent_phone` are that parent's current values, or null if the
+        parent was deleted since.
+      properties:
+        type:
+          type: string
+          enum: [all, parent, class]
+        grade:
+          type: string
+          nullable: true
+        section:
+          type: string
+          nullable: true
+        parent_name:
+          type: string
+          nullable: true
+        parent_phone:
+          type: string
+          nullable: true
+      required: [type, grade, section, parent_name, parent_phone]
+      example:
+        type: parent
+        grade: null
+        section: null
+        parent_name: Omar Example
+        parent_phone: "+9647000000101"
+
+    AnnouncementLogItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+        title:
+          type: string
+        body:
+          type: string
+        audience:
+          $ref: '#/components/schemas/AnnouncementLogAudience'
+        recipient_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: How many parents received it.
+        read_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: How many of its notifications the parents have marked read so far.
+        created_at:
+          type: string
+          format: date-time
+          description: When it was sent, RFC 3339 in Asia/Baghdad (+03:00).
+      required: [id, title, body, audience, recipient_count, read_count, created_at]
+      example:
+        id: 120
+        title: اجتماع أولياء الأمور
+        body: يوم الخميس الساعة العاشرة صباحاً في قاعة المدرسة.
+        audience:
+          type: class
+          grade: G3
+          section: A
+          parent_name: null
+          parent_phone: null
+        recipient_count: 24
+        read_count: 17
+        created_at: "2026-10-10T09:15:00+03:00"
+
+    AnnouncementPage:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: array
+          maxItems: 50
+          description: Newest first (descending id).
+          items:
+            $ref: '#/components/schemas/AnnouncementLogItem'
+        has_more:
+          type: boolean
+          description: True when older announcements exist.
+        next_before:
+          type: integer
+          format: int32
+          nullable: true
+          description: The id of the last item on this page. Pass it as `before` for the next page; null when `has_more` is false.
+      required: [status, data, has_more, next_before]
+      example:
+        status: success
+        data:
+          - id: 120
+            title: اجتماع أولياء الأمور
+            body: يوم الخميس الساعة العاشرة صباحاً في قاعة المدرسة.
+            audience:
+              type: class
+              grade: G3
+              section: A
+              parent_name: null
+              parent_phone: null
+            recipient_count: 24
+            read_count: 17
+            created_at: "2026-10-10T09:15:00+03:00"
+        has_more: false
+        next_before: null
+
     MarkAllReadResponse:
       type: object
       properties:
@@ -2314,6 +2542,62 @@ components:
               value:
                 status: error
                 message: Request body too large
+    AnnouncementBadRequest:
+      description: |
+        Malformed JSON; `title` or `body` missing, blank, too long, not a string, or with NUL or
+        invalid UTF-8; `audience` missing, of an unknown type, or with a field its type does not
+        allow; a `parent_phone` that is not an Iraqi mobile number; a blank or too long `grade`
+        or `section`; `dry_run` not a boolean; or no parent matches the audience. Nothing was
+        written or sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            noRecipients:
+              summary: No parent matches the audience
+              value:
+                status: error
+                message: No parents match this audience
+            fieldNotAllowed:
+              summary: A field the audience type does not allow
+              value:
+                status: error
+                message: audience.grade, audience.section and audience.parent_phone must not be sent when audience.type is all
+            titleTooLong:
+              summary: Title over 100 characters
+              value:
+                status: error
+                message: title must be at most 100 characters
+    AnnouncementParentNotFound:
+      description: The audience is one parent, and no parent has this phone number. Nothing was written or sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: No parent has this phone number
+    AnnouncementDuplicate:
+      description: |
+        An announcement with the same title, body and audience was sent less than 60 seconds
+        ago (usually a double tap). Nothing was written or sent. Not returned for a dry run.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: The same announcement was sent to this audience less than a minute ago
+    AnnouncementCursorBadRequest:
+      description: '`before` is not a positive integer.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: before must be a positive announcement id
     BannerWriteBadRequest:
       description: |
         Not `multipart/form-data` or a malformed body; a field sent twice; `image` missing (create),
@@ -3755,6 +4039,85 @@ paths:
           $ref: '#/components/responses/AdminForbidden'
         '413':
           $ref: '#/components/responses/ScheduleImportTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/announcements:
+    get:
+      tags: [Admin Dashboard]
+      operationId: listAnnouncements
+      summary: The sent log of announcements
+      description: |
+        Every announcement sent, newest first, 50 per page (`before`, `has_more` and
+        `next_before` work as in `GET /api/mobile/notifications`), with its audience, how many
+        parents received it and how many have read it.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/AnnouncementBefore'
+      responses:
+        '200':
+          description: A page of the sent log.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementPage'
+        '400':
+          $ref: '#/components/responses/AnnouncementCursorBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Admin Dashboard]
+      operationId: createAnnouncement
+      summary: Send an announcement to parents
+      description: |
+        Sends a title and body to an audience of parents (see `AnnouncementAudience`): every
+        parent, one parent, a grade, a section or a class. Each recipient gets an unread
+        notification in `GET /api/mobile/notifications` (it counts in `unread_count` like any
+        other), and a push to each of their devices. The push is sent in the background after
+        the announcement is saved; it never delays or fails this request, and without Firebase
+        only the notifications are created.
+
+        Send it twice: first with `dry_run: true` to get `recipient_count` for a confirmation
+        dialog (nothing is written), then without it. The same title, body and audience within
+        60 seconds returns 409. **An announcement cannot be edited, recalled or deleted after it
+        is sent.**
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnnouncementCreateRequest'
+      responses:
+        '200':
+          description: Sent, or counted for a dry run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementCreateResponse'
+        '400':
+          $ref: '#/components/responses/AnnouncementBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/AnnouncementParentNotFound'
+        '409':
+          $ref: '#/components/responses/AnnouncementDuplicate'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':

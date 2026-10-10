@@ -6,6 +6,7 @@
 --   internal/handlers/hardware.go — punch notifications find their recipients in it.
 --   internal/cron/absent_job.go — absence notifications find their recipients in it.
 --   internal/notify/notify.go — SendPushNotification deletes tokens FCM reports unregistered.
+--   internal/notify/announcement.go — PushAnnouncement reads and deletes device tokens.
 -- Data loss: every registered device token. students.fcm_token only holds the tokens old code
 --   wrote, so after this rollback no phone registered or refreshed since the up-migration
 --   receives pushes until the app registers again.

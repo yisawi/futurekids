@@ -159,6 +159,8 @@ func run() int {
 	mux.HandleFunc("GET /api/admin/schedule/classes", appEnv.AdminMiddleware(appEnv.AdminScheduleClassesHandler))
 	mux.HandleFunc("GET /api/admin/schedule/export", appEnv.AdminMiddleware(appEnv.AdminScheduleExportHandler))
 	mux.HandleFunc("POST /api/admin/schedule/import", appEnv.AdminMiddleware(appEnv.AdminScheduleImportHandler))
+	mux.HandleFunc("GET /api/admin/announcements", appEnv.AdminMiddleware(appEnv.AdminAnnouncementsHandler))
+	mux.HandleFunc("POST /api/admin/announcements", appEnv.AdminMiddleware(appEnv.AdminAnnouncementsHandler))
 	mux.HandleFunc("GET /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
 	mux.HandleFunc("POST /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))
 	mux.HandleFunc("PUT /api/admin/banners", appEnv.AdminMiddleware(appEnv.AdminBannersHandler))

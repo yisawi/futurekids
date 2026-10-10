@@ -8,6 +8,8 @@
 --   internal/handlers/schedule_excel.go — AdminScheduleClassesHandler, AdminScheduleExportHandler
 --     and AdminScheduleImportHandler read and write weekly_schedules and read students.grade and
 --     students.section.
+--   internal/notify/announcement.go — announcements to a class match students.grade and
+--     students.section.
 -- Data loss: the whole weekly timetable and every student's grade and section.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first
