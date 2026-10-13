@@ -283,7 +283,7 @@ func TestJ1Broadcasts(t *testing.T) {
 		if a != "اجتماع أولياء الأمور|يوم الخميس الساعة العاشرة.|class|G1|A|true|2" {
 			t.Errorf("broadcast row %q", a)
 		}
-		rows, _ := db.Query(`SELECT parent_id, parent_phone, title, body, COALESCE(is_read, false) FROM notifications WHERE broadcast_id = $1 ORDER BY parent_id`, id)
+		rows, _ := db.Query(`SELECT COALESCE(n.parent_id, 0), COALESCE(p.phone_number, ''), n.title, n.body, COALESCE(n.is_read, false) FROM notifications n LEFT JOIN parents p ON p.id = n.parent_id WHERE n.broadcast_id = $1 ORDER BY n.parent_id`, id)
 		var got []string
 		for rows.Next() {
 			var pid int
@@ -334,7 +334,7 @@ func TestJ1Broadcasts(t *testing.T) {
 		if _, n := sent(t, j1Body("ملاحظة", "يرجى مراجعة الإدارة.", j1Parent("0700 000 3005"))); n != 1 {
 			t.Errorf("one parent: %d recipients, want 1", n)
 		}
-		notify.SaveNotificationHistory(db, 3003, "+9647000003003", "إشعار حضور", "الطالب وصل")
+		notify.SaveNotificationHistory(db, 3003, "إشعار حضور", "الطالب وصل")
 		var nulls, total int
 		db.QueryRow(`SELECT COUNT(*) FILTER (WHERE broadcast_id IS NULL), COUNT(*) FROM notifications WHERE title = 'إشعار حضور'`).Scan(&nulls, &total)
 		if nulls != 1 || total != 1 {
@@ -936,13 +936,11 @@ func TestJ1Push(t *testing.T) {
 	})
 }
 
-// TestJ1BeforePhoneNormalisation runs the new code on a database at 000028 without 000029, the
+// TestJ1AtLegacyDropWindow runs the new code on a database at 000030 without 000031, the
 // state Staging is in between the steps of the README deploy notes.
-func TestJ1BeforePhoneNormalisation(t *testing.T) {
-	db, dsn := setupThrowawayDB(t, "j1v25")
-	if _, err := db.Exec(a14Migration(t, "000029_normalize_phone_numbers.down.sql")); err != nil {
-		t.Fatal(err)
-	}
+func TestJ1AtLegacyDropWindow(t *testing.T) {
+	db, dsn := setupThrowawayDB(t, "j1v30")
+	m1Apply(t, db, m1Down31)
 	j1Seed(t, db)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(a14AdminPassword), bcrypt.DefaultCost)
 	if _, err := db.Exec(`UPDATE admins SET password_hash = $1 WHERE username = 'admin'`, string(hash)); err != nil {
@@ -951,15 +949,15 @@ func TestJ1BeforePhoneNormalisation(t *testing.T) {
 	srv := g3Start(t, dsn, g3FreePort(t), true, "TRUSTED_PROXY_CIDRS=127.0.0.1/32", "ABSENCE_CRON_SCHEDULE=0 0 1 1 *")
 	admin := a14Bearer(a14AdminToken(t, srv))
 	for _, body := range []map[string]any{
-		j1Body("Before 000029", "Class", j1Class("G1", nil)),
-		j1Body("Before 000029", "One parent", j1Parent("07000003003")),
+		j1Body("Before 000031", "Class", j1Class("G1", nil)),
+		j1Body("Before 000031", "One parent", j1Parent("07000003003")),
 	} {
 		if r := a14Do(t, srv, "POST", "/api/admin/broadcasts", admin, body); r.status != 200 {
-			t.Errorf("send on 000028: %d %s", r.status, r.body)
+			t.Errorf("send on 000030: %d %s", r.status, r.body)
 		}
 	}
 	if r := a14Do(t, srv, "GET", "/api/admin/broadcasts", admin, nil); r.status != 200 || strings.Count(string(r.body), `"id"`) != 2 {
-		t.Errorf("log on 000028: %d %s", r.status, r.body)
+		t.Errorf("log on 000030: %d %s", r.status, r.body)
 	}
 }
 
@@ -1238,8 +1236,8 @@ func TestJ1BroadcastsMigration(t *testing.T) {
 			if _, _, phone := oldState(db); phone {
 				t.Errorf("phone normalisation ran before 29")
 			}
-			if out, err := run("up"); err != nil {
-				t.Fatalf("up: %v\n%s", err, out)
+			if out, err := run("goto", "29"); err != nil {
+				t.Fatalf("goto 29: %v\n%s", err, out)
 			}
 			if v, _ := run("version"); v != "29" {
 				t.Errorf("version %q, want 29", v)

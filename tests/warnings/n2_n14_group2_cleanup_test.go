@@ -268,9 +268,8 @@ func TestGroup2Cleanup(t *testing.T) {
 			}
 		}
 		var studentTokens int
-		db.QueryRow(`SELECT COUNT(*) FROM students WHERE fcm_token IS NOT NULL`).Scan(&studentTokens)
-		if studentTokens != 0 {
-			t.Errorf("students.fcm_token written: %d rows", studentTokens)
+		if err := db.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'students' AND column_name = 'fcm_token'`).Scan(&studentTokens); err != nil || studentTokens != 0 {
+			t.Errorf("students.fcm_token columns: %d (%v), want 0", studentTokens, err)
 		}
 		logs := capture.snapshot()[before:]
 		var clearedShared, badLogged, liveLogged bool

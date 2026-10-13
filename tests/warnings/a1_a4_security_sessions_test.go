@@ -477,6 +477,8 @@ func a14Migration(t *testing.T, name string) string {
 }
 
 func a14MigrationTest(t *testing.T, db *sql.DB) {
+	m1Restore29(t, db)
+	defer m1Apply(t, db, m1Up30, m1Up31)
 	up := a14Migration(t, "000029_normalize_phone_numbers.up.sql")
 	down := a14Migration(t, "000029_normalize_phone_numbers.down.sql")
 	ctx := context.Background()
@@ -938,6 +940,7 @@ func TestA1TrustedProxyDefault(t *testing.T) {
 // fixes it.
 func TestA14BeforePhoneNormalisation(t *testing.T) {
 	db, dsn := setupThrowawayDB(t, "a14v22")
+	m1Restore29(t, db)
 	if _, err := db.Exec(a14Migration(t, "000029_normalize_phone_numbers.down.sql")); err != nil {
 		t.Fatal(err)
 	}

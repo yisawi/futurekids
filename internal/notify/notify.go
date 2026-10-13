@@ -14,15 +14,14 @@ import (
 	"firebase.google.com/go/v4/messaging"
 )
 
-// SaveNotificationHistory stores a notification for the parent with parentID. It also stores
-// the parent's phone number, which code from before notifications were keyed by parent reads.
-func SaveNotificationHistory(db *sql.DB, parentID int, phone, title, body string) {
+// SaveNotificationHistory stores a notification for the parent with parentID.
+func SaveNotificationHistory(db *sql.DB, parentID int, title, body string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	_, err := db.ExecContext(ctx,
-		"INSERT INTO notifications (parent_id, parent_phone, title, body) VALUES ($1, $2, $3, $4)",
-		parentID, phone, title, body)
+		"INSERT INTO notifications (parent_id, title, body) VALUES ($1, $2, $3)",
+		parentID, title, body)
 	if err != nil {
 		slog.Error("Failed to save notification history", "parent_id", parentID, "error", err)
 	}

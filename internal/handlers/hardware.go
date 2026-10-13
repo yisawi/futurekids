@@ -554,7 +554,7 @@ func (app *AppEnv) sendPunchNotification(studentID int, checkTime time.Time, stu
 
 	if parentID.Valid {
 		app.Background.Go("notification history", func() {
-			notify.SaveNotificationHistory(app.DB, int(parentID.Int64), parentPhone.String, title, body)
+			notify.SaveNotificationHistory(app.DB, int(parentID.Int64), title, body)
 		})
 	}
 	notify.SendToDevices(app.Background, app.FCMClient, app.DB, deviceTokens, title, body)

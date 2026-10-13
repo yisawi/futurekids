@@ -35,7 +35,7 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client, bg *backgroun
 
 	// استعلام يستثني الحاضرين والمجازين معاً
 	query := `
-		SELECT s.id, s.full_name, p.id, p.phone_number, ` + fmt.Sprintf(notify.ParentDeviceTokensSQL, "s.parent_id") + `
+		SELECT s.id, s.full_name, p.id, ` + fmt.Sprintf(notify.ParentDeviceTokensSQL, "s.parent_id") + `
 		FROM students s
 		LEFT JOIN parents p ON s.parent_id = p.id
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
@@ -53,10 +53,9 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client, bg *backgroun
 		var id int
 		var fullName string
 		var parentID sql.NullInt64
-		var parentPhone sql.NullString
 		var deviceTokens sql.NullString
 
-		if err := rows.Scan(&id, &fullName, &parentID, &parentPhone, &deviceTokens); err != nil {
+		if err := rows.Scan(&id, &fullName, &parentID, &deviceTokens); err != nil {
 			slog.Error("ProcessDailyAbsences: scan failed", "date", today, "error", err)
 			continue
 		}
@@ -65,7 +64,7 @@ func ProcessDailyAbsences(db *sql.DB, fcmClient *messaging.Client, bg *backgroun
 		title := "إشعار غياب"
 		body := fmt.Sprintf("الطالب %s غائب اليوم", fullName)
 		if parentID.Valid {
-			notify.SaveNotificationHistory(db, int(parentID.Int64), parentPhone.String, title, body)
+			notify.SaveNotificationHistory(db, int(parentID.Int64), title, body)
 		}
 		notify.SendToDevices(bg, fcmClient, db, notify.DeviceTokens(deviceTokens), title, body)
 

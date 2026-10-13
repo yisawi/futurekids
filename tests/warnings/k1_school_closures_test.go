@@ -1291,13 +1291,11 @@ func TestK1FakeToday(t *testing.T) {
 	})
 }
 
-// TestK1BeforePhoneNormalisation runs the new code on a database at 000028 without 000029, the
+// TestK1AtLegacyDropWindow runs the new code on a database at 000030 without 000031, the
 // state Staging is in between the steps of the README deploy notes.
-func TestK1BeforePhoneNormalisation(t *testing.T) {
-	db, dsn := setupThrowawayDB(t, "k1v27")
-	if _, err := db.Exec(a14Migration(t, "000029_normalize_phone_numbers.down.sql")); err != nil {
-		t.Fatal(err)
-	}
+func TestK1AtLegacyDropWindow(t *testing.T) {
+	db, dsn := setupThrowawayDB(t, "k1v30")
+	m1Apply(t, db, m1Down31)
 	j1Seed(t, db)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(a14AdminPassword), bcrypt.DefaultCost)
 	k1Exec(t, db, fmt.Sprintf(`UPDATE admins SET password_hash = '%s' WHERE username = 'admin'`, hash))
@@ -1305,15 +1303,15 @@ func TestK1BeforePhoneNormalisation(t *testing.T) {
 	admin := a14Bearer(a14AdminToken(t, srv))
 	r := a14Do(t, srv, "POST", "/api/admin/holidays", admin, k1Closure("kind", "holiday", "start_date", "2026-10-11", "end_date", "2026-10-15", "title", "عطلة"))
 	if res := k1Decode(t, r); r.status != 200 || res.Data.RecipientCount != 6 {
-		t.Errorf("create on 000028: %d %s", r.status, r.body)
+		t.Errorf("create on 000030: %d %s", r.status, r.body)
 	}
 	for _, path := range []string{"/api/admin/holidays", "/api/admin/attendance?date=2026-10-11", "/api/admin/dashboard"} {
 		if r := a14Do(t, srv, "GET", path, admin, nil); r.status != 200 {
-			t.Errorf("%s on 000028: %d %s", path, r.status, r.body)
+			t.Errorf("%s on 000030: %d %s", path, r.status, r.body)
 		}
 	}
 	if r := a14Do(t, srv, "GET", "/api/mobile/holidays?month=2026-10", j1ParentToken(t, 3001, "+9647000003001"), nil); r.status != 200 || strings.Count(string(r.body), `"date"`) != 5 {
-		t.Errorf("parent holidays on 000028: %d %s", r.status, r.body)
+		t.Errorf("parent holidays on 000030: %d %s", r.status, r.body)
 	}
 }
 
@@ -1424,8 +1422,8 @@ func TestK1ClosuresMigration(t *testing.T) {
 			if closures, phone := state(db); !closures || phone {
 				t.Errorf("at 27: school_closures %v, phone columns %v", closures, phone)
 			}
-			if out, err := run("up"); err != nil {
-				t.Fatalf("up: %v\n%s", err, out)
+			if out, err := run("goto", "29"); err != nil {
+				t.Fatalf("goto 29: %v\n%s", err, out)
 			}
 			if v, _ := run("version"); v != "29" {
 				t.Errorf("version %q, want 29", v)

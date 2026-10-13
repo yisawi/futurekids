@@ -66,7 +66,95 @@ migrate -path db/migrations -database "$DATABASE_URL" up         # 000029, after
    - The check script's `would change` count is the number of parents affected; when it is 0, nothing is affected.
 8. **000029 normalises stored phone numbers,** including `notifications.parent_phone`, which keeps history matching for any code that still reads it (a rolled-back deploy, or 000023's trigger). It aborts without changing anything if a parent's number is not an Iraqi mobile number, or if two parents hold the same number in different formats; the error lists the parent ids. Because the whole file runs as one transaction, the schema stays at version 28, but golang-migrate records version 29 as dirty. Fix the listed parents, run `migrate force 28`, then `migrate up` again.
 9. **Rolling back 000028** deletes the whole activity log. **Rolling back 000027** deletes every registered closure (the notifications already sent for them stay); with the code before closures, reports count every weekday as a school day again. **Rolling back 000026** only restores the first names (no data is lost). **Rolling back 000025** deletes the broadcasts sent log; the notifications parents received stay but lose their link to it. **Rolling back 000024** deletes every uploaded banner picture. Those banners stay but are deactivated, so the old code never shows parents a banner without a picture. Back up first (see `db/migrations/README.md`).
-10. **A later migration, after this deploy,** drops `students.fcm_token`, `notifications.parent_phone` and the 000023 trigger, which the new code does not use.
+10. **000030 and 000031** drop `students.fcm_token`, `notifications.parent_phone` and the 000023 trigger, which the new code does not use (see the next section).
+
+### Deploying migrations 000030 and 000031
+
+000030 only makes `notifications.parent_phone` nullable. 000031 drops `notifications.parent_phone` (with `idx_notifications_phone` and 000023's trigger `notifications_fill_parent_id` and its function), `notifications.parent_phone_original` (from 000029) and `students.fcm_token`. No API field changes: login's `fcm_token` still registers a device token.
+
+**Production** is built from an empty database through all 31 migrations in one go, so this split only matters for Staging.
+
+**Order on Staging** (Staging is at 29):
+
+1. **Back up:** `pg_dump "$DATABASE_URL" > backup.sql`. After step 5 it is the only copy of the dropped values.
+2. **Migrate to 30** while the old code runs (it still writes the phone, which is allowed), and note the newest notification id as `N`:
+   ```bash
+   migrate -path db/migrations -database "$DATABASE_URL" version    # expect 29
+   migrate -path db/migrations -database "$DATABASE_URL" goto 30
+   psql "$DATABASE_URL" -X -c "SELECT MAX(id) AS n FROM notifications;"
+   ```
+3. **Deploy the new code** right after. It needs 30: on 29, punch and absence notifications are missing from the history (one ERROR each) and broadcasts and closures with parents answer 500.
+4. **Check** (with `BASE_URL=https://futurekids-staging.up.railway.app`):
+   - **Preflight, read-only, before the punch:**
+     ```sql
+     -- the device exists and is enabled: one row, active = t
+     SELECT serial_number, COALESCE(is_active, true) AS active FROM devices WHERE serial_number = 'SEED-FAKE-0001';
+     -- 1004 is an active student with a parent: is_active = t, parent_id set, phone_number +9647000002001
+     SELECT s.id, s.is_active, s.parent_id, p.phone_number FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.rfid_tag = '1004';
+     -- today is a school day: dow 0-4 (Sunday to Thursday) and closures = 0
+     SELECT EXTRACT(DOW FROM d) AS dow, (SELECT COUNT(*) FROM school_closures WHERE start_date <= d AND (end_date IS NULL OR end_date >= d)) AS closures
+     FROM (SELECT (now() AT TIME ZONE 'Asia/Baghdad')::date AS d) t;
+     -- 1004's punches today; none may fall in the window you punch in
+     -- (check-in 06:30:00-09:30:59, check-out 11:30:00-13:30:59, Baghdad time)
+     SELECT a.check_time FROM attendance_logs a JOIN students s ON s.id = a.student_id
+     WHERE s.rfid_tag = '1004' AND a.check_time::date = (now() AT TIME ZONE 'Asia/Baghdad')::date ORDER BY a.check_time;
+     ```
+     If any check fails, don't send the punch:
+     - **The device is missing or disabled:** use another active device listed by `SELECT serial_number FROM devices WHERE COALESCE(is_active, true);`, never the real one.
+     - **1004 is inactive, has no parent, or another number:** pick another seeded student (`rfid_tag` 1005 to 1050) that passes, and use its parent's number in the broadcast and login checks.
+     - **1004 already punched in the window:** pick another student, or wait for the other window.
+     - **Today is not a school day:** skip the punch check (on such a day a punch is stored but never notified) and do it on the next school day; the broadcast and login checks still run.
+   - **(a) Punch:** inside the check-in or check-out window. This writes a real `attendance_logs` row for 1004 on Staging.
+     ```bash
+     curl -s -X POST "$BASE_URL/iclock/cdata?SN=SEED-FAKE-0001&table=ATTLOG" --data-binary $'1004\t'"$(TZ=Asia/Baghdad date '+%F %T')"$'\t1\t1\n'   # OK
+     ```
+     ```sql
+     SELECT n.id, n.parent_id, n.title FROM notifications n JOIN students s ON s.parent_id = n.parent_id WHERE s.rfid_tag = '1004' AND n.id > N;  -- one row
+     SELECT COUNT(*) FROM notifications WHERE id > N AND parent_id IS NULL;  -- 0
+     ```
+   - **(b) Broadcast** to the fake parent:
+     ```bash
+     ADMIN=$(curl -s -X POST "$BASE_URL/api/admin/login" -H 'Content-Type: application/json' -d "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" | jq -r .data.token)
+     curl -s -X POST "$BASE_URL/api/admin/broadcasts" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+       -d '{"title":"M1 check","body":"فحص الترحيل","audience":{"type":"parent","parent_phone":"+9647000002001"}}'   # data.recipient_count 1, data.id
+     ```
+     ```sql
+     SELECT b.recipient_count, COUNT(n.id), COUNT(n.parent_id) FROM broadcasts b JOIN notifications n ON n.broadcast_id = b.id WHERE b.id = <data.id> GROUP BY b.id;  -- 1, 1, 1
+     ```
+   - **(c) Login with `fcm_token`**, then remove the test token:
+     ```bash
+     PARENT=$(curl -s -X POST "$BASE_URL/api/mobile/login" -H 'Content-Type: application/json' \
+       -d '{"phone":"07000002001","pin":"Sd7!Kx4p#Wm9qT2h","fcm_token":"m1-staging-check-token-0000000001"}' | jq -r .data.token)
+     curl -s "$BASE_URL/api/mobile/notifications" -H "Authorization: Bearer $PARENT"   # lists "M1 check"
+     ```
+     ```sql
+     SELECT parent_id FROM device_tokens WHERE token = 'm1-staging-check-token-0000000001';  -- the parent of +9647000002001
+     ```
+     ```bash
+     curl -s -X DELETE "$BASE_URL/api/mobile/device-token" -H "Authorization: Bearer $PARENT" -H 'Content-Type: application/json' -d '{"token":"m1-staging-check-token-0000000001"}'
+     ```
+5. **Only after step 4 passes, migrate to 31.** The first query counts notifications that match no parent: they are kept, but lose their last identifying field. The second counts the token values about to be dropped.
+   ```sql
+   SELECT COUNT(*) FROM notifications WHERE parent_id IS NULL;
+   SELECT COUNT(*) FROM students WHERE fcm_token IS NOT NULL;
+   ```
+   ```bash
+   migrate -path db/migrations -database "$DATABASE_URL" up         # 000031
+   migrate -path db/migrations -database "$DATABASE_URL" version    # expect 31
+   ```
+   ```sql
+   SELECT table_name, column_name FROM information_schema.columns
+   WHERE (table_name, column_name) IN (('notifications', 'parent_phone'), ('notifications', 'parent_phone_original'), ('students', 'fcm_token'));  -- no rows
+   SELECT tgname FROM pg_trigger WHERE tgname = 'notifications_fill_parent_id';  -- no rows
+   ```
+6. **Repeat step 4** with a new `N`, the title `M1 check 2` (an identical broadcast within a minute is refused) and the punch in the other window or on another student.
+
+**Rolling back:**
+- **Step 2:** `migrate goto 29` (with the old code running). Nothing is lost.
+- **Step 3:** redeploy the previous code; it runs on 30 and reads notifications by `parent_id`.
+- **Step 5:** `migrate goto 30`. The columns, index and trigger come back empty; the new code is unaffected.
+- **Never run `goto 29` while the new code runs** (its notification inserts would fail): redeploy the old code first.
+- **Not recoverable without the backup** once 000031 has run: every notification phone number and original phone number, and every `students.fcm_token`. A later rollback of 000030 fills each notification's phone with its parent's current number (an empty string when it has no parent), and 000029's rollback then restores no notification phone formats.
 
 ### Seeding Staging with fake data
 

@@ -48,6 +48,8 @@ var w14Rollbacks = map[string]w14Rollback{
 	"000027": {true, []string{"school_closures"}, `school_closures|schoolDaySQL|DayOn\(`},
 	"000028": {true, []string{"admin_activity_log"}, `admin_activity_log`},
 	"000029": {true, []string{"parents.phone_number_original", "notifications.parent_phone_original"}, `phone\.Normalize\(`},
+	"000030": {true, []string{"notifications.parent_phone"}, `INTO notifications \(parent_id, title`},
+	"000031": {false, nil, `parent_phone_original|notifications_fill_parent_id|idx_notifications_phone|INTO notifications \([^)]*parent_phone|\bn\.parent_phone\b|\bs\.fcm_token\b|SET fcm_token|students \([^)]*fcm_token|fcm_token (?:IS|=)`},
 }
 
 var (

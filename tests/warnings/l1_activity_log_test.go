@@ -953,6 +953,7 @@ func TestL1EveryAdminRouteIsLogged(t *testing.T) {
 // state Staging is in between the steps of the README deploy notes.
 func TestL1BeforePhoneNormalisation(t *testing.T) {
 	db, dsn := setupThrowawayDB(t, "l1v28")
+	m1Restore29(t, db)
 	if _, err := db.Exec(a14Migration(t, "000029_normalize_phone_numbers.down.sql")); err != nil {
 		t.Fatal(err)
 	}
@@ -1057,8 +1058,8 @@ func TestL1ActivityLogMigration(t *testing.T) {
 			if log, phone := state(db); !log || phone {
 				t.Errorf("at 28: log %v, phone columns %v", log, phone)
 			}
-			if out, err := run("up"); err != nil {
-				t.Fatalf("up: %v\n%s", err, out)
+			if out, err := run("goto", "29"); err != nil {
+				t.Fatalf("goto 29: %v\n%s", err, out)
 			}
 			if v, _ := run("version"); v != "29" {
 				t.Errorf("version %q, want 29", v)

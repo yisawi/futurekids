@@ -9,6 +9,8 @@
 --     so creating a student for such a parent creates a second parent instead.
 --   internal/handlers/broadcasts.go — normalises the audience parent_phone.
 -- Data loss: none; numbers stored or changed after the up-migration keep their canonical form.
+--   After a rollback of 000031, notifications.parent_phone_original is empty, so notification
+--   numbers keep their canonical form (the original formats were dropped by 000031).
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first
 -- reverting or updating those files to match the pre-migration schema.

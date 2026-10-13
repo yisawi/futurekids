@@ -711,6 +711,7 @@ func TestF1Banners(t *testing.T) {
 // the state Staging is in between the steps of the README deploy notes.
 func TestF1BeforePhoneNormalisation(t *testing.T) {
 	db, dsn := setupThrowawayDB(t, "f1v24")
+	m1Restore29(t, db)
 	if _, err := db.Exec(a14Migration(t, "000029_normalize_phone_numbers.down.sql")); err != nil {
 		t.Fatal(err)
 	}
@@ -819,8 +820,8 @@ func TestF1BannerImagesMigration(t *testing.T) {
 			if out, err := run("goto", "24"); err != nil {
 				t.Fatalf("goto 24: %v\n%s", err, out)
 			}
-			if out, err := run("up"); err != nil {
-				t.Fatalf("up: %v\n%s", err, out)
+			if out, err := run("goto", "29"); err != nil {
+				t.Fatalf("goto 29: %v\n%s", err, out)
 			}
 			if v, _ := run("version"); v != "29" {
 				t.Errorf("version %q, want 29", v)

@@ -300,10 +300,9 @@ func TestB1DeviceTokenEndpoints(t *testing.T) {
 			t.Errorf("login with an invalid fcm_token: %d, want 200 (the token is ignored)", code)
 		}
 		expect(t, "parent 2 tokens after an invalid fcm_token", tokensOf(p2.id), a, viaLogin)
-		var copied int
-		db.QueryRow(`SELECT COUNT(*) FROM students WHERE fcm_token IS NOT NULL`).Scan(&copied)
-		if copied != 0 {
-			t.Errorf("%d students got fcm_token written; new code must not write the column", copied)
+		var column int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'students' AND column_name = 'fcm_token'`).Scan(&column); err != nil || column != 0 {
+			t.Errorf("students.fcm_token columns: %d (%v); want 0, new code must not write the column", column, err)
 		}
 	})
 
@@ -460,6 +459,7 @@ func TestB1PushFanOut(t *testing.T) {
 // parent; re-running it adds nothing; down and up again work, also through golang-migrate.
 func TestB1DeviceTokensMigration(t *testing.T) {
 	db, _ := setupThrowawayDB(t, "b1mig")
+	m1Restore29(t, db)
 	up := a14Migration(t, "000022_create_device_tokens.up.sql")
 	down := a14Migration(t, "000022_create_device_tokens.down.sql")
 	sqlExec := func(q string) {

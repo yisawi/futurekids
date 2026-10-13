@@ -96,9 +96,9 @@ func TestB2NotificationHistory(t *testing.T) {
 	markAll := func(token string) a14Response {
 		return a14Do(t, srv, "PUT", "/api/mobile/notifications/read-all", a14Bearer(token), nil)
 	}
-	insert := func(parentID int, phone string, n int, tag string) {
+	insert := func(parentID int, n int, tag string) {
 		t.Helper()
-		if _, err := db.Exec(`INSERT INTO notifications (parent_id, parent_phone, title, body) SELECT $1, $2, 'B2 title', $3 || ' ' || g FROM generate_series(1, $4) g`, parentID, phone, tag, n); err != nil {
+		if _, err := db.Exec(`INSERT INTO notifications (parent_id, title, body) SELECT $1, 'B2 title', $2 || ' ' || g FROM generate_series(1, $3) g`, parentID, tag, n); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -117,8 +117,8 @@ func TestB2NotificationHistory(t *testing.T) {
 	p1, _ := newParent("B2 Parent One", "+9647000000921", "Kq7#vR2m!Tx9pW4z", "B2-1")
 	p2, s2 := newParent("B2 Parent Two", "+9647000000922", "Ze4&uM9k?Ga2fC7x", "B2-2")
 	t1, t2 := login("+9647000000921", "Kq7#vR2m!Tx9pW4z"), login("+9647000000922", "Ze4&uM9k?Ga2fC7x")
-	insert(p1, "+9647000000921", 3, "one")
-	insert(p2, "+9647000000922", 150, "two")
+	insert(p1, 3, "one")
+	insert(p2, 150, "two")
 
 	t.Run("history survives a change of the parent's phone number", func(t *testing.T) {
 		if _, err := db.Exec(`UPDATE parents SET phone_number = '+9647000000929' WHERE id = $1`, p1); err != nil {
@@ -291,7 +291,7 @@ func TestB2NotificationHistory(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO parents (id, full_name, phone_number, pin_code) SELECT g, 'Bulk', '+96470' || lpad(g::text, 8, '0'), 'x' FROM generate_series(20000001, 20000200) g`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO notifications (parent_id, parent_phone, title, body, is_read) SELECT 20000001 + g % 200, 'x', 't', 'b', g % 3 = 0 FROM generate_series(1, 20000) g`); err != nil {
+		if _, err := db.Exec(`INSERT INTO notifications (parent_id, title, body, is_read) SELECT 20000001 + g % 200, 't', 'b', g % 3 = 0 FROM generate_series(1, 20000) g`); err != nil {
 			t.Fatal(err)
 		}
 		db.Exec(`ANALYZE notifications`)
@@ -320,12 +320,12 @@ func TestB2NotificationHistory(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (9299, 'B2 Gone', '+9647000000999', 'x')`); err != nil {
 			t.Fatal(err)
 		}
-		insert(9299, "+9647000000999", 4, "gone")
+		insert(9299, 4, "gone")
 		if _, err := db.Exec(`DELETE FROM parents WHERE id = 9299`); err != nil {
 			t.Fatal(err)
 		}
 		var left int
-		db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE parent_id = 9299 OR parent_phone = '+9647000000999'`).Scan(&left)
+		db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE parent_id = 9299 OR body LIKE 'gone %'`).Scan(&left)
 		if left != 0 {
 			t.Errorf("%d notifications left after deleting their parent", left)
 		}
@@ -333,7 +333,7 @@ func TestB2NotificationHistory(t *testing.T) {
 }
 
 // TestB2InsertsWriteParentID verifies that the code itself stores parent_id on every
-// notification, with the rollout trigger disabled: punch and absence notifications both do,
+// notification, with the rollout trigger dropped (000031): punch and absence notifications both do,
 // the C3/W5 rules still decide which punches notify, and the B1 fan-out is unchanged.
 func TestB2InsertsWriteParentID(t *testing.T) {
 	capture := &w10Capture{}
@@ -342,8 +342,10 @@ func TestB2InsertsWriteParentID(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	db, _ := setupThrowawayDB(t, "b2insert")
-	if _, err := db.Exec(`ALTER TABLE notifications DISABLE TRIGGER notifications_fill_parent_id`); err != nil {
-		t.Fatalf("the rollout trigger is missing: %v", err)
+	var trigger, function bool
+	db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'notifications_fill_parent_id'), to_regprocedure('notifications_fill_parent_id()') IS NOT NULL`).Scan(&trigger, &function)
+	if trigger || function {
+		t.Fatalf("the rollout trigger (%v) or its function (%v) still exists", trigger, function)
 	}
 	fcm := newB1FakeFCM(t)
 	bg := &background.Group{}
@@ -373,11 +375,11 @@ func TestB2InsertsWriteParentID(t *testing.T) {
 		settle()
 	}
 	rows := func(parentPhone string) (withParent, without int) {
-		db.QueryRow(`SELECT COUNT(*) FILTER (WHERE parent_id IS NOT NULL), COUNT(*) FILTER (WHERE parent_id IS NULL) FROM notifications WHERE parent_phone = $1`, parentPhone).Scan(&withParent, &without)
+		db.QueryRow(`SELECT COUNT(*) FILTER (WHERE n.parent_id = p.id), (SELECT COUNT(*) FROM notifications WHERE parent_id IS NULL) FROM notifications n JOIN parents p ON p.phone_number = $1`, parentPhone).Scan(&withParent, &without)
 		return
 	}
 
-	t.Run("punch notifications store parent_id and phone; C3 rules and fan-out unchanged", func(t *testing.T) {
+	t.Run("punch notifications store parent_id; C3 rules and fan-out unchanged", func(t *testing.T) {
 		punch("07:15:00")
 		punch("07:20:00")
 		punch("10:00:00")
@@ -394,7 +396,7 @@ func TestB2InsertsWriteParentID(t *testing.T) {
 		}
 	})
 
-	t.Run("absence notifications store parent_id and phone", func(t *testing.T) {
+	t.Run("absence notifications store parent_id", func(t *testing.T) {
 		cron.ProcessDailyAbsences(db, app.FCMClient, bg)
 		settle()
 		if with, without := rows("+9647000000932"); with != 1 || without != 0 {
@@ -429,6 +431,7 @@ func TestB2NotificationsMigration(t *testing.T) {
 		}
 		return string(out)
 	}
+	m1Restore29(t, db)
 	sqlExec(down)
 	sqlExec(`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (941, 'One', '+9647000000941', 'x'), (942, 'Two', '+9647000000942', 'x')`)
 	sqlExec(`INSERT INTO notifications (parent_phone, title, body) VALUES
@@ -543,8 +546,8 @@ func TestB2NotificationsMigration(t *testing.T) {
 			if linked != 1 || orphan != 1 {
 				t.Errorf("after 000023: %d linked, %d unmatched; want 1 and 1", linked, orphan)
 			}
-			if out, err := run("up"); err != nil {
-				t.Fatalf("up (000029): %v\n%s", err, out)
+			if out, err := run("goto", "29"); err != nil {
+				t.Fatalf("goto 29 (000029): %v\n%s", err, out)
 			}
 			if v, _ := run("version"); v != "29" {
 				t.Errorf("version %q, want 29", v)

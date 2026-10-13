@@ -29,7 +29,7 @@ func TestW1NullableColumnsHandling(t *testing.T) {
 		`INSERT INTO students (id, full_name, rfid_tag, parent_id) VALUES (2, 'W1 Orphan', 'W1-RFID-2', NULL)`,
 		`INSERT INTO weekly_schedules (grade, section, day_of_week, period_number, subject_name, teacher_name) VALUES ('G1', 'A', 'Sunday', 1, 'Math', NULL)`,
 		`INSERT INTO devices (serial_number, location_name, is_active) VALUES ('` + w1DeviceSN + `', NULL, NULL)`,
-		`INSERT INTO notifications (parent_phone, title, body, is_read, created_at) VALUES ('` + w1ParentPhone + `', 'W1 title', 'W1 body', NULL, NULL)`,
+		`INSERT INTO notifications (parent_id, title, body, is_read, created_at) VALUES (1, 'W1 title', 'W1 body', NULL, NULL)`,
 	}
 	for _, q := range seed {
 		if _, err := db.Exec(q); err != nil {

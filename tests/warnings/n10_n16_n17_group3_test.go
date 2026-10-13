@@ -147,12 +147,14 @@ func g3Apply(t *testing.T, db *sql.DB, file string) error {
 	return err
 }
 
-// TestGroup3N17IdempotentMigrations verifies notice N17: 000003 can be re-run on a migrated
-// database, 000009's down-migration tolerates the students.parent_name drift, the resulting
-// schema is unchanged, and golang-migrate treats a second "up" as a no-op.
+// TestGroup3N17IdempotentMigrations verifies notice N17: 000003 can be re-run on a database
+// migrated to 000030 (000031 drops the column its index is on), 000009's down-migration
+// tolerates the students.parent_name drift, the resulting schema is unchanged, and
+// golang-migrate treats a second "up" as a no-op.
 func TestGroup3N17IdempotentMigrations(t *testing.T) {
 	t.Run("000003 up re-runs cleanly on a migrated database", func(t *testing.T) {
 		db, _ := setupThrowawayDB(t, "g3n17a")
+		m1Apply(t, db, m1Down31)
 		before := g3Schema(t, db)
 		for i := 0; i < 2; i++ {
 			if err := g3Apply(t, db, "000003_create_notifications_table.up.sql"); err != nil {
@@ -167,6 +169,8 @@ func TestGroup3N17IdempotentMigrations(t *testing.T) {
 	t.Run("schema is identical to the pre-edit 000003", func(t *testing.T) {
 		db, _ := setupThrowawayDB(t, "g3n17b")
 		legacy, _ := setupThrowawayDB(t, "g3n17c")
+		m1Apply(t, db, m1Down31)
+		m1Apply(t, legacy, m1Down31)
 		if _, err := legacy.Exec(`DROP INDEX idx_notifications_phone`); err != nil {
 			t.Fatal(err)
 		}

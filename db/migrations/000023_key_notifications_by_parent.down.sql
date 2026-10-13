@@ -11,7 +11,9 @@
 --     PushBroadcast joins on it.
 -- Data loss: which parent each notification belongs to. Old code matches history by
 --   parent_phone again, so a parent whose phone number changed after the up-migration no
---   longer sees the history from before the change. Read state (is_read) is kept.
+--   longer sees the history from before the change. Read state (is_read) is kept. After a
+--   rollback of 000031, parent_phone holds only what 000030's down-migration filled in: the
+--   parent's number at that time, or an empty string for rows without a parent.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first
 -- reverting or updating those files to match the pre-migration schema.

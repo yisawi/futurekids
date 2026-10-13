@@ -102,8 +102,8 @@ func CreateBroadcast(ctx context.Context, tx *sql.Tx, title, body string, a Audi
 		return 0, 0, err
 	}
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO notifications (parent_id, parent_phone, title, body, broadcast_id)
-		SELECT p.id, p.phone_number, $5, $6, $7 `+recipientsSQL+`
+		INSERT INTO notifications (parent_id, title, body, broadcast_id)
+		SELECT p.id, $5, $6, $7 `+recipientsSQL+`
 		ORDER BY p.id`, append(a.args(), title, body, id)...)
 	if err != nil {
 		return 0, 0, err

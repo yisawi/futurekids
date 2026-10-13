@@ -5,6 +5,7 @@
 --   invalid parent ids            — numbers 000029 cannot convert; it would abort on them.
 --   collision groups (parent ids) — parents whose numbers are one number; 000029 would abort.
 --   would change / already canonical — rows 000029 rewrites or leaves alone.
+--   notification shape            — stored notification numbers; none after 000031 drops them.
 -- Usage: psql "$DATABASE_URL" -X -f db/scripts/check_phone_formats.sql
 
 BEGIN READ ONLY;
@@ -38,7 +39,7 @@ UNION ALL
 SELECT 'collision groups (parent ids)', '', COALESCE(string_agg(ids, ' '), 'none')
 FROM (SELECT '[' || string_agg(id::text, ', ' ORDER BY id) || ']' AS ids FROM c WHERE canonical IS NOT NULL GROUP BY canonical HAVING COUNT(*) > 1) g
 UNION ALL
-SELECT 'notification shape', regexp_replace(parent_phone, '[0-9٠-٩۰-۹]', '9', 'g'), COUNT(*)::text FROM notifications GROUP BY 2
+SELECT 'notification shape', regexp_replace(to_jsonb(n) ->> 'parent_phone', '[0-9٠-٩۰-۹]', '9', 'g'), COUNT(*)::text FROM notifications n WHERE to_jsonb(n) ? 'parent_phone' GROUP BY 2
 ORDER BY 1, 2;
 
 ROLLBACK;

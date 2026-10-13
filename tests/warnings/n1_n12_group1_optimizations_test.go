@@ -181,7 +181,7 @@ func TestGroup1Optimizations(t *testing.T) {
 		var bodies []string
 		for time.Since(stableSince) < 300*time.Millisecond && time.Now().Before(deadline) {
 			bodies = nil
-			rows, err := db.Query(`SELECT body FROM notifications WHERE parent_phone = ANY($1) ORDER BY body`, phones)
+			rows, err := db.Query(`SELECT n.body FROM notifications n JOIN parents p ON p.id = n.parent_id WHERE p.phone_number = ANY($1) ORDER BY n.body`, phones)
 			if err != nil {
 				t.Fatalf("list notifications: %v", err)
 			}
@@ -307,8 +307,8 @@ func TestGroup1Optimizations(t *testing.T) {
 	t.Run("N12/notifications are paginated 100 at a time with no gaps", func(t *testing.T) {
 		for _, q := range []string{
 			`INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (1201, 'Busy', '+9647000001201', 'h'), (1202, 'Other', '+9647000001202', 'h'), (1203, 'Quiet', '+9647000001203', 'h')`,
-			`INSERT INTO notifications (parent_phone, title, body, created_at) SELECT '+9647000001201', 't', 'busy ' || i, TIMESTAMP '2026-01-01' + i * INTERVAL '1 minute' FROM generate_series(1, 150) AS i`,
-			`INSERT INTO notifications (parent_phone, title, body) SELECT '+9647000001202', 't', 'other ' || i FROM generate_series(1, 5) AS i`,
+			`INSERT INTO notifications (parent_id, title, body, created_at) SELECT 1201, 't', 'busy ' || i, TIMESTAMP '2026-01-01' + i * INTERVAL '1 minute' FROM generate_series(1, 150) AS i`,
+			`INSERT INTO notifications (parent_id, title, body) SELECT 1202, 't', 'other ' || i FROM generate_series(1, 5) AS i`,
 		} {
 			if _, err := db.Exec(q); err != nil {
 				t.Fatalf("seed: %v", err)
@@ -363,7 +363,7 @@ func TestGroup1Optimizations(t *testing.T) {
 			}
 			seen[id] = true
 		}
-		if n := countRows(t, db, `SELECT COUNT(*) FROM notifications WHERE parent_phone = '+9647000001201'`); len(seen) != n {
+		if n := countRows(t, db, `SELECT COUNT(*) FROM notifications WHERE parent_id = 1201`); len(seen) != n {
 			t.Errorf("pages returned %d distinct notifications, parent has %d", len(seen), n)
 		}
 		if _, other := get(t, 1202, ""); len(ids(other)) != 5 {

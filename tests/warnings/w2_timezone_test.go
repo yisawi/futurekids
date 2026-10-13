@@ -45,7 +45,7 @@ func TestW2TimezoneConsistency(t *testing.T) {
 			(1, 'W2-DEVICE', '2026-09-24 13:30:00'),
 			(1, 'W2-DEVICE', '2026-09-24 23:59:00'),
 			(1, 'W2-DEVICE', '2026-09-25 00:01:00')`,
-		`INSERT INTO notifications (parent_phone, title, body, created_at) VALUES ('` + w2ParentPhone + `', 'W2 title', 'W2 body', '2026-09-24 01:30:00')`,
+		`INSERT INTO notifications (parent_id, title, body, created_at) VALUES (1, 'W2 title', 'W2 body', '2026-09-24 01:30:00')`,
 	}
 	for _, q := range seed {
 		if _, err := baseDB.Exec(q); err != nil {

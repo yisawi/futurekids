@@ -9,7 +9,8 @@
 --   internal/notify/broadcast.go — PushBroadcast reads and deletes device tokens.
 -- Data loss: every registered device token. students.fcm_token only holds the tokens old code
 --   wrote, so after this rollback no phone registered or refreshed since the up-migration
---   receives pushes until the app registers again.
+--   receives pushes until the app registers again. After a rollback of 000031 the column is
+--   empty, so no phone receives pushes until the app registers again.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first
 -- reverting or updating those files to match the pre-migration schema.

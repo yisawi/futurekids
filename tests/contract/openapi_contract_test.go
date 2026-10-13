@@ -681,8 +681,8 @@ func (r *runner) scenario() {
 		t.Fatalf("parent login returned no token or id: %v", d)
 	}
 	r.expect("login returns the canonical phone", at(d, "data", "parent", "phone"), phone1)
-	if _, err := r.db.Exec(`INSERT INTO notifications (parent_id, parent_phone, title, body)
-		SELECT $1, $2, 'إشعار تجريبي', 'رسالة رقم ' || g FROM generate_series(1, 150) g`, r.parentID, phone1); err != nil {
+	if _, err := r.db.Exec(`INSERT INTO notifications (parent_id, title, body)
+		SELECT $1, 'إشعار تجريبي', 'رسالة رقم ' || g FROM generate_series(1, 150) g`, r.parentID); err != nil {
 		t.Fatalf("notification fixture: %v", err)
 	}
 	for _, format := range []string{phone1, "009647000000101", "٠٧٠٠٠٠٠٠١٠١", "(0700) 000-0101"} {
@@ -882,7 +882,7 @@ func (r *runner) scenario() {
 		}
 	}
 	var older int
-	r.db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE parent_phone = $1 AND id < $2`, phone1, next).Scan(&older)
+	r.db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE parent_id = $1 AND id < $2`, r.parentID, next).Scan(&older)
 	_, d = r.call("GET /api/mobile/notifications", "second page", "?before="+strconv.Itoa(next), parent, nil, 200)
 	r.expect("second page holds the rest", len(list(at(d, "data"))), older)
 	r.expect("second page has_more", at(d, "has_more"), false)
