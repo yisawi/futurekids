@@ -72,15 +72,15 @@ func TestD1AdminAPIFixes(t *testing.T) {
 
 	// ── D1: PIN required for a new parent ───────────────────────────────────────
 	t.Run("D1/new parent without a PIN is 400 and writes nothing", func(t *testing.T) {
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D1 New", "+9647000000961", "", "D1-NEW"))
+		code, body := call(students, "POST", "/api/admin/students", admin, student("D1 New", "+9647000000961", "", "1961"))
 		expect(t, "create", code, body, 400, "parent_pin")
-		if n := count(`SELECT COUNT(*) FROM parents WHERE phone_number = '+9647000000961'`) + count(`SELECT COUNT(*) FROM students WHERE rfid_tag = 'D1-NEW'`); n != 0 {
+		if n := count(`SELECT COUNT(*) FROM parents WHERE phone_number = '+9647000000961'`) + count(`SELECT COUNT(*) FROM students WHERE rfid_tag = '1961'`); n != 0 {
 			t.Errorf("%d rows written for a rejected create", n)
 		}
 	})
 
 	t.Run("D1/a blank PIN counts as missing", func(t *testing.T) {
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Blank", "+9647000000962", "   ", "D1-BLANK"))
+		code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Blank", "+9647000000962", "   ", "1962"))
 		expect(t, "create", code, body, 400, "parent_pin")
 		if n := count(`SELECT COUNT(*) FROM parents WHERE phone_number = '+9647000000962'`); n != 0 {
 			t.Errorf("a parent was created with a blank PIN")
@@ -88,7 +88,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 	})
 
 	t.Run("D1/a valid PIN creates the parent and is the stored PIN", func(t *testing.T) {
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Valid", "+9647000000963", "Pd8?Xt3m%Ka6wN2g", "D1-VALID"))
+		code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Valid", "+9647000000963", "Pd8?Xt3m%Ka6wN2g", "1963"))
 		expect(t, "create", code, body, 200, "")
 		var hash string
 		db.QueryRow(`SELECT pin_code FROM parents WHERE phone_number = '+9647000000963'`).Scan(&hash)
@@ -105,7 +105,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, pin := range []string{"", "   "} {
-			code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Valid", "+9647000000963", pin, fmt.Sprintf("D1-SIB-%d", i)))
+			code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Valid", "+9647000000963", pin, fmt.Sprintf("19700%d", i)))
 			expect(t, fmt.Sprintf("second child with PIN %q", pin), code, body, 200, "")
 		}
 		var hashAfter string
@@ -123,7 +123,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				b, _ := json.Marshal(student("D1 Race", "+9647000000964", "", fmt.Sprintf("D1-RACE-%d", i)))
+				b, _ := json.Marshal(student("D1 Race", "+9647000000964", "", fmt.Sprintf("1980%02d", i)))
 				req := httptest.NewRequest("POST", "/api/admin/students", strings.NewReader(string(b)))
 				req.Header.Set("Authorization", "Bearer "+admin)
 				rec := httptest.NewRecorder()
@@ -144,10 +144,10 @@ func TestD1AdminAPIFixes(t *testing.T) {
 
 	// ── D2: duplicate rfid_tag ──────────────────────────────────────────────────
 	var sibling int
-	db.QueryRow(`SELECT id FROM students WHERE rfid_tag = 'D1-SIB-0'`).Scan(&sibling)
+	db.QueryRow(`SELECT id FROM students WHERE rfid_tag = '197000'`).Scan(&sibling)
 
 	t.Run("D2/duplicate tag on create is 409 and writes nothing", func(t *testing.T) {
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D2 Dup", "+9647000000965", "Yb4!Sq7e-Cv2hF9n", "D1-VALID"))
+		code, body := call(students, "POST", "/api/admin/students", admin, student("D2 Dup", "+9647000000965", "Yb4!Sq7e-Cv2hF9n", "1963"))
 		expect(t, "create", code, body, 409, "rfid_tag")
 		if n := count(`SELECT COUNT(*) FROM parents WHERE phone_number = '+9647000000965'`); n != 0 {
 			t.Errorf("a parent was written by a failed create")
@@ -155,9 +155,9 @@ func TestD1AdminAPIFixes(t *testing.T) {
 	})
 
 	t.Run("D2/duplicate tag on update is 409; the student's own tag is fine", func(t *testing.T) {
-		code, body := call(students, "PUT", "/api/admin/students", admin, map[string]any{"id": sibling, "name": "D1 Valid", "parent_name": "D1 Valid Parent", "parent_phone": "+9647000000963", "rfid_tag": "D1-VALID"})
+		code, body := call(students, "PUT", "/api/admin/students", admin, map[string]any{"id": sibling, "name": "D1 Valid", "parent_name": "D1 Valid Parent", "parent_phone": "+9647000000963", "rfid_tag": "1963"})
 		expect(t, "update to another student's tag", code, body, 409, "rfid_tag")
-		code, body = call(students, "PUT", "/api/admin/students", admin, map[string]any{"id": sibling, "name": "D1 Valid", "parent_name": "D1 Valid Parent", "parent_phone": "+9647000000963", "rfid_tag": "D1-SIB-0"})
+		code, body = call(students, "PUT", "/api/admin/students", admin, map[string]any{"id": sibling, "name": "D1 Valid", "parent_name": "D1 Valid Parent", "parent_phone": "+9647000000963", "rfid_tag": "197000"})
 		expect(t, "update keeping its own tag", code, body, 200, "")
 	})
 
@@ -166,7 +166,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Exec(`ALTER TABLE students DROP CONSTRAINT d1_no_boom`)
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D2 Boom", "+9647000000966", "Yb4!Sq7e-Cv2hF9n", "D2-BOOM"))
+		code, body := call(students, "POST", "/api/admin/students", admin, student("D2 Boom", "+9647000000966", "Yb4!Sq7e-Cv2hF9n", "1966"))
 		expect(t, "check violation", code, body, 500, "")
 		if n := count(`SELECT COUNT(*) FROM parents WHERE phone_number = '+9647000000966'`); n != 0 {
 			t.Errorf("a parent was written by a failed create")
@@ -202,7 +202,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			t.Errorf("device created without is_active is disabled")
 		}
 		rec := httptest.NewRecorder()
-		app.ADMSHandler(rec, httptest.NewRequest("POST", "/iclock/cdata?SN=D4-DEV-1&table=ATTLOG", strings.NewReader("D1-VALID\t2026-03-02 07:15:00\t1\t1\n")))
+		app.ADMSHandler(rec, httptest.NewRequest("POST", "/iclock/cdata?SN=D4-DEV-1&table=ATTLOG", strings.NewReader("1963\t2026-03-02 07:15:00\t1\t1\n")))
 		if rec.Code != 200 || rec.Body.String() != "OK" || count(`SELECT COUNT(*) FROM attendance_logs WHERE device_sn = 'D4-DEV-1'`) != 1 {
 			t.Errorf("ADMS push from the new device: %d %q, %d punches stored; want 200 OK and 1", rec.Code, rec.Body.String(), count(`SELECT COUNT(*) FROM attendance_logs WHERE device_sn = 'D4-DEV-1'`))
 		}
@@ -235,7 +235,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 		n := 0
 		next := func() (string, string) {
 			n++
-			return fmt.Sprintf("+96470000098%02d", n), fmt.Sprintf("D5-%02d", n)
+			return fmt.Sprintf("+96470000098%02d", n), fmt.Sprintf("1990%02d", n)
 		}
 		ar := func(k int) string { return strings.Repeat("س", k) }
 		for _, c := range []struct {
@@ -245,7 +245,6 @@ func TestD1AdminAPIFixes(t *testing.T) {
 		}{
 			{"name", 100, func(b map[string]any, v string) { b["name"] = v }},
 			{"parent_name", 255, func(b map[string]any, v string) { b["parent_name"] = v }},
-			{"rfid_tag", 50, func(b map[string]any, v string) { b["rfid_tag"] = v }},
 			{"grade", 50, func(b map[string]any, v string) { b["grade"] = v }},
 			{"section", 50, func(b map[string]any, v string) { b["section"] = v }},
 		} {
@@ -261,10 +260,24 @@ func TestD1AdminAPIFixes(t *testing.T) {
 				}
 			}
 		}
-		phone, _ := next()
-		code, body := call(students, "POST", "/api/admin/students", admin, student("D5", phone, "Yb4!Sq7e-Cv2hF9n", strings.Repeat("t", 50)+"   "))
-		expect(t, "rfid_tag of 50 with trailing spaces", code, body, 200, "")
-		code, body = call(students, "PUT", "/api/admin/students", admin, map[string]any{"id": sibling, "name": ar(101), "parent_name": "D1 Valid Parent", "parent_phone": "+9647000000963"})
+		for _, c := range []struct {
+			tag, mention string
+			want         int
+		}{
+			{"  12345678901234   ", "", 200},
+			{"123456789012345", handlers.RFIDTagFormatMessage, 400},
+			{strings.Repeat("1", 50), handlers.RFIDTagFormatMessage, 400},
+			{strings.Repeat("1", 51), "rfid_tag must be at most 50 characters", 400},
+			{strings.Repeat("1", 50) + "   ", handlers.RFIDTagFormatMessage, 400},
+		} {
+			phone, _ := next()
+			code, body := call(students, "POST", "/api/admin/students", admin, student("D5", phone, "Yb4!Sq7e-Cv2hF9n", c.tag))
+			expect(t, fmt.Sprintf("rfid_tag %q", c.tag), code, body, c.want, c.mention)
+		}
+		if n := count(`SELECT COUNT(*) FROM students WHERE rfid_tag = '12345678901234'`); n != 1 {
+			t.Errorf("the 14-digit tag with surrounding spaces is stored trimmed %d times, want 1", n)
+		}
+		code, body := call(students, "PUT", "/api/admin/students", admin, map[string]any{"id": sibling, "name": ar(101), "parent_name": "D1 Valid Parent", "parent_phone": "+9647000000963"})
 		expect(t, "update name of 101", code, body, 400, "name must be at most 100 characters")
 		for _, k := range []int{50, 51} {
 			want, mention := 200, ""
@@ -306,7 +319,7 @@ func TestD1AdminAPIFixes(t *testing.T) {
 			{"Yb4!Sq7e-Cv2hF9n", 200},
 		} {
 			phone := fmt.Sprintf("+96470000009%02d", 70+i)
-			code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Format", phone, c.pin, fmt.Sprintf("D1-FMT-%d", i)))
+			code, body := call(students, "POST", "/api/admin/students", admin, student("D1 Format", phone, c.pin, fmt.Sprintf("1995%d", i)))
 			mention := ""
 			if c.want == 400 {
 				mention = handlers.PINFormatMessage

@@ -330,9 +330,26 @@ children goes to all of them, including children the school adds later.
     set a new one, which also signs the parent out of every phone.
   - **Existing parents:** leave `parent_pin` out to keep the current credential, even an older 6-
     digit one. Sending one replaces it and signs that parent out of every phone.
-- **409 on a student create or update:** another student already uses that `rfid_tag` (the device
-  User ID). Nothing was saved. Show "this device ID is already used by another student" and let
-  the admin choose another.
+- **Device user ID (`rfid_tag`)** in the student form. Label it "رقم المستخدم في جهاز البصمة"
+  and explain that it must be **exactly the user ID the student is enrolled under on the ZKTeco
+  device**: the device sends that number with every punch, and a punch whose number matches no
+  student is dropped, so a wrong value leaves the student absent every day.
+  - **Required on create**, digits only: **1 to 14 ASCII digits, not starting with 0** (use a
+    numeric keyboard; don't accept Arabic-Indic digits like `٣٣`). Surrounding spaces are removed.
+    The server answers 400 `rfid_tag is required` when it is missing, and 400 `rfid_tag must be
+    digits only (1 to 14, not starting with 0): it must equal the student's user ID on the ZKTeco
+    device` for anything else that breaks the rule; show the message under the field.
+  - **On edit**, an empty field keeps the stored value, and the value already stored for that
+    student is accepted unchanged even if it breaks the rule (students created earlier may have a
+    placeholder `admin-<number>` or another old value). Ask the admin to replace such values with
+    the real device ID.
+  - **The school's convention**, 1 to 99 for staff and 100 and up for students, is only an
+    agreement: the server doesn't check or reserve any range. You may show it as a hint.
+- **409 on a student create or update:** another student (also a deactivated one) already has that
+  `rfid_tag`. Nothing was saved. The body has **`suggested_rfid_tag`**, the first higher number no
+  student has (or `null` when there is none). Show "الرقم 33 مسجل لطالب آخر، يمكنك استخدام 34" with
+  a button that puts the suggestion in the field. It is **only a hint, not reserved**: if someone
+  takes it first, saving gives this 409 again with the next number. Don't branch on `message`.
 - **404 on `POST /api/admin/leaves`:** the student doesn't exist or was deactivated. Refresh the
   student list.
 - **Cancel a leave:** the daily report (`GET /api/admin/attendance?date=…`) shows a student with
@@ -356,7 +373,8 @@ children goes to all of them, including children the school adds later.
   |---|---|
   | `name` | 100 characters |
   | `parent_name` | 255 |
-  | `rfid_tag`, `grade`, `section` | 50 |
+  | `grade`, `section` | 50 |
+  | `rfid_tag` | 14 digits (over 50 characters is reported as a length error) |
   | device `serial_number`, `location_name` | 50 |
   | setting `key` | 100 |
   | `parent_pin` | 16 to 72 ASCII characters, with a letter, a digit and a symbol |
@@ -865,7 +883,15 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.17.0 (this release):** manual attendance (see
+**In API 1.18.0 (this release):** the student's device user ID (`rfid_tag`).
+**Breaking for create:** `POST /api/admin/students` now requires `rfid_tag` (400 `rfid_tag is
+required`; it used to store a placeholder `admin-<number>`), and on create and update a value must
+be 1 to 14 ASCII digits without a leading 0 (400 otherwise; on update the stored value resent
+unchanged is still accepted). Additive: the 409 for a taken `rfid_tag` has `suggested_rfid_tag`;
+its `message` is unchanged. See the student form notes in [Admin dashboard](#admin-dashboard).
+Nothing changes in the parent app.
+
+**In API 1.17.0:** manual attendance (see
 [Manual attendance](#manual-attendance-الحضور-اليدوي)). New: `POST` and
 `DELETE /api/admin/attendance/manual`. Additive: `check_in_source`, `check_out_source` and
 `manual_punches` on each item of `GET /api/admin/attendance` (its item schema is now

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,7 +45,8 @@ type StudentPayload struct {
 	ParentPhone string `json:"parent_phone"`
 	ParentPin   string `json:"parent_pin,omitempty"`
 	RfidTag     string `json:"rfid_tag"` // IMPORTANT: this must equal the PIN the student is enrolled under on the ZKTeco device, not a physical RFID card value
-	// Nullable. On PUT, an omitted or null grade/section (and an empty rfid_tag) keeps the stored value.
+	// Nullable. On PUT, an omitted or null grade/section (and an empty rfid_tag, or the stored one
+	// resent unchanged even if it breaks ValidRFIDTag) keeps the stored value.
 	Grade   *string `json:"grade"`
 	Section *string `json:"section"`
 }
@@ -237,6 +239,7 @@ func validateStudentPayload(req *StudentPayload) string {
 	req.Name = strings.TrimSpace(req.Name)
 	req.ParentName = strings.TrimSpace(req.ParentName)
 	req.ParentPhone = strings.TrimSpace(req.ParentPhone)
+	req.RfidTag = strings.TrimSpace(req.RfidTag)
 	switch {
 	case req.ParentPhone == "":
 		return "parent_phone is required"
@@ -300,10 +303,48 @@ const PINFormatMessage = "parent_pin must be 16 to 72 characters (ASCII, no spac
 
 // Messages for the student writes.
 const (
-	PINRequiredMessage  = "parent_pin is required for a new parent (parent_phone is not registered yet)"
-	RFIDTagTakenMessage = "rfid_tag is already used by another student"
-	rfidTagUniqueIndex  = "students_rfid_tag_key"
+	PINRequiredMessage     = "parent_pin is required for a new parent (parent_phone is not registered yet)"
+	RFIDTagTakenMessage    = "rfid_tag is already used by another student"
+	RFIDTagRequiredMessage = "rfid_tag is required"
+	RFIDTagFormatMessage   = "rfid_tag must be digits only (1 to 14, not starting with 0): it must equal the student's user ID on the ZKTeco device"
+	rfidTagUniqueIndex     = "students_rfid_tag_key"
 )
+
+var rfidTagRE = regexp.MustCompile(`^[1-9][0-9]{0,13}$`)
+
+// ValidRFIDTag reports whether tag is a ZKTeco user ID: 1 to 14 ASCII digits, not starting with 0.
+func ValidRFIDTag(tag string) bool { return rfidTagRE.MatchString(tag) }
+
+// nextFreeRFIDTagSQL selects the first number above $1 that is no student's rfid_tag and has at
+// most 14 digits, or NULL. The candidates are $1 + 1 and the successor of every taken numeric tag
+// above $1; tags that are not numbers are left out without being cast.
+const nextFreeRFIDTagSQL = `
+	SELECT MIN(c)::text FROM (
+		SELECT $1::bigint + 1 AS c
+		UNION ALL
+		SELECT n.t + 1 FROM (
+			SELECT CASE WHEN rfid_tag ~ '^[1-9][0-9]{0,13}$' THEN rfid_tag::bigint END AS t FROM students
+		) n
+		WHERE n.t > $1::bigint
+	) cand
+	WHERE c <= 99999999999999 AND NOT EXISTS (SELECT 1 FROM students s WHERE s.rfid_tag = cand.c::text)`
+
+// respondRFIDTagTaken answers 409 for an rfid_tag another student has, with the first free number
+// above it as a hint (null when there is none, or when it cannot be computed).
+func (app *AppEnv) respondRFIDTagTaken(w http.ResponseWriter, r *http.Request, tag string) {
+	var suggestion sql.NullString
+	if ValidRFIDTag(tag) {
+		if err := app.DB.QueryRowContext(r.Context(), nextFreeRFIDTagSQL, tag).Scan(&suggestion); err != nil {
+			slog.Error("AdminStudentsHandler: rfid_tag suggestion failed", "rfid_tag", tag, "error", err)
+			suggestion = sql.NullString{}
+		}
+	}
+	var hint *string
+	if suggestion.Valid {
+		hint = &suggestion.String
+	}
+	respondJSON(w, http.StatusConflict, map[string]any{"status": "error", "message": RFIDTagTakenMessage, "suggested_rfid_tag": hint})
+}
 
 var errNewParentNeedsPIN = errors.New("new parent without a PIN")
 
@@ -339,14 +380,15 @@ func resolveParent(ctx context.Context, tx *sql.Tx, name, phone, pin string) (in
 }
 
 // respondStudentWriteError answers a failed student create or update: 400 for a new parent
-// without a PIN, 409 for an rfid_tag another student has, and a logged 500 otherwise.
-func respondStudentWriteError(w http.ResponseWriter, op string, err error, attrs ...any) {
+// without a PIN, 409 (with a suggestion) for an rfid_tag another student has, and a logged 500
+// otherwise.
+func (app *AppEnv) respondStudentWriteError(w http.ResponseWriter, r *http.Request, op string, err error, tag string, attrs ...any) {
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.Is(err, errNewParentNeedsPIN):
 		respondError(w, http.StatusBadRequest, PINRequiredMessage)
 	case errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == rfidTagUniqueIndex:
-		respondError(w, http.StatusConflict, RFIDTagTakenMessage)
+		app.respondRFIDTagTaken(w, r, tag)
 	default:
 		respondInternalError(w, "Internal server error", op, err, attrs...)
 	}
@@ -407,7 +449,12 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if req.RfidTag == "" {
-			req.RfidTag = fmt.Sprintf("admin-%d", time.Now().UnixNano())
+			respondError(w, http.StatusBadRequest, RFIDTagRequiredMessage)
+			return
+		}
+		if !ValidRFIDTag(req.RfidTag) {
+			respondError(w, http.StatusBadRequest, RFIDTagFormatMessage)
+			return
 		}
 
 		err := func() error {
@@ -429,7 +476,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			return tx.Commit()
 		}()
 		if err != nil {
-			respondStudentWriteError(w, "AdminStudentsHandler: create failed", err, "parent_phone", req.ParentPhone, "rfid_tag", req.RfidTag)
+			app.respondStudentWriteError(w, r, "AdminStudentsHandler: create failed", err, req.RfidTag, "parent_phone", req.ParentPhone, "rfid_tag", req.RfidTag)
 			return
 		}
 		req.ParentPin = "" // Don't echo it back
@@ -449,9 +496,23 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		if req.ID > 0 {
 			NoteActivity(r, "student", strconv.Itoa(req.ID), "")
 		}
+		rawTag := req.RfidTag
 		if msg := validateStudentPayload(&req); msg != "" {
 			respondError(w, http.StatusBadRequest, msg)
 			return
+		}
+		if req.RfidTag != "" && !ValidRFIDTag(req.RfidTag) {
+			var stored string
+			err := app.DB.QueryRowContext(r.Context(), `SELECT rfid_tag FROM students WHERE id = $1`, req.ID).Scan(&stored)
+			if err != nil && err != sql.ErrNoRows {
+				respondInternalError(w, "Internal server error", "AdminStudentsHandler: rfid_tag lookup failed", err, "student_id", req.ID)
+				return
+			}
+			if err == sql.ErrNoRows || (stored != rawTag && stored != req.RfidTag) {
+				respondError(w, http.StatusBadRequest, RFIDTagFormatMessage)
+				return
+			}
+			req.RfidTag = ""
 		}
 		var errStudentNotFound = errors.New("student not found")
 		err := func() error {
@@ -487,7 +548,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err != nil {
-			respondStudentWriteError(w, "AdminStudentsHandler: update failed", err, "student_id", req.ID)
+			app.respondStudentWriteError(w, r, "AdminStudentsHandler: update failed", err, req.RfidTag, "student_id", req.ID)
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Student updated"})

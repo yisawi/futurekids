@@ -164,8 +164,8 @@ func TestB1DeviceTokenEndpoints(t *testing.T) {
 		}
 	}
 
-	p1 := newParent("B1 Parent One", "+9647000000811", "Kq7#vR2m!Tx9pW4z", "B1-1")
-	p2 := newParent("B1 Parent Two", "+9647000000812", "Ze4&uM9k?Ga2fC7x", "B1-2")
+	p1 := newParent("B1 Parent One", "+9647000000811", "Kq7#vR2m!Tx9pW4z", "8101")
+	p2 := newParent("B1 Parent Two", "+9647000000812", "Ze4&uM9k?Ga2fC7x", "8102")
 	_, p1.token = login(p1, nil)
 	_, p2.token = login(p2, nil)
 	a, b := b1Token("phone-a"), b1Token("phone-b")

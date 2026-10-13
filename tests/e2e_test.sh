@@ -183,7 +183,7 @@ PARENT_B="+9647000000102"
 declare -a RFID_TAGS
 
 for i in {1..10}; do
-    rfid="E2E-RFID-$(printf "%03d" "$i")"
+    rfid="77$(printf "%03d" "$i")"
     RFID_TAGS+=("$rfid")
     phone=$PARENT_A; [ $((i % 2)) -eq 0 ] && phone=$PARENT_B
     s_http=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/api/admin/students" \

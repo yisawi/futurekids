@@ -223,6 +223,43 @@ migrate -path db/migrations -database "$DATABASE_URL" up         # 000029, after
 - **The code:** redeploy the previous version. It runs on 32 and shows manual entries as normal punches, but cannot create or delete them.
 - **The migration:** `migrate goto 31`, only after the code is rolled back (the new code needs `source`). It **deletes every manual entry** and its note: those students show absent again on those days. Only the backup has them. Notifications already sent stay.
 
+### Deploying the rfid_tag rule (API 1.18.0, no migration)
+
+`rfid_tag` must now be the student's ZKTeco user ID: required on create, 1 to 14 ASCII digits without a leading 0; an update may resend the stored value unchanged. A taken tag answers 409 with `suggested_rfid_tag`. There is no migration: deploy the code. **Rollback:** redeploy the previous version; nothing in the database needs undoing.
+
+**Check on Staging after the deploy** (with `BASE_URL=https://futurekids-staging.up.railway.app` and an admin token in `$ADMIN`, as in the 000032 section). The test IDs 99990001 to 99990003 never clash with real students.
+
+1. **Preflight, read-only:**
+   ```sql
+   -- the test parent exists; note its full_name and send exactly that name below
+   SELECT id, full_name FROM parents WHERE phone_number = '+9647709990001';
+   -- the test IDs are free: no rows
+   SELECT id, rfid_tag FROM students WHERE rfid_tag IN ('99990001', '99990002', '99990003');
+   ```
+   If the parent doesn't exist, the create also needs a `parent_pin` (16+ characters with a letter, a digit and a symbol) and creates the parent; delete it in step 4 too. If a test ID is taken, stop and pick another free range.
+2. **Run the four requests** (`PNAME` is the stored name, so the parent's name is unchanged):
+   ```bash
+   PNAME=$(psql "$DATABASE_URL" -X -At -c "SELECT full_name FROM parents WHERE phone_number = '+9647709990001'")
+   body() { jq -nc --arg p "$PNAME" --arg t "$1" '{name:"طالب اختبار الرقم",parent_name:$p,parent_phone:"+9647709990001"} + (if $t == "-" then {} else {rfid_tag:$t} end)'; }
+   # (a) valid create: 200, data.rfid_tag "99990001"
+   curl -s -X POST "$BASE_URL/api/admin/students" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d "$(body 99990001)"
+   # (b) duplicate: 409, the unchanged message and "suggested_rfid_tag":"99990002"
+   curl -s -X POST "$BASE_URL/api/admin/students" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d "$(body 99990001)"
+   # (c) Arabic-Indic digits: 400 "rfid_tag must be digits only (1 to 14, not starting with 0): …"
+   curl -s -X POST "$BASE_URL/api/admin/students" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d "$(body ٣٣)"
+   # (d) no rfid_tag: 400 "rfid_tag is required"
+   curl -s -X POST "$BASE_URL/api/admin/students" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d "$(body -)"
+   ```
+3. **Confirm nothing else was written:** only the student from (a) exists.
+   ```sql
+   SELECT id, full_name, rfid_tag FROM students WHERE rfid_tag LIKE '9999000_';
+   ```
+4. **Clean up by SQL.** Deactivating through the API would keep the row, and its ID would stay taken.
+   ```sql
+   DELETE FROM students WHERE rfid_tag = '99990001';
+   ```
+5. **Left behind:** the four `student.create` entries in the activity log (results `success`, `rejected`, `rejected`, `rejected`). The parent row is unchanged because the same name was sent; a parent created in step 1 remains until you delete it.
+
 ### Seeding Staging with fake data
 
 `cmd/seed-staging` fills Staging with fake data for the Flutter developers: 47 students (`rfid_tag` 1004 to 1050) for 37 parents (`+9647000002001` to `+9647000002037`, parent credential `Sd7!Kx4p#Wm9qT2h`; parents seeded before that keep their earlier `314159`), weekly schedules, the fake device `SEED-FAKE-0001`, leaves, attendance history since the first day of the previous month, and 3 banners. Everything goes through the real API; it never touches students 1001 to 1003, the real device or the settings. It refuses any `BASE_URL` other than `https://futurekids-staging.up.railway.app`.

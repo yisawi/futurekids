@@ -68,13 +68,13 @@ func TestW13W15ValidationAndPIN(t *testing.T) {
 	var studentID int
 	t.Run("W13 validation/POST valid student stores trimmed phone", func(t *testing.T) {
 		code, msg := call(t, http.MethodPost, map[string]any{
-			"name": " W13 Kid ", "parent_name": " W13 Parent ", "parent_phone": "  +9647000000305  ", "parent_pin": "Lw6%Dp9z?Gt4bE8s", "rfid_tag": "W13-RFID-1",
+			"name": " W13 Kid ", "parent_name": " W13 Parent ", "parent_phone": "  +9647000000305  ", "parent_pin": "Lw6%Dp9z?Gt4bE8s", "rfid_tag": "1301",
 		})
 		if code != http.StatusOK {
 			t.Fatalf("valid POST: got HTTP %d %q, want 200", code, msg)
 		}
 		var phone, parentName, kidName string
-		err := db.QueryRow(`SELECT s.id, s.full_name, p.full_name, p.phone_number FROM students s JOIN parents p ON p.id = s.parent_id WHERE s.rfid_tag = 'W13-RFID-1'`).
+		err := db.QueryRow(`SELECT s.id, s.full_name, p.full_name, p.phone_number FROM students s JOIN parents p ON p.id = s.parent_id WHERE s.rfid_tag = '1301'`).
 			Scan(&studentID, &kidName, &parentName, &phone)
 		if err != nil {
 			t.Fatalf("valid student not stored with a parent: %v", err)

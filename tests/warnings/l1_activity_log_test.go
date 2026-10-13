@@ -183,14 +183,14 @@ func TestL1WritesRecorded(t *testing.T) {
 	var studentID int
 
 	t.Run("students", func(t *testing.T) {
-		r, row := send(t, "POST", "/api/admin/students", map[string]any{"name": "L1 Kid", "parent_name": "L1 Parent", "parent_phone": "07000031001", "parent_pin": "Zq8#vR2m!Tx9pW4z", "rfid_tag": "L1-1", "grade": "G1", "section": "A"}, 200)
+		r, row := send(t, "POST", "/api/admin/students", map[string]any{"name": "L1 Kid", "parent_name": "L1 Parent", "parent_phone": "07000031001", "parent_pin": "Zq8#vR2m!Tx9pW4z", "rfid_tag": "3101", "grade": "G1", "section": "A"}, 200)
 		studentID = int(r.json(t)["data"].(map[string]any)["id"].(float64))
 		expect(t, row, fmt.Sprintf("admin student.create POST /api/admin/students 200 ip=%s target=student:%d detail=-", l1IP, studentID))
-		_, row = send(t, "PUT", "/api/admin/students", map[string]any{"id": studentID, "name": "L1 Kid", "parent_name": "L1 Parent", "parent_phone": "07000031001", "rfid_tag": "L1-1"}, 200)
+		_, row = send(t, "PUT", "/api/admin/students", map[string]any{"id": studentID, "name": "L1 Kid", "parent_name": "L1 Parent", "parent_phone": "07000031001", "rfid_tag": "3101"}, 200)
 		expect(t, row, fmt.Sprintf("admin student.update PUT /api/admin/students 200 ip=%s target=student:%d detail=-", l1IP, studentID))
-		_, row = send(t, "PUT", "/api/admin/students", map[string]any{"id": 999999, "name": "X", "parent_name": "L1 Parent", "parent_phone": "07000031001", "rfid_tag": "L1-9"}, 404)
+		_, row = send(t, "PUT", "/api/admin/students", map[string]any{"id": 999999, "name": "X", "parent_name": "L1 Parent", "parent_phone": "07000031001", "rfid_tag": "3109"}, 404)
 		expect(t, row, fmt.Sprintf("admin student.update PUT /api/admin/students 404 ip=%s target=student:999999 detail=-", l1IP))
-		_, row = send(t, "POST", "/api/admin/students", map[string]any{"name": "L1 Twin", "parent_name": "L1 Parent", "parent_phone": "07000031001", "rfid_tag": "L1-1"}, 409)
+		_, row = send(t, "POST", "/api/admin/students", map[string]any{"name": "L1 Twin", "parent_name": "L1 Parent", "parent_phone": "07000031001", "rfid_tag": "3101"}, 409)
 		expect(t, row, fmt.Sprintf("admin student.create POST /api/admin/students 409 ip=%s target=-:- detail=-", l1IP))
 		_, row = send(t, "POST", "/api/admin/students", map[string]any{"parent_name": "x"}, 400)
 		expect(t, row, fmt.Sprintf("admin student.create POST /api/admin/students 400 ip=%s target=-:- detail=-", l1IP))
@@ -430,7 +430,7 @@ func TestL1Secrets(t *testing.T) {
 	srv, db, admin := l1Server(t, "l1secrets", true)
 	h := l1Header(admin)
 	secrets := []string{"Zq8#L1SecretPin!42x", "L1SecretPassword!", admin, "L1SecretChild", "L1SecretParent", "7000099123", "L1SecretNote", "L1SecretTitle", "L1SecretBody", "L1SecretValue", "L1SecretLocation"}
-	r := a14Do(t, srv, "POST", "/api/admin/students", h, map[string]any{"name": "L1SecretChild", "parent_name": "L1SecretParent", "parent_phone": "07000099123", "parent_pin": "Zq8#L1SecretPin!42x", "rfid_tag": "L1-S1"})
+	r := a14Do(t, srv, "POST", "/api/admin/students", h, map[string]any{"name": "L1SecretChild", "parent_name": "L1SecretParent", "parent_phone": "07000099123", "parent_pin": "Zq8#L1SecretPin!42x", "rfid_tag": "3199"})
 	if r.status != 200 {
 		t.Fatalf("student: %d %s", r.status, r.body)
 	}
@@ -439,7 +439,7 @@ func TestL1Secrets(t *testing.T) {
 		method, path string
 		body         any
 	}{
-		{"PUT", "/api/admin/students", map[string]any{"id": id, "name": "L1SecretChild", "parent_name": "L1SecretParent", "parent_phone": "07000099123", "parent_pin": "Zq8#L1SecretPin!42x", "rfid_tag": "L1-S1"}},
+		{"PUT", "/api/admin/students", map[string]any{"id": id, "name": "L1SecretChild", "parent_name": "L1SecretParent", "parent_phone": "07000099123", "parent_pin": "Zq8#L1SecretPin!42x", "rfid_tag": "3199"}},
 		{"POST", "/api/admin/leaves", map[string]any{"student_id": id, "leave_date": k1Today, "notes": "L1SecretNote"}},
 		{"POST", "/api/admin/broadcasts", j1Body("L1SecretTitle", "L1SecretBody", j1All())},
 		{"POST", "/api/admin/holidays", k1Closure("kind", "holiday", "start_date", "2026-10-11", "title", "L1SecretTitle", "notes", "L1SecretNote")},

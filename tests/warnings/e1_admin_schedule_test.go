@@ -469,7 +469,7 @@ func TestE1AdminSchedule(t *testing.T) {
 		create := func(name, grade, section string) int {
 			t.Helper()
 			r := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-				"name": name, "parent_name": "Omar Example", "parent_phone": parentPhone, "parent_pin": parentPin, "grade": grade, "section": section,
+				"name": name, "parent_name": "Omar Example", "parent_phone": parentPhone, "parent_pin": parentPin, "grade": grade, "section": section, "rfid_tag": o2NextTag(),
 			})
 			if r.status != 200 {
 				t.Fatalf("create %s: %d %s", name, r.status, r.body)

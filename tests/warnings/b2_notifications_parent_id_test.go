@@ -114,8 +114,8 @@ func TestB2NotificationHistory(t *testing.T) {
 		return out
 	}
 
-	p1, _ := newParent("B2 Parent One", "+9647000000921", "Kq7#vR2m!Tx9pW4z", "B2-1")
-	p2, s2 := newParent("B2 Parent Two", "+9647000000922", "Ze4&uM9k?Ga2fC7x", "B2-2")
+	p1, _ := newParent("B2 Parent One", "+9647000000921", "Kq7#vR2m!Tx9pW4z", "9201")
+	p2, s2 := newParent("B2 Parent Two", "+9647000000922", "Ze4&uM9k?Ga2fC7x", "9202")
 	t1, t2 := login("+9647000000921", "Kq7#vR2m!Tx9pW4z"), login("+9647000000922", "Ze4&uM9k?Ga2fC7x")
 	insert(p1, 3, "one")
 	insert(p2, 150, "two")
@@ -232,7 +232,7 @@ func TestB2NotificationHistory(t *testing.T) {
 			t.Fatalf("mark all: %d", r.status)
 		}
 		before := len(idsOf(p2))
-		a14Do(t, srv, "POST", "/iclock/cdata?SN=B2-DEV&table=ATTLOG", nil, "B2-2\t2026-09-23 07:15:00\t1\t1\n")
+		a14Do(t, srv, "POST", "/iclock/cdata?SN=B2-DEV&table=ATTLOG", nil, "9202\t2026-09-23 07:15:00\t1\t1\n")
 		deadline := time.Now().Add(5 * time.Second)
 		for len(idsOf(p2)) == before && time.Now().Before(deadline) {
 			time.Sleep(20 * time.Millisecond)

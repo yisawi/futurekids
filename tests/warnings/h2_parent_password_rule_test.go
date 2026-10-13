@@ -36,7 +36,7 @@ func TestH2ParentPasswordRule(t *testing.T) {
 	}
 	create := func(t *testing.T, phone string, pin any) (int, int, string) {
 		t.Helper()
-		body := map[string]any{"name": "H2 Kid", "parent_name": "H2 Parent", "parent_phone": phone}
+		body := map[string]any{"name": "H2 Kid", "parent_name": "H2 Parent", "parent_phone": phone, "rfid_tag": o2NextTag()}
 		if pin != nil {
 			body["parent_pin"] = pin
 		}

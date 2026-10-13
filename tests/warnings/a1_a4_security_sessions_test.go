@@ -372,7 +372,7 @@ func TestA2PhoneNormalisation(t *testing.T) {
 
 	t.Run("admin create stores the canonical number", func(t *testing.T) {
 		r := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"name": "A2 Student", "parent_name": "A2 Parent", "parent_phone": "٠٧٠٠ ٠٠٠ ٠٢٠١", "parent_pin": "Kq7#vR2m!Tx9pW4z", "rfid_tag": "A2-1",
+			"name": "A2 Student", "parent_name": "A2 Parent", "parent_phone": "٠٧٠٠ ٠٠٠ ٠٢٠١", "parent_pin": "Kq7#vR2m!Tx9pW4z", "rfid_tag": "2201",
 		})
 		if r.status != 200 {
 			t.Fatalf("HTTP %d: %s", r.status, r.body)
@@ -382,7 +382,7 @@ func TestA2PhoneNormalisation(t *testing.T) {
 			t.Errorf("response parent_phone %v, want +9647000000201", data["parent_phone"])
 		}
 		r = a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"name": "A2 Sibling", "parent_name": "A2 Parent", "parent_phone": "009647000000201", "rfid_tag": "A2-2",
+			"name": "A2 Sibling", "parent_name": "A2 Parent", "parent_phone": "009647000000201", "rfid_tag": "2202",
 		})
 		if r.status != 200 {
 			t.Fatalf("HTTP %d: %s", r.status, r.body)
@@ -445,7 +445,7 @@ func TestA2PhoneNormalisation(t *testing.T) {
 
 	t.Run("all formats share one rate-limit counter", func(t *testing.T) {
 		r := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"name": "A2 Limit", "parent_name": "A2 Limit Parent", "parent_phone": "+9647000000202", "parent_pin": "Ze4&uM9k?Ga2fC7x", "rfid_tag": "A2-3",
+			"name": "A2 Limit", "parent_name": "A2 Limit Parent", "parent_phone": "+9647000000202", "parent_pin": "Ze4&uM9k?Ga2fC7x", "rfid_tag": "2203",
 		})
 		if r.status != 200 {
 			t.Fatalf("HTTP %d: %s", r.status, r.body)
@@ -641,7 +641,7 @@ func TestA3SignOutOnPINChange(t *testing.T) {
 	admin := a14AdminToken(t, srv)
 
 	create := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-		"name": "A3 Student", "parent_name": "A3 Parent", "parent_phone": "+9647000000601", "parent_pin": "Kq7#vR2m!Tx9pW4z", "rfid_tag": "A3-1",
+		"name": "A3 Student", "parent_name": "A3 Parent", "parent_phone": "+9647000000601", "parent_pin": "Kq7#vR2m!Tx9pW4z", "rfid_tag": "2301",
 	})
 	if create.status != 200 {
 		t.Fatalf("create: %d %s", create.status, create.body)
@@ -1030,7 +1030,7 @@ func TestA14BeforePhoneNormalisation(t *testing.T) {
 
 	t.Run("adding a student for that parent creates a canonical duplicate that 000029 reports", func(t *testing.T) {
 		r := a14Do(t, srv, "POST", "/api/admin/students", a14Bearer(admin), map[string]any{
-			"name": "Legacy Sibling", "parent_name": "Legacy Parent", "parent_phone": "07000000702", "parent_pin": "Uf5&Hz9c!Mr3eJ7a", "rfid_tag": "V21-3",
+			"name": "Legacy Sibling", "parent_name": "Legacy Parent", "parent_phone": "07000000702", "parent_pin": "Uf5&Hz9c!Mr3eJ7a", "rfid_tag": "2103",
 		})
 		if r.status != 200 {
 			t.Fatalf("create: %d %s", r.status, r.body)

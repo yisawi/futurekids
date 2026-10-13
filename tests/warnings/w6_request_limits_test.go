@@ -77,7 +77,7 @@ func TestW6RequestLimits(t *testing.T) {
 		{"admin login", "POST", "/api/admin/login", func(int) string { return `{"username":"admin","password":"admin123"}` }, "Invalid request", app.AdminLoginHandler},
 		{"mobile login", "POST", "/api/mobile/login", func(int) string { return `{"phone":"+9647000000601","pin":"4321"}` }, "Invalid request", app.MobileLoginHandler},
 		{"student create", "POST", "/api/admin/students", func(v int) string {
-			return fmt.Sprintf(`{"name":"K%d","parent_name":"W6 Parent","parent_phone":"+9647000000601","rfid_tag":"W6-NEW-%d"}`, v, v)
+			return fmt.Sprintf(`{"name":"K%d","parent_name":"W6 Parent","parent_phone":"+9647000000601","rfid_tag":"6%d"}`, v, v)
 		}, "Invalid request body", admin(app.AdminStudentsHandler)},
 		{"student update", "PUT", "/api/admin/students", func(int) string {
 			return `{"id":1,"name":"W6 Student","parent_name":"W6 Parent","parent_phone":"+9647000000601"}`

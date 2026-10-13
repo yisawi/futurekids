@@ -450,11 +450,13 @@ func (r *runner) scenario() {
 	}
 	idA, d := create("every field", map[string]any{"name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": "Kq7#vR2m!Tx9pW4z", "rfid_tag": "9001", "grade": "G3", "section": "A"})
 	r.expect("created student echoes grade", at(d, "data", "grade"), "G3")
-	idB, d := create("required fields only", map[string]any{"name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1})
+	_, d = r.call("POST /api/admin/students", "rfid_tag missing", "", admin, map[string]any{"name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1}, 400)
+	r.expect("missing rfid_tag message", at(d, "message"), "rfid_tag is required")
+	_, d = r.call("POST /api/admin/students", "rfid_tag not the device user ID format", "", admin, map[string]any{"name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "٩٠٠٢"}, 400)
+	r.expect("rfid_tag format message", at(d, "message"), "rfid_tag must be digits only (1 to 14, not starting with 0): it must equal the student's user ID on the ZKTeco device")
+	idB, d := create("required fields only", map[string]any{"name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": " 9002 "})
 	r.expect("omitted grade is null", at(d, "data", "grade"), nil)
-	if tag := str(at(d, "data", "rfid_tag")); !strings.HasPrefix(tag, "admin-") {
-		t.Errorf("omitted rfid_tag: got %q, want an admin-<number> placeholder", tag)
-	}
+	r.expect("rfid_tag stored without the spaces", at(d, "data", "rfid_tag"), "9002")
 	idC, _ := create("second child", map[string]any{"name": "Maryam Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9003", "grade": "G1", "section": "B"})
 	idD, _ := create("other parent", map[string]any{"name": "Hadi Example", "parent_name": "Layla Example", "parent_phone": phone2, "parent_pin": "Ze4&uM9k?Ga2fC7x", "rfid_tag": "9004", "grade": "G3", "section": "A"})
 	idE, _ := create("to deactivate", map[string]any{"name": "Temp Example", "parent_name": "Nour Example", "parent_phone": phone3, "parent_pin": "Nc6?Fa3w@Ub8rZ5k", "rfid_tag": "9005"})
@@ -469,7 +471,8 @@ func (r *runner) scenario() {
 	_, d = r.call("POST /api/admin/students", "parent_phone not an Iraqi mobile number", "", admin, map[string]any{"name": "Bad Example", "parent_name": "Omar Example", "parent_phone": "+15551234567"}, 400)
 	r.expect("invalid phone message", at(d, "message"), "parent_phone must be an Iraqi mobile number, for example 07XXXXXXXXX or +9647XXXXXXXXX")
 	r.call("POST /api/admin/students", "malformed JSON", "", admin, "{", 400)
-	r.call("POST /api/admin/students", "duplicate rfid_tag", "", admin, map[string]any{"name": "Dup Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 409)
+	_, d = r.call("POST /api/admin/students", "duplicate rfid_tag", "", admin, map[string]any{"name": "Dup Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 409)
+	r.expect("duplicate rfid_tag suggestion", fmt.Sprint(at(d, "message"), " ", at(d, "suggested_rfid_tag")), "rfid_tag is already used by another student 9006")
 	r.call("POST /api/admin/students", "new parent without parent_pin", "", admin, map[string]any{"name": "New Example", "parent_name": "New Parent", "parent_phone": "+9647000000606", "rfid_tag": "9006"}, 400)
 	r.call("POST /api/admin/students", "new parent with a blank parent_pin", "", admin, map[string]any{"name": "New Example", "parent_name": "New Parent", "parent_phone": "+9647000000606", "parent_pin": "   ", "rfid_tag": "9006"}, 400)
 	pinRule := "parent_pin must be 16 to 72 characters (ASCII, no spaces) with at least one letter, one digit and one symbol"
@@ -490,7 +493,10 @@ func (r *runner) scenario() {
 	r.call("PUT /api/admin/students", "parent_phone not an Iraqi mobile number", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": "12345"}, 400)
 	r.call("PUT /api/admin/students", "blank name", "", admin, map[string]any{"id": idA, "name": " ", "parent_name": "Omar Example", "parent_phone": phone1}, 400)
 	r.call("PUT /api/admin/students", "malformed JSON", "", admin, "{", 400)
-	r.call("PUT /api/admin/students", "rfid_tag taken by another student", "", admin, map[string]any{"id": idB, "name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 409)
+	_, d = r.call("PUT /api/admin/students", "rfid_tag taken by another student", "", admin, map[string]any{"id": idB, "name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9001"}, 409)
+	r.expect("update conflict suggestion", at(d, "suggested_rfid_tag"), "9006")
+	_, d = r.call("PUT /api/admin/students", "rfid_tag with a leading zero", "", admin, map[string]any{"id": idB, "name": "Yousef Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "09002"}, 400)
+	r.expect("update rfid_tag format message", at(d, "message"), "rfid_tag must be digits only (1 to 14, not starting with 0): it must equal the student's user ID on the ZKTeco device")
 	for _, bad := range []string{"4821", "482193", "Kq7vR2mTx9pW4zab"} {
 		_, d = r.call("PUT /api/admin/students", "parent_pin "+bad+" breaks the rule", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": bad}, 400)
 		r.expect("parent_pin rule message on update for "+bad, at(d, "message"), pinRule)
@@ -1627,7 +1633,7 @@ func (r *runner) databaseFailures() {
 	} {
 		r.call(op, "database error", "", admin, nil, 500)
 	}
-	r.call("POST /api/admin/students", "database error", "", admin, map[string]any{"name": "Down Example", "parent_name": "Omar Example", "parent_phone": phone1}, 500)
+	r.call("POST /api/admin/students", "database error", "", admin, map[string]any{"name": "Down Example", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "9099"}, 500)
 	r.call("PUT /api/admin/students", "database error", "", admin, map[string]any{"id": 1, "name": "Down Example", "parent_name": "Omar Example", "parent_phone": phone1}, 500)
 	r.call("DELETE /api/admin/students", "database error", "?id=1", admin, nil, 500)
 	r.call("PUT /api/admin/settings", "database error", "", admin, map[string]string{"key": "internal_note", "value": "x"}, 500)
@@ -2351,6 +2357,11 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		}},
 		{"deleteManualAttendance loses its 409", []string{"responses"}, func(root map[string]any) {
 			delete(node(root, "paths", "/api/admin/attendance/manual", "delete", "responses"), "409")
+		}},
+		{"the rfid_tag 409 loses suggested_rfid_tag", []string{"responses"}, func(root map[string]any) {
+			conflict := node(schemas(root), "RFIDTagConflictResponse")
+			delete(obj(conflict["properties"]), "suggested_rfid_tag")
+			conflict["required"] = []any{"status", "message"}
 		}},
 		{"listActivityLog loses its 400", []string{"responses"}, func(root map[string]any) {
 			delete(node(root, "paths", "/api/admin/activity-log", "get", "responses"), "400")

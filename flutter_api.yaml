@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Future Kids Attendance System API
-  version: 1.17.0
+  version: 1.18.0
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -2432,6 +2432,35 @@ components:
         type: string
       example: ATTLOG
   schemas:
+    RFIDTagConflictResponse:
+      type: object
+      description: The error body of the rfid_tag 409 on `createStudent` and `updateStudent`; other errors use ErrorResponse.
+      properties:
+        status:
+          type: string
+          enum:
+            - error
+        message:
+          type: string
+          enum:
+            - rfid_tag is already used by another student
+        suggested_rfid_tag:
+          type: string
+          nullable: true
+          pattern: ^[1-9][0-9]{0,13}$
+          description: |
+            The first number above the requested one that no student has, with at most 14 digits.
+            A hint, not a reservation. Null when there is none (the requested number is the
+            largest 14-digit one or every number above it is taken) or when the requested value
+            is not a number.
+      required:
+        - status
+        - message
+        - suggested_rfid_tag
+      example:
+        status: error
+        message: rfid_tag is already used by another student
+        suggested_rfid_tag: '34'
     ErrorResponse:
       type: object
       description: |
@@ -2713,8 +2742,9 @@ components:
         rfid_tag:
           type: string
           description: |
-            The User ID the student is enrolled under on the ZKTeco device. A student created
-            without one gets a placeholder `admin-<number>`.
+            The User ID the student is enrolled under on the ZKTeco device: 1 to 14 digits for
+            every student created or changed since 1.18.0. A student created earlier without one
+            may still have a placeholder `admin-<number>`, which no device punch can match.
         grade:
           type: string
           nullable: true
@@ -2776,10 +2806,19 @@ components:
             401 and their registered push devices are removed); empty or omitted keeps both.
         rfid_tag:
           type: string
-          maxLength: 50
+          minLength: 1
+          maxLength: 14
+          pattern: ^[1-9][0-9]{0,13}$
           description: |
-            Device User ID; must be unique (409 when another student has it). Empty or omitted
-            stores a placeholder `admin-<number>`. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+            Required. The student's user ID on the ZKTeco device (the PIN the device sends with
+            each punch), so it must be exactly the number enrolled there: ASCII digits only, 1 to
+            14 of them, not starting with 0. Surrounding spaces are removed first. Missing, null,
+            empty or blank returns 400 `rfid_tag is required`; anything else that breaks the rule
+            (Arabic-Indic or Persian digits, a leading 0, a letter, a space inside, more than 14
+            digits) returns 400 with the format message, and over 50 characters returns 400
+            naming the limit. Must be unique: another student's tag (inactive students included)
+            returns 409 with a suggested free number. The server reserves no range; the school's
+            convention (1 to 99 for staff, 100 and up for students) is not checked.
         grade:
           type: string
           nullable: true
@@ -2794,6 +2833,7 @@ components:
         - name
         - parent_name
         - parent_phone
+        - rfid_tag
       example:
         name: Sara Example
         parent_name: Omar Example
@@ -2842,8 +2882,14 @@ components:
             registered push devices are removed); empty or omitted keeps it.
         rfid_tag:
           type: string
-          maxLength: 50
-          description: Empty or omitted keeps the stored tag. Another student's tag returns 409. Longer values return 400 naming the field and the limit (characters, trailing spaces not counted).
+          description: |
+            The student's user ID on the ZKTeco device. Surrounding spaces are removed first.
+            Omitted, null, empty or blank keeps the stored tag. The value already stored for this
+            student is accepted unchanged even if it breaks the rule below (tags from before 1.18.0,
+            such as `admin-<number>` placeholders), so a form that resends every field keeps
+            working. Any other value must be ASCII digits only, 1 to 14 of them, not starting with
+            0 (400 with the format message; over 50 characters returns 400 naming the limit).
+            Another student's tag returns 409 with a suggested free number.
         grade:
           type: string
           nullable: true
@@ -5632,8 +5678,10 @@ components:
       description: |
         Malformed JSON; `id` (update) missing or 0; `name`, `parent_name` or `parent_phone`
         missing or blank; `parent_phone` not an Iraqi mobile number; `parent_pin` missing for a
-        new parent or not 16 to 72 ASCII characters with a letter, a digit and a symbol; or a
-        field longer than its `maxLength`.
+        new parent or not 16 to 72 ASCII characters with a letter, a digit and a symbol; a
+        field longer than its limit; `rfid_tag` missing on create; or an `rfid_tag` that is not
+        1 to 14 ASCII digits without a leading 0 (on update, unless it is the student's stored
+        tag). The other fields are checked first. Nothing was written.
       content:
         application/json:
           schema:
@@ -5664,15 +5712,40 @@ components:
               value:
                 status: error
                 message: parent_phone is required
+            rfidRequired:
+              summary: rfid_tag missing on create
+              value:
+                status: error
+                message: rfid_tag is required
+            rfidFormat:
+              summary: rfid_tag that is not the device user ID format
+              value:
+                status: error
+                message: 'rfid_tag must be digits only (1 to 14, not starting with 0): it must equal the student''s user ID on the ZKTeco device'
     RFIDTagTaken:
-      description: Another student already has this `rfid_tag`. Nothing was written.
+      description: |
+        Another student (inactive students included) already has this `rfid_tag`. Nothing was
+        written. `suggested_rfid_tag` is the first higher number no student has, to offer in the
+        form ("الرقم 33 مسجل لطالب آخر، يمكنك استخدام 34"); it is only a hint and is not
+        reserved, so another request may take it first (then this 409 comes back with the next
+        one).
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
-          example:
-            status: error
-            message: rfid_tag is already used by another student
+            $ref: '#/components/schemas/RFIDTagConflictResponse'
+          examples:
+            suggestion:
+              summary: The next free number
+              value:
+                status: error
+                message: rfid_tag is already used by another student
+                suggested_rfid_tag: '34'
+            noSuggestion:
+              summary: No free 14-digit number above it
+              value:
+                status: error
+                message: rfid_tag is already used by another student
+                suggested_rfid_tag: null
     ScheduleBadRequest:
       description: |
         Malformed JSON (including a `period_number` that is not an integer); `grade` or `section`

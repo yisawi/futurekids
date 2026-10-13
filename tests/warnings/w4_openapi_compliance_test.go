@@ -146,9 +146,9 @@ func TestW4OpenAPICompliance(t *testing.T) {
 
 	t.Run("PUT with explicit rfid_tag, grade, section updates them", func(t *testing.T) {
 		put(t, map[string]any{"id": 1, "name": "W4 Present", "parent_name": "W4 Parent", "parent_phone": w4ParentPhone,
-			"rfid_tag": "W4-RFID-9", "grade": "G2", "section": "B"})
+			"rfid_tag": "4009", "grade": "G2", "section": "B"})
 		s := getStudent(t, 1)
-		assertField(t, s, "rfid_tag", "W4-RFID-9")
+		assertField(t, s, "rfid_tag", "4009")
 		assertField(t, s, "grade", "G2")
 		assertField(t, s, "section", "B")
 	})
