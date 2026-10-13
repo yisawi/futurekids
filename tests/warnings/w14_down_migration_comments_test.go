@@ -46,7 +46,8 @@ var w14Rollbacks = map[string]w14Rollback{
 	"000025": {true, []string{"announcements", "notifications.announcement_id"}, `(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+broadcasts\b|broadcast_id`},
 	"000026": {true, []string{"broadcasts", "notifications.broadcast_id"}, `(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+broadcasts\b|broadcast_id`},
 	"000027": {true, []string{"school_closures"}, `school_closures|schoolDaySQL|DayOn\(`},
-	"000028": {true, []string{"parents.phone_number_original", "notifications.parent_phone_original"}, `phone\.Normalize\(`},
+	"000028": {true, []string{"admin_activity_log"}, `admin_activity_log`},
+	"000029": {true, []string{"parents.phone_number_original", "notifications.parent_phone_original"}, `phone\.Normalize\(`},
 }
 
 var (

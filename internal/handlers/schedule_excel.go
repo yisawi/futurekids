@@ -152,6 +152,7 @@ func (app *AppEnv) AdminScheduleExportHandler(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusBadRequest, msg)
 		return
 	}
+	NoteActivity(r, "class", grade+"/"+section, "")
 
 	rows, err := app.DB.QueryContext(r.Context(), fmt.Sprintf(`
 		WITH classes AS (`+scheduleClassesSQL+`),
@@ -650,10 +651,16 @@ func (app *AppEnv) AdminScheduleImportHandler(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	NoteActivity(r, "", "", dryRunDetail(dryRun))
 	only, msg := importClassGuard(raw)
 	if msg != "" {
 		respondError(w, http.StatusBadRequest, msg)
 		return
+	}
+	targetType, targetID := "", ""
+	if only != nil {
+		targetType, targetID = "class", only.grade+"/"+only.section
+		NoteActivity(r, targetType, targetID, dryRunDetail(dryRun))
 	}
 
 	imp, msg := readScheduleWorkbook(file, only)
@@ -727,6 +734,7 @@ func (app *AppEnv) AdminScheduleImportHandler(w http.ResponseWriter, r *http.Req
 		message = "Dry run: the file is valid; nothing was saved"
 	}
 	slog.Info("Schedule imported", "dry_run", dryRun, "classes", len(classes), "total_periods", total)
+	NoteActivity(r, targetType, targetID, dryRunDetail(dryRun, fmt.Sprintf("classes=%d", len(classes)), fmt.Sprintf("periods=%d", total)))
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":        "success",
 		"message":       message,

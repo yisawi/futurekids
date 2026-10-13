@@ -118,7 +118,7 @@ func formPartError(err error, bodyLimit int64) *formError {
 // rejected. A part over its limit stops reading with overLimit(name). After an error the rest of
 // the body is drained, so a body over maxBody is answered with 413.
 func readFormParts(w http.ResponseWriter, r *http.Request, maxBody int64, limits map[string]int64, overLimit func(name string) *formError) (map[string][]byte, *formError) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	r.Body = http.MaxBytesReader(baseWriter(w), r.Body, maxBody)
 	raw, ferr := streamFormParts(r, maxBody, limits, overLimit)
 	if ferr != nil && ferr.bodyLimit == 0 {
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {
@@ -399,6 +399,7 @@ func (app *AppEnv) AdminBannersHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Info("Banner created", "banner_id", banner.ID, "content_type", form.image.contentType, "size_bytes", len(form.image.data))
+		NoteActivity(r, "banner", strconv.Itoa(banner.ID), "")
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "data": banner})
 
 	case http.MethodPut:
@@ -407,6 +408,7 @@ func (app *AppEnv) AdminBannersHandler(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "Invalid banner ID")
 			return
 		}
+		NoteActivity(r, "banner", strconv.Itoa(id), "")
 		extendUploadDeadlines(w)
 		form, ferr := readBannerForm(w, r)
 		if ferr != nil {
@@ -475,6 +477,7 @@ func (app *AppEnv) AdminBannersHandler(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "Invalid banner ID")
 			return
 		}
+		NoteActivity(r, "banner", strconv.Itoa(id), "")
 		res, err := app.DB.ExecContext(r.Context(), `DELETE FROM banners WHERE id = $1`, id)
 		if err != nil {
 			respondInternalError(w, "Failed to delete banner", "AdminBannersHandler: delete failed", err, "banner_id", id)

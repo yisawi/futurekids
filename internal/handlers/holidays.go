@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -324,6 +325,7 @@ func (app *AppEnv) createClosure(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, msg)
 		return
 	}
+	NoteActivity(r, "", "", dryRunDetail(c.dryRun, "kind="+c.kind))
 	willNotify := c.notify && !(c.end != nil && c.end.Before(todayT))
 	var schoolDays *int
 	if c.end != nil {
@@ -404,6 +406,7 @@ func (app *AppEnv) createClosure(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusConflict, conflict)
 		return
 	}
+	NoteActivity(r, "closure", strconv.Itoa(id), "kind="+c.kind)
 	slog.Info("Closure registered", "closure_id", id, "kind", c.kind, "start_date", ymd(c.start), "end_date", ymdPtr(c.end), "broadcast_id", broadcastID, "recipients", recipients)
 	if broadcastID != 0 {
 		notify.PushBroadcast(app.Background, app.FCMClient, app.DB, broadcastID, title, body)
@@ -413,6 +416,7 @@ func (app *AppEnv) createClosure(w http.ResponseWriter, r *http.Request) {
 
 // cancelPlan is what cancelling one closure today does.
 type cancelPlan struct {
+	kind    string
 	action  string
 	newEnd  *string
 	started bool
@@ -422,14 +426,14 @@ type cancelPlan struct {
 // planCancel applies "cancel from today onward": a closure that has not started is deleted, one
 // that is running ends yesterday (deleted when it started today), one already over gives 409.
 func planCancel(ctx context.Context, q rowQueryer, id int64, today time.Time, lock bool) (cancelPlan, int, string, error) {
-	query := `SELECT title, TO_CHAR(start_date, 'YYYY-MM-DD'), TO_CHAR(end_date, 'YYYY-MM-DD') FROM school_closures WHERE id = $1`
+	query := `SELECT kind, title, TO_CHAR(start_date, 'YYYY-MM-DD'), TO_CHAR(end_date, 'YYYY-MM-DD') FROM school_closures WHERE id = $1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var p cancelPlan
 	var start string
 	var end sql.NullString
-	switch err := q.QueryRowContext(ctx, query, id).Scan(&p.title, &start, &end); {
+	switch err := q.QueryRowContext(ctx, query, id).Scan(&p.kind, &p.title, &start, &end); {
 	case err == sql.ErrNoRows:
 		return p, http.StatusNotFound, "Closure not found", nil
 	case err != nil:
@@ -499,6 +503,7 @@ func (app *AppEnv) AdminCancelHolidayHandler(w http.ResponseWriter, r *http.Requ
 		respondError(w, http.StatusBadRequest, msg)
 		return
 	}
+	NoteActivity(r, "closure", strconv.FormatInt(id, 10), dryRunDetail(dryRun))
 	ctx := r.Context()
 	todayT, _ := time.Parse("2006-01-02", today())
 	respond := func(p cancelPlan, notified bool, recipients int, message string) {
@@ -529,6 +534,7 @@ func (app *AppEnv) AdminCancelHolidayHandler(w http.ResponseWriter, r *http.Requ
 				return
 			}
 		}
+		NoteActivity(r, "closure", strconv.FormatInt(id, 10), dryRunDetail(true, "kind="+p.kind, "action="+p.action))
 		respond(p, recipients > 0, recipients, "Preview only")
 		return
 	}
@@ -573,6 +579,7 @@ func (app *AppEnv) AdminCancelHolidayHandler(w http.ResponseWriter, r *http.Requ
 		respondError(w, status, problem)
 		return
 	}
+	NoteActivity(r, "closure", strconv.FormatInt(id, 10), "kind="+p.kind+" action="+p.action)
 	slog.Info("Closure cancelled", "closure_id", id, "action", p.action, "end_date", p.newEnd, "broadcast_id", broadcastID, "recipients", recipients)
 	if broadcastID != 0 {
 		notify.PushBroadcast(app.Background, app.FCMClient, app.DB, broadcastID, title, body)

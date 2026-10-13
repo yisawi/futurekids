@@ -41,7 +41,7 @@ const (
 // (logged as WARN) for an oversized body or 400 with badRequestMsg for malformed JSON,
 // and reports whether decoding succeeded.
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, badRequestMsg string) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, MaxJSONBodyBytes)
+	r.Body = http.MaxBytesReader(baseWriter(w), r.Body, MaxJSONBodyBytes)
 	err := json.NewDecoder(r.Body).Decode(dst)
 	var tooLarge *http.MaxBytesError
 	switch {

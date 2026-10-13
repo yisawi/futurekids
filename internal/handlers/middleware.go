@@ -227,7 +227,7 @@ func (app *AppEnv) AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), AdminUsernameKey, username)))
 	}
 }
 

@@ -1463,6 +1463,31 @@ func (r *runner) scenario() {
 	r.call("POST /api/admin/holidays/cancel", "oversized body", "", admin, oversized(), 413)
 	adminDenied("POST /api/admin/holidays/cancel", "", map[string]any{"id": pastHoliday})
 
+	// ── Activity log ───────────────────────────────────────────────────────────
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		var n int
+		r.db.QueryRow(`SELECT COUNT(*) FROM admin_activity_log WHERE action = 'holiday.cancel' AND status = 413`).Scan(&n)
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the last write was not recorded within 10s")
+		}
+	}
+	var logged int
+	r.db.QueryRow(`SELECT COUNT(*) FROM admin_activity_log`).Scan(&logged)
+	_, d = r.call("GET /api/admin/activity-log", "newest page", "", admin, nil, 200)
+	first := list(at(d, "data"))
+	r.expect("newest entry", fmt.Sprint(at(first[0], "action"), " ", at(first[0], "status"), " ", at(first[0], "result"), " ", at(first[0], "actor")), "holiday.cancel 413 rejected admin")
+	r.expect("first page is full", fmt.Sprint(len(first), " ", at(d, "has_more")), fmt.Sprint(min(logged, 50), " ", logged > 50))
+	if logged <= 50 {
+		t.Fatalf("the scenario recorded only %d entries; the paging check needs more than 50", logged)
+	}
+	_, d = r.call("GET /api/admin/activity-log", "next page", fmt.Sprintf("?before=%d", toInt(at(d, "next_before"))), admin, nil, 200)
+	r.expect("next page continues below the cursor", toInt(at(d, "data", 0, "id")) < toInt(at(first[len(first)-1], "id")), true)
+	r.call("GET /api/admin/activity-log", "invalid cursor", "?before=0", admin, nil, 400)
+	adminDenied("GET /api/admin/activity-log", "", nil)
+
 	// ── System ─────────────────────────────────────────────────────────────────
 	r.call("GET /health", "liveness", "", "", nil, 200)
 
@@ -1511,7 +1536,7 @@ func (r *runner) databaseFailures() {
 	}
 	admin, parent := r.admin, r.parent
 
-	tables := []string{"students", "parents", "settings", "devices", "notifications", "banners", "admins", "device_tokens", "school_closures"}
+	tables := []string{"students", "parents", "settings", "devices", "notifications", "banners", "admins", "device_tokens", "school_closures", "admin_activity_log"}
 	for _, tb := range tables {
 		exec("ALTER TABLE " + tb + " RENAME TO " + tb + "_offline")
 	}
@@ -1542,6 +1567,7 @@ func (r *runner) databaseFailures() {
 	r.call("GET /api/admin/schedule/classes", "database error", "", admin, nil, 500)
 	r.call("GET /api/admin/broadcasts", "database error", "", admin, nil, 500)
 	r.call("GET /api/admin/holidays", "database error", "", admin, nil, 500)
+	r.call("GET /api/admin/activity-log", "database error", "", admin, nil, 500)
 	r.call("POST /api/admin/holidays", "database error", "", admin, map[string]any{"kind": "holiday", "start_date": "2099-01-04", "title": "Down", "notify": false}, 500)
 	r.call("POST /api/admin/holidays/cancel", "database error", "", admin, map[string]any{"id": 1, "notify": false}, 500)
 	r.call("POST /api/admin/broadcasts", "database error", "", admin, map[string]any{"title": "Down", "body": "Down", "audience": map[string]any{"type": "all"}}, 500)
@@ -1621,6 +1647,7 @@ func (r *runner) transport(t *testing.T) {
 	record("wrong method on the broadcasts route", "DELETE", "/api/admin/broadcasts", nil, 405, "GET, HEAD, POST")
 	record("wrong method on the holidays route", "PUT", "/api/admin/holidays", nil, 405, "GET, HEAD, POST")
 	record("wrong method on the holiday cancel route", "GET", "/api/admin/holidays/cancel", nil, 405, "POST")
+	record("the activity log cannot be written", "DELETE", "/api/admin/activity-log", nil, 405, "GET, HEAD")
 	record("wrong method on the schedule export route", "POST", "/api/admin/schedule/export", nil, 405, "GET, HEAD")
 	record("wrong method on the banner picture route", "DELETE", "/api/mobile/banners/image", nil, 405, "GET, HEAD")
 	record("wrong method on a login route", "GET", "/api/admin/login", nil, 405, "POST")
@@ -1663,7 +1690,7 @@ type route struct {
 }
 
 var knownMiddleware = map[string]bool{
-	"AdminMiddleware": true, "AuthMiddleware": true, "DeviceAuthMiddleware": true, "HardwareLoggerMiddleware": true,
+	"AdminMiddleware": true, "ActivityLog": true, "AuthMiddleware": true, "DeviceAuthMiddleware": true, "HardwareLoggerMiddleware": true,
 }
 
 // mainRoutes reads every mux.HandleFunc/Handle registration in cmd/api/main.go.
@@ -2235,6 +2262,17 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 		}},
 		{"the create request loses confirm", []string{"requests"}, func(root map[string]any) {
 			delete(obj(node(schemas(root), "HolidayCreateRequest")["properties"]), "confirm")
+		}},
+		{"an activity log item loses result", []string{"responses"}, func(root map[string]any) {
+			delete(obj(node(schemas(root), "ActivityLogItem")["properties"]), "result")
+		}},
+		{"the activity log page loses has_more", []string{"responses"}, func(root map[string]any) {
+			page := node(schemas(root), "ActivityLogPage")
+			delete(obj(page["properties"]), "has_more")
+			page["required"] = []any{"status", "data", "next_before"}
+		}},
+		{"listActivityLog loses its 400", []string{"responses"}, func(root map[string]any) {
+			delete(node(root, "paths", "/api/admin/activity-log", "get", "responses"), "400")
 		}},
 		{"the import loses the grade part", []string{"requests"}, func(root map[string]any) {
 			delete(obj(node(schemas(root), "ScheduleImportRequest")["properties"]), "grade")

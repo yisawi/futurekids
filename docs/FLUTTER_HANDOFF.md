@@ -665,6 +665,70 @@ row 4 names the day.
 - **Notifications:** registering or cancelling a closure sends an ordinary notification; nothing
   else changes in the notifications list.
 
+### Admin activity log (سجل النشاط)
+
+A **read-only page** listing what was done in the dashboard, newest first. It has no filters,
+and no edit, delete or export: the API has none.
+
+**Loading:** `GET /api/admin/activity-log` returns 50 entries, `has_more` and `next_before`.
+Show a "load more" button while `has_more` is `true`, and call it again with
+`?before=<next_before>` to append the next 50, as in the broadcasts sent log.
+
+**Columns:**
+
+| Column | Field | Notes |
+|---|---|---|
+| Time | `created_at` | RFC 3339 with `+03:00`; show it in Baghdad time |
+| Actor | `actor` | always the one shared admin account, or `unknown` for a failed login |
+| Action | `action` | a stable code; show an Arabic label (below) |
+| Target | `target_type` + `target_id` | for example "student 42", "class G3/A", "device SN-1"; empty when `null` |
+| Result | `result` | `success`, `rejected` or `failed` |
+| IP | `ip` | can be `null` |
+| Detail | `detail` | identifiers and counts, for example `date=2026-10-13` or `audience=class recipients=24`; `dry_run` means it was a preview that changed nothing |
+
+**Action labels:** map each code to an Arabic label, and show any code you don't know as it is.
+New codes may appear later without an API change.
+
+| Code | Suggested label |
+|---|---|
+| `login.success` | تسجيل دخول |
+| `login.failed` | محاولة دخول فاشلة |
+| `student.create` | إضافة طالب |
+| `student.update` | تعديل طالب |
+| `student.deactivate` | إيقاف طالب |
+| `device.create` | إضافة جهاز |
+| `device.update` | تعديل جهاز |
+| `device.disable` | تعطيل جهاز |
+| `leave.create` | تسجيل إجازة |
+| `leave.delete` | إلغاء إجازة |
+| `settings.update` | تعديل الإعدادات |
+| `schedule.save` | حفظ الجدول |
+| `schedule.import` | استيراد الجدول |
+| `broadcast.send` | إرسال إشعار |
+| `holiday.create` | تسجيل عطلة |
+| `holiday.cancel` | إلغاء عطلة |
+| `banner.create` | إضافة إعلان |
+| `banner.update` | تعديل إعلان |
+| `banner.delete` | حذف إعلان |
+| `export.attendance` | تصدير الحضور |
+| `export.schedule` | تصدير الجدول |
+
+**Result colours:** `success` green, `rejected` (the server refused the request: 4xx) amber,
+`failed` (server error: 5xx) red.
+
+**What it records:** every admin request that changes something, including refused ones; the
+two Excel exports; and login attempts that reached the password check. It doesn't record
+reads, requests with a missing or expired token, logins blocked by the rate limit, or anything
+from the parent app or the devices. It never holds passwords, PINs, names, phone numbers,
+titles, notes or setting values.
+
+**Keep in mind:**
+
+- **The log is best effort:** if the database failed at that moment, the action still happened
+  but its entry is missing.
+- **The project owner can correct or remove entries** directly in the database, so the page
+  isn't a tamper-proof audit trail.
+
 ### Banners
 
 The pictures the school shows parents as a carousel on the home screen (dashboard label
@@ -732,7 +796,11 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.15.0 (this release):** school closures. New: `POST /api/admin/holidays`,
+**In API 1.16.0 (this release):** a new read-only admin endpoint, `GET /api/admin/activity-log`
+(see [Admin activity log](#admin-activity-log-سجل-النشاط)). Nothing breaks: no existing
+endpoint, response or status changed.
+
+**In API 1.15.0:** school closures. New: `POST /api/admin/holidays`,
 `POST /api/admin/holidays/cancel`, `GET /api/admin/holidays` and `GET /api/mobile/holidays` (see
 [School closures](#school-closures-العطل-الرسمية)). Additive: `day_type`, `day_title` and
 `day_notes` on `GET /api/admin/attendance`, `GET /api/admin/dashboard` and

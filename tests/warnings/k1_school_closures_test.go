@@ -1291,11 +1291,11 @@ func TestK1FakeToday(t *testing.T) {
 	})
 }
 
-// TestK1BeforePhoneNormalisation runs the new code on a database at 000027 without 000028, the
+// TestK1BeforePhoneNormalisation runs the new code on a database at 000028 without 000029, the
 // state Staging is in between the steps of the README deploy notes.
 func TestK1BeforePhoneNormalisation(t *testing.T) {
 	db, dsn := setupThrowawayDB(t, "k1v27")
-	if _, err := db.Exec(a14Migration(t, "000028_normalize_phone_numbers.down.sql")); err != nil {
+	if _, err := db.Exec(a14Migration(t, "000029_normalize_phone_numbers.down.sql")); err != nil {
 		t.Fatal(err)
 	}
 	j1Seed(t, db)
@@ -1305,22 +1305,22 @@ func TestK1BeforePhoneNormalisation(t *testing.T) {
 	admin := a14Bearer(a14AdminToken(t, srv))
 	r := a14Do(t, srv, "POST", "/api/admin/holidays", admin, k1Closure("kind", "holiday", "start_date", "2026-10-11", "end_date", "2026-10-15", "title", "عطلة"))
 	if res := k1Decode(t, r); r.status != 200 || res.Data.RecipientCount != 6 {
-		t.Errorf("create on 000027: %d %s", r.status, r.body)
+		t.Errorf("create on 000028: %d %s", r.status, r.body)
 	}
 	for _, path := range []string{"/api/admin/holidays", "/api/admin/attendance?date=2026-10-11", "/api/admin/dashboard"} {
 		if r := a14Do(t, srv, "GET", path, admin, nil); r.status != 200 {
-			t.Errorf("%s on 000027: %d %s", path, r.status, r.body)
+			t.Errorf("%s on 000028: %d %s", path, r.status, r.body)
 		}
 	}
 	if r := a14Do(t, srv, "GET", "/api/mobile/holidays?month=2026-10", j1ParentToken(t, 3001, "+9647000003001"), nil); r.status != 200 || strings.Count(string(r.body), `"date"`) != 5 {
-		t.Errorf("parent holidays on 000027: %d %s", r.status, r.body)
+		t.Errorf("parent holidays on 000028: %d %s", r.status, r.body)
 	}
 }
 
 // TestK1ClosuresMigration verifies migration 000027: it adds only school_closures (with its
 // checks and the link to broadcasts) to a database at 000026, rolls back to the exact earlier
 // schema keeping every broadcast, and applies again; golang-migrate reaches it from versions 20
-// to 26; and phone normalisation (now 000028) still applies last, collision abort included.
+// to 26; and phone normalisation (now 000029) still applies last, collision abort included.
 func TestK1ClosuresMigration(t *testing.T) {
 	migrate, err := exec.LookPath("migrate")
 	if err != nil {
@@ -1329,7 +1329,7 @@ func TestK1ClosuresMigration(t *testing.T) {
 	fresh := func(t *testing.T, label string) (*sql.DB, func(args ...string) (string, error)) {
 		t.Helper()
 		cli, cliDSN := setupThrowawayDB(t, label)
-		for _, tbl := range []string{"school_closures", "broadcasts", "announcements", "banner_images", "device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
+		for _, tbl := range []string{"admin_activity_log", "school_closures", "broadcasts", "announcements", "banner_images", "device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
 			if _, err := cli.Exec("DROP TABLE IF EXISTS " + tbl + " CASCADE"); err != nil {
 				t.Fatal(err)
 			}
@@ -1413,7 +1413,7 @@ func TestK1ClosuresMigration(t *testing.T) {
 	})
 
 	for _, from := range []string{"20", "21", "22", "23", "24", "25", "26"} {
-		t.Run("golang-migrate from version "+from+" through 27 to 28", func(t *testing.T) {
+		t.Run("golang-migrate from version "+from+" through 27 to 29", func(t *testing.T) {
 			db, run := fresh(t, "k1v"+from)
 			if out, err := run("goto", from); err != nil {
 				t.Fatalf("goto %s: %v\n%s", from, err, out)
@@ -1427,16 +1427,16 @@ func TestK1ClosuresMigration(t *testing.T) {
 			if out, err := run("up"); err != nil {
 				t.Fatalf("up: %v\n%s", err, out)
 			}
-			if v, _ := run("version"); v != "28" {
-				t.Errorf("version %q, want 28", v)
+			if v, _ := run("version"); v != "29" {
+				t.Errorf("version %q, want 29", v)
 			}
 			if closures, phone := state(db); !closures || !phone {
-				t.Errorf("at 28: school_closures %v, phone columns %v", closures, phone)
+				t.Errorf("at 29: school_closures %v, phone columns %v", closures, phone)
 			}
 		})
 	}
 
-	t.Run("000028 still aborts on collisions after 000027", func(t *testing.T) {
+	t.Run("000029 still aborts on collisions after 000027", func(t *testing.T) {
 		db, run := fresh(t, "k1coll")
 		if out, err := run("goto", "27"); err != nil {
 			t.Fatalf("goto 27: %v\n%s", err, out)
@@ -1444,10 +1444,10 @@ func TestK1ClosuresMigration(t *testing.T) {
 		k1Exec(t, db, `INSERT INTO parents (id, full_name, phone_number, pin_code) VALUES (991, 'A', '07000000991', 'x'), (992, 'B', '+9647000000991', 'x')`)
 		out, err := run("up")
 		if err == nil || !strings.Contains(out, "[991, 992]") {
-			t.Fatalf("000028 should abort listing [991, 992]: %v\n%s", err, out)
+			t.Fatalf("000029 should abort listing [991, 992]: %v\n%s", err, out)
 		}
 		if closures, phone := state(db); !closures || phone {
-			t.Errorf("after the aborted 000028: school_closures %v, phone columns %v; want true, false", closures, phone)
+			t.Errorf("after the aborted 000029: school_closures %v, phone columns %v; want true, false", closures, phone)
 		}
 	})
 }

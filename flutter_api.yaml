@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Future Kids Attendance System API
-  version: 1.15.0
+  version: 1.16.0
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -1637,6 +1637,67 @@ paths:
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/admin/activity-log:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listActivityLog
+      summary: The admin activity log
+      description: |
+        What was done in the admin dashboard, newest first, 50 per page (`before`, `has_more` and
+        `next_before` work as in `GET /api/admin/broadcasts`). There are no filters. The log is
+        read-only: there is no endpoint to edit, delete or export it, and `POST`, `PUT` and
+        `DELETE` on this path get the standard JSON 405 with `Allow: GET, HEAD`.
+
+        **Recorded** (one entry per request, after it was answered, with its real status):
+        every admin request with a method other than GET, HEAD or OPTIONS, also when it was
+        answered 400, 404, 409 or 500; the two Excel exports; and admin login attempts that
+        reached the credential check. **Not recorded:** other GET requests (including reading
+        this log), requests the admin authentication rejected, login requests answered 429 by
+        the rate limit or rejected as malformed, parent and device requests.
+
+        Entries hold identifiers and counts only: never passwords, PINs, tokens, names, phone
+        numbers, titles, notes or setting values. Recording is best effort: if the database
+        fails at that moment the request is answered as usual and its entry is missing. The
+        owner may correct or remove entries directly in the database.
+
+        Action codes (show an unknown code as it is):
+
+        | Code | Request | Target |
+        |---|---|---|
+        | `login.success`, `login.failed` | `POST /api/admin/login` | none; `actor` is `unknown` for a failure |
+        | `student.create`, `student.update`, `student.deactivate` | `POST`, `PUT`, `DELETE /api/admin/students` | `student` id |
+        | `device.create`, `device.update`, `device.disable` | `POST`, `PUT`, `DELETE /api/admin/devices` | `device` serial number |
+        | `leave.create`, `leave.delete` | `POST`, `DELETE /api/admin/leaves` | `student` id; `detail` has the date |
+        | `settings.update` | `PUT /api/admin/settings` | `setting` keys, never values |
+        | `schedule.save` | `PUT /api/admin/schedule` | `class` (`grade/section`); `detail` has the period count |
+        | `schedule.import` | `POST /api/admin/schedule/import` | `class` when the class guard was sent; `detail` has class and period counts |
+        | `broadcast.send` | `POST /api/admin/broadcasts` | `broadcast` id; `detail` has the audience type and recipient count |
+        | `holiday.create`, `holiday.cancel` | `POST /api/admin/holidays`, `POST /api/admin/holidays/cancel` | `closure` id; `detail` has the kind (and the cancel action) |
+        | `banner.create`, `banner.update`, `banner.delete` | `POST`, `PUT`, `DELETE /api/admin/banners` | `banner` id |
+        | `export.attendance` | `GET /api/admin/export/excel` | `date` |
+        | `export.schedule` | `GET /api/admin/schedule/export` | `class` |
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/ActivityLogBefore'
+      responses:
+        '200':
+          description: A page of the log.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityLogPage'
+        '400':
+          $ref: '#/components/responses/ActivityLogCursorBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/admin/banners:
     get:
       tags:
@@ -2138,6 +2199,18 @@ components:
         format: int64
         minimum: 1
       example: 120
+    ActivityLogBefore:
+      name: before
+      in: query
+      required: false
+      description: |
+        Cursor: return only entries with an id lower than this. Pass the `next_before` of the
+        previous page. Omit it for the newest page. Not a positive integer: 400.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 5120
     NotificationIdQuery:
       name: id
       in: query
@@ -4733,6 +4806,162 @@ components:
             kind: holiday
             title: عطلة الربيع
             notes: null
+    ActivityLogItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+          description: When the request finished, RFC 3339 with the `+03:00` offset.
+        actor:
+          type: string
+          description: |
+            The admin account (there is one shared account), or `unknown` for a failed login.
+        action:
+          type: string
+          description: |
+            A stable `resource.verb` code; see `listActivityLog` for the list. Show a code the
+            app does not know as it is.
+        method:
+          type: string
+          enum:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+        path:
+          type: string
+          description: The request path, without the query string.
+        status:
+          type: integer
+          format: int32
+          description: The HTTP status the request was answered with (500 for a request that crashed).
+        result:
+          type: string
+          enum:
+            - success
+            - rejected
+            - failed
+          description: '`success` for 2xx and 3xx, `rejected` for 4xx, `failed` for 5xx.'
+        ip:
+          type: string
+          nullable: true
+          description: The client address, as the login rate limit sees it.
+        target_type:
+          type: string
+          nullable: true
+          enum:
+            - student
+            - device
+            - setting
+            - class
+            - banner
+            - broadcast
+            - closure
+            - date
+            - null
+          description: What the action was on; null when it has no target.
+        target_id:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: |
+            The target's identifier: a student, banner, broadcast or closure id, a device serial
+            number, setting keys (comma-separated), a class as `grade/section`, or a date. Never
+            a name.
+        detail:
+          type: string
+          nullable: true
+          maxLength: 200
+          description: |
+            Identifiers and counts only, for example `date=2026-09-24`, `periods=30`,
+            `audience=class recipients=24`, `kind=holiday` or `dry_run` (the request was a
+            preview and changed nothing).
+      required:
+        - id
+        - created_at
+        - actor
+        - action
+        - method
+        - path
+        - status
+        - result
+        - ip
+        - target_type
+        - target_id
+        - detail
+      example:
+        id: 5120
+        created_at: '2026-10-13T09:15:04+03:00'
+        actor: admin
+        action: leave.create
+        method: POST
+        path: /api/admin/leaves
+        status: 200
+        result: success
+        ip: 203.0.113.7
+        target_type: student
+        target_id: '42'
+        detail: date=2026-10-13
+    ActivityLogPage:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          maxItems: 50
+          description: Newest first (descending id).
+          items:
+            $ref: '#/components/schemas/ActivityLogItem'
+        has_more:
+          type: boolean
+          description: True when older entries exist.
+        next_before:
+          type: integer
+          format: int64
+          nullable: true
+          description: The id of the last item on this page. Pass it as `before` for the next page; null when `has_more` is false.
+      required:
+        - status
+        - data
+        - has_more
+        - next_before
+      example:
+        status: success
+        data:
+          - id: 5121
+            created_at: '2026-10-13T09:16:40+03:00'
+            actor: admin
+            action: student.update
+            method: PUT
+            path: /api/admin/students
+            status: 409
+            result: rejected
+            ip: 203.0.113.7
+            target_type: student
+            target_id: '42'
+            detail: null
+          - id: 5120
+            created_at: '2026-10-13T09:15:04+03:00'
+            actor: unknown
+            action: login.failed
+            method: POST
+            path: /api/admin/login
+            status: 401
+            result: rejected
+            ip: 198.51.100.23
+            target_type: null
+            target_id: null
+            detail: null
+        has_more: false
+        next_before: null
     MarkAllReadResponse:
       type: object
       properties:
@@ -5223,6 +5452,15 @@ components:
           example:
             status: error
             message: This closure is already over
+    ActivityLogCursorBadRequest:
+      description: '`before` is not a positive integer.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: before must be a positive activity log id
     BannerWriteBadRequest:
       description: |
         Not `multipart/form-data` or a malformed body; a field sent twice; `image` missing (create),

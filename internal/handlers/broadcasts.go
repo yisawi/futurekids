@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -186,6 +187,7 @@ func (app *AppEnv) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	NoteActivity(r, "", "", dryRunDetail(dryRun, "audience="+audience.Type))
 	if audience.Type == notify.AudienceParent {
 		var id int
 		switch err := app.DB.QueryRowContext(r.Context(), `SELECT id FROM parents WHERE phone_number = $1`, parentPhone).Scan(&id); {
@@ -209,6 +211,7 @@ func (app *AppEnv) createBroadcast(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "No parents match this audience")
 			return
 		}
+		NoteActivity(r, "", "", dryRunDetail(true, "audience="+audience.Type, fmt.Sprintf("recipients=%d", n)))
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"status":  "success",
 			"message": "Preview only",
@@ -248,6 +251,7 @@ func (app *AppEnv) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("Broadcast sent", "broadcast_id", id, "audience", audience.Type, "recipients", recipients)
+	NoteActivity(r, "broadcast", strconv.Itoa(id), fmt.Sprintf("audience=%s recipients=%d", audience.Type, recipients))
 	notify.PushBroadcast(app.Background, app.FCMClient, app.DB, id, title, body)
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "success",

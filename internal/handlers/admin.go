@@ -139,6 +139,7 @@ func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 	case err == sql.ErrNoRows:
 		burnBcrypt(req.Password)
 		userOutcome, ipOutcome = ratelimit.Failed, ratelimit.Failed
+		noteLogin(r, false, "")
 		respondError(w, http.StatusUnauthorized, "بيانات الدخول غير صحيحة")
 		return
 	case err != nil:
@@ -148,6 +149,7 @@ func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(req.Password)); err != nil {
 		userOutcome, ipOutcome = ratelimit.Failed, ratelimit.Failed
+		noteLogin(r, false, "")
 		respondError(w, http.StatusUnauthorized, "بيانات الدخول غير صحيحة")
 		return
 	}
@@ -159,6 +161,7 @@ func (app *AppEnv) AdminLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	noteLogin(r, true, req.Username)
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"data":   map[string]string{"token": tokenString},
@@ -429,6 +432,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		req.ParentPin = "" // Don't echo it back
+		NoteActivity(r, "student", strconv.Itoa(req.ID), "")
 		respondJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "message": "Student created", "data": req})
 
 	// 3. التعديل
@@ -440,6 +444,9 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 		if req.ID == 0 {
 			respondError(w, http.StatusBadRequest, "Invalid request body or missing ID")
 			return
+		}
+		if req.ID > 0 {
+			NoteActivity(r, "student", strconv.Itoa(req.ID), "")
 		}
 		if msg := validateStudentPayload(&req); msg != "" {
 			respondError(w, http.StatusBadRequest, msg)
@@ -486,6 +493,9 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 
 	// 4. الحذف (يحذف الطالب فقط ويبقي بيانات ولي الأمر)
 	case http.MethodDelete:
+		if id := positiveIDParam(r, "id"); id != "" {
+			NoteActivity(r, "student", id, "")
+		}
 		id, err := strconv.Atoi(r.URL.Query().Get("id"))
 		if err != nil || id == 0 {
 			respondError(w, http.StatusBadRequest, "Invalid student ID")
@@ -536,6 +546,7 @@ func (app *AppEnv) cancelLeave(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "student_id must be a positive student id")
 		return
 	}
+	NoteActivity(r, "student", strconv.Itoa(studentID), "")
 	leaveDate, err := time.Parse("2006-01-02", date)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "date must be formatted as YYYY-MM-DD")
@@ -545,6 +556,7 @@ func (app *AppEnv) cancelLeave(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "date must have a year from 2000 to 2100")
 		return
 	}
+	NoteActivity(r, "student", strconv.Itoa(studentID), "date="+leaveDate.Format("2006-01-02"))
 	res, err := app.DB.ExecContext(r.Context(), `DELETE FROM student_leaves WHERE student_id = $1 AND leave_date = $2`, studentID, date)
 	if err != nil {
 		respondInternalError(w, "Failed to cancel leave", "AdminCreateLeaveHandler: delete failed", err, "student_id", studentID, "date", date)
@@ -582,6 +594,7 @@ func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusBadRequest, "student_id must be a positive student id")
 		return
 	}
+	NoteActivity(r, "student", strconv.Itoa(req.StudentID), "")
 	leaveDate, err := time.Parse("2006-01-02", req.LeaveDate)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "leave_date must be formatted as YYYY-MM-DD")
@@ -591,6 +604,7 @@ func (app *AppEnv) AdminCreateLeaveHandler(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusBadRequest, "leave_date must have a year from 2000 to 2100")
 		return
 	}
+	NoteActivity(r, "student", strconv.Itoa(req.StudentID), "date="+leaveDate.Format("2006-01-02"))
 
 	query := `
 		INSERT INTO student_leaves (student_id, leave_date, notes)
@@ -694,6 +708,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	NoteActivity(r, "date", dateParam, "")
 
 	schoolName, err := app.readSchoolName(r.Context(), "AdminExportExcelHandler")
 	if err != nil {
@@ -906,6 +921,7 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, "Invalid payload")
 			return
 		}
+		NoteActivity(r, "setting", SettingKeysTarget(req.Key), "")
 		if msg := tooLong("key", req.Key, 100); msg != "" {
 			respondError(w, http.StatusBadRequest, msg)
 			return
@@ -984,6 +1000,7 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSONBody(w, r, &req, "Invalid payload or missing SN") {
 			return
 		}
+		NoteActivity(r, "device", req.SerialNumber, "")
 		if req.SerialNumber == "" {
 			respondError(w, http.StatusBadRequest, "Invalid payload or missing SN")
 			return
@@ -1014,6 +1031,7 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSONBody(w, r, &req, "Invalid payload") {
 			return
 		}
+		NoteActivity(r, "device", req.SerialNumber, "")
 		if req.SerialNumber == "" {
 			respondError(w, http.StatusBadRequest, "Invalid payload")
 			return
@@ -1047,6 +1065,7 @@ func (app *AppEnv) AdminDevicesHandler(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodDelete:
 		sn := r.URL.Query().Get("sn")
+		NoteActivity(r, "device", sn, "")
 		if sn == "" {
 			respondError(w, http.StatusBadRequest, "Missing device SN")
 			return
@@ -1297,6 +1316,7 @@ func (app *AppEnv) AdminScheduleHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, msg)
 			return
 		}
+		NoteActivity(r, "class", req.Grade+"/"+req.Section, fmt.Sprintf("periods=%d", len(*req.Periods)))
 		var saved []SchedulePeriod
 		err := func() error {
 			tx, err := app.DB.BeginTx(r.Context(), nil)
