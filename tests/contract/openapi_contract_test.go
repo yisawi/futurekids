@@ -378,10 +378,10 @@ func weekdayRank(day string) int {
 }
 
 // contractNow is the Asia/Baghdad time the server runs at: now, moved back to the latest
-// Sunday-to-Thursday date, which the server gets as FAKE_TODAY.
+// Monday-to-Thursday date (so yesterday is a school day too), which the server gets as FAKE_TODAY.
 func contractNow() time.Time {
 	now := tz.Now()
-	for now.Weekday() == time.Friday || now.Weekday() == time.Saturday {
+	for now.Weekday() == time.Friday || now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
 		now = now.AddDate(0, 0, -1)
 	}
 	return now
@@ -1019,6 +1019,74 @@ func (r *runner) scenario() {
 	r.expect("Excel file name", x.header.Get("Content-Disposition"), "attachment; filename=attendance_"+today+".xlsx")
 	adminDenied("GET /api/admin/export/excel", "", nil)
 
+	// ── Manual attendance ──────────────────────────────────────────────────────
+	if _, err := r.db.Exec(`UPDATE students SET created_at = created_at - INTERVAL '2 days' WHERE id = $1`, idA); err != nil {
+		t.Fatal(err)
+	}
+	manual := func(kv ...any) map[string]any {
+		m := map[string]any{"student_id": idA, "date": yesterday, "type": "in"}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i].(string)] = kv[i+1]
+		}
+		return m
+	}
+	_, d = r.call("POST /api/admin/attendance/manual", "preview a manual check-in", "", admin, manual("dry_run", true), 200)
+	r.expect("manual preview", fmt.Sprint(at(d, "message"), " ", at(d, "data", "id"), " ", at(d, "data", "student_name"), " ", at(d, "data", "grade"), " ", at(d, "data", "section"), " ", at(d, "data", "time"), " ", at(d, "data", "notified"), " ", at(d, "data", "dry_run")),
+		"Preview only <nil> Sara Example G3 A 08:00:00 true true")
+	_, d = r.call("POST /api/admin/attendance/manual", "manual check-in yesterday", "", admin, manual("note", "البصمة لم تعمل"), 200)
+	manualID := toInt(at(d, "data", "id"))
+	r.expect("manual check-in", fmt.Sprint(at(d, "message"), " ", at(d, "data", "source"), " ", at(d, "data", "note"), " ", at(d, "data", "notified"), " ", manualID > 0),
+		"Manual attendance recorded manual البصمة لم تعمل true true")
+	_, d = r.call("POST /api/admin/attendance/manual", "a check-in already recorded", "", admin, manual("time", "09:00"), 409)
+	r.expect("duplicate message", at(d, "message"), "Student already has a check-in at 08:00 AM on "+yesterday+" (manual)")
+	for _, tc := range []struct {
+		name string
+		body any
+		msg  string
+	}{
+		{"student_id missing", map[string]any{"type": "in"}, "student_id is required"},
+		{"type unknown", manual("type", "lunch"), "type must be in or out"},
+		{"time outside the window", manual("time", "09:31"), "time must be in the check-in window 06:30:00 to 09:30:59"},
+		{"two days ago", manual("date", now.AddDate(0, 0, -2).Format("2006-01-02")), "date must be today (" + today + ") or yesterday (" + yesterday + ")"},
+		{"student added today", manual("student_id", idD), "The student was not registered yet on " + yesterday},
+		{"note not a string", manual("note", 5), "note must be a string"},
+		{"malformed JSON", "{", "Invalid request body"},
+	} {
+		_, d = r.call("POST /api/admin/attendance/manual", tc.name, "", admin, tc.body, 400)
+		r.expect("message for "+tc.name, at(d, "message"), tc.msg)
+	}
+	r.call("POST /api/admin/attendance/manual", "unknown student", "", admin, manual("student_id", 999999), 404)
+	r.call("POST /api/admin/attendance/manual", "oversized body", "", admin, oversized(), 413)
+	adminDenied("POST /api/admin/attendance/manual", "", manual())
+
+	_, d = r.call("GET /api/admin/attendance", "a day with a manual check-in", "?date="+yesterday, admin, nil, 200)
+	for _, rec := range list(at(d, "data")) {
+		if toInt(at(rec, "student_id")) == idA {
+			r.expect("manual marker in the report", fmt.Sprint(at(rec, "status"), " ", at(rec, "check_in_time"), " ", at(rec, "check_in_source"), " ", at(rec, "check_out_source"), " ", toInt(at(rec, "manual_punches", 0, "id")) == manualID, " ", at(rec, "manual_punches", 0, "note")),
+				"Present 08:00 AM manual <nil> true البصمة لم تعمل")
+		}
+	}
+
+	var devicePunch, oldManual int
+	r.db.QueryRow(`SELECT id FROM attendance_logs WHERE source = 'device' ORDER BY id LIMIT 1`).Scan(&devicePunch)
+	if err := r.db.QueryRow(`INSERT INTO attendance_logs (student_id, check_time, source) VALUES ($1, $2::date + INTERVAL '8 hours', 'manual') RETURNING id`, idA, now.AddDate(0, 0, -3).Format("2006-01-02")).Scan(&oldManual); err != nil {
+		t.Fatal(err)
+	}
+	_, d = r.call("DELETE /api/admin/attendance/manual", "a device punch", fmt.Sprintf("?id=%d", devicePunch), admin, nil, 409)
+	r.expect("device punch message", at(d, "message"), "Only manual entries can be deleted; this punch came from a device")
+	_, d = r.call("DELETE /api/admin/attendance/manual", "a manual entry from before yesterday", fmt.Sprintf("?id=%d", oldManual), admin, nil, 409)
+	r.expect("old manual entry message", at(d, "message"), "Only manual entries from today ("+today+") or yesterday ("+yesterday+") can be deleted")
+	r.call("DELETE /api/admin/attendance/manual", "unknown id", "?id=999999999", admin, nil, 404)
+	r.call("DELETE /api/admin/attendance/manual", "id not a number", "?id=abc", admin, nil, 400)
+	adminDenied("DELETE /api/admin/attendance/manual", fmt.Sprintf("?id=%d", manualID), nil)
+	_, d = r.call("DELETE /api/admin/attendance/manual", "undo the manual check-in", fmt.Sprintf("?id=%d", manualID), admin, nil, 200)
+	r.expect("deleted entry", fmt.Sprint(at(d, "message"), " ", at(d, "data", "student_name"), " ", at(d, "data", "date"), " ", at(d, "data", "type"), " ", at(d, "data", "time")),
+		"Manual attendance deleted Sara Example "+yesterday+" in 08:00:00")
+	r.call("DELETE /api/admin/attendance/manual", "already deleted", fmt.Sprintf("?id=%d", manualID), admin, nil, 404)
+	if _, err := r.db.Exec(`DELETE FROM attendance_logs WHERE id = $1`, oldManual); err != nil {
+		t.Fatal(err)
+	}
+
 	deadline := time.Now().Add(10 * time.Second)
 	for synced := false; !synced && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		r.db.QueryRow(`SELECT last_sync IS NOT NULL FROM devices WHERE serial_number = 'TEST-SN-0001'`).Scan(&synced)
@@ -1568,6 +1636,8 @@ func (r *runner) databaseFailures() {
 	r.call("GET /api/admin/broadcasts", "database error", "", admin, nil, 500)
 	r.call("GET /api/admin/holidays", "database error", "", admin, nil, 500)
 	r.call("GET /api/admin/activity-log", "database error", "", admin, nil, 500)
+	r.call("POST /api/admin/attendance/manual", "database error", "", admin, map[string]any{"student_id": 1, "date": contractNow().AddDate(0, 0, -1).Format("2006-01-02"), "type": "in"}, 500)
+	r.call("DELETE /api/admin/attendance/manual", "database error", "?id=1", admin, nil, 500)
 	r.call("POST /api/admin/holidays", "database error", "", admin, map[string]any{"kind": "holiday", "start_date": "2099-01-04", "title": "Down", "notify": false}, 500)
 	r.call("POST /api/admin/holidays/cancel", "database error", "", admin, map[string]any{"id": 1, "notify": false}, 500)
 	r.call("POST /api/admin/broadcasts", "database error", "", admin, map[string]any{"title": "Down", "body": "Down", "audience": map[string]any{"type": "all"}}, 500)
@@ -2270,6 +2340,17 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 			page := node(schemas(root), "ActivityLogPage")
 			delete(obj(page["properties"]), "has_more")
 			page["required"] = []any{"status", "data", "next_before"}
+		}},
+		{"a manual attendance item loses notified", []string{"responses"}, func(root map[string]any) {
+			delete(obj(node(schemas(root), "ManualAttendanceItem")["properties"]), "notified")
+		}},
+		{"the admin daily item loses manual_punches", []string{"responses"}, func(root map[string]any) {
+			item := node(schemas(root), "AdminDailyAttendanceItem")
+			delete(obj(item["properties"]), "manual_punches")
+			item["required"] = []any{"student_id", "full_name", "status", "check_in_time", "check_out_time", "check_in_source", "check_out_source"}
+		}},
+		{"deleteManualAttendance loses its 409", []string{"responses"}, func(root map[string]any) {
+			delete(node(root, "paths", "/api/admin/attendance/manual", "delete", "responses"), "409")
 		}},
 		{"listActivityLog loses its 400", []string{"responses"}, func(root map[string]any) {
 			delete(node(root, "paths", "/api/admin/activity-log", "get", "responses"), "400")

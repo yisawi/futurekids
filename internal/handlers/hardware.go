@@ -537,14 +537,7 @@ var notifyPunchesSQL = `
 	  AND ` + fmt.Sprintf(schoolDaySQL, "p.check_time::date")
 
 func (app *AppEnv) sendPunchNotification(studentID int, checkTime time.Time, studentName string, deviceTokens []string, parentID sql.NullInt64, parentPhone sql.NullString, isCheckOut bool) {
-	title := "إشعار دخول"
-	body := fmt.Sprintf("تم تسجيل دخول الطالب %s الساعة %s",
-		studentName, checkTime.Format("15:04"))
-	if isCheckOut {
-		title = "إشعار خروج"
-		body = fmt.Sprintf("تم تسجيل خروج الطالب %s الساعة %s",
-			studentName, checkTime.Format("15:04"))
-	}
+	title, body := PunchNotificationText(studentName, checkTime, isCheckOut)
 
 	slog.Debug("ADMSHandler: sending notifications",
 		"student_id", studentID,

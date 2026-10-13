@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"future_kids/internal/tz"
@@ -19,6 +20,31 @@ func today() string { return Clock().Format("2006-01-02") }
 // (check_time < p_date + INTERVAL '9 hours 31 minutes'). Before it, the parent month views leave
 // out today's record when it is Absent, since the child may simply not have arrived yet.
 const CheckInWindowEnd = 9*time.Hour + 31*time.Minute
+
+// The other window bounds of the status function (000017), after midnight: the check-in window
+// starts at CheckInWindowStart, the check-out window is CheckOutWindowStart to CheckOutWindowEnd
+// (exclusive).
+const (
+	CheckInWindowStart  = 6*time.Hour + 30*time.Minute
+	CheckOutWindowStart = 11*time.Hour + 30*time.Minute
+	CheckOutWindowEnd   = 13*time.Hour + 31*time.Minute
+)
+
+// checkInWindowSQL and checkOutWindowSQL are true when the check_time given as %[1]s falls in the
+// window of the date given as %[2]s, exactly as in the status function.
+const (
+	checkInWindowSQL  = "(%[1]s >= %[2]s + INTERVAL '6 hours 30 minutes' AND %[1]s < %[2]s + INTERVAL '9 hours 31 minutes')"
+	checkOutWindowSQL = "(%[1]s >= %[2]s + INTERVAL '11 hours 30 minutes' AND %[1]s < %[2]s + INTERVAL '13 hours 31 minutes')"
+)
+
+// PunchNotificationText is the title and body of the notification for a student's check-in or
+// check-out at checkTime.
+func PunchNotificationText(studentName string, checkTime time.Time, isCheckOut bool) (title, body string) {
+	if isCheckOut {
+		return "إشعار خروج", fmt.Sprintf("تم تسجيل خروج الطالب %s الساعة %s", studentName, checkTime.Format("15:04"))
+	}
+	return "إشعار دخول", fmt.Sprintf("تم تسجيل دخول الطالب %s الساعة %s", studentName, checkTime.Format("15:04"))
+}
 
 // studentExistedOnSQL is true when student s already existed on the date given as %s. A student
 // is counted from the date of students.created_at, inclusive; the column holds Asia/Baghdad wall

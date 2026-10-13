@@ -26,6 +26,13 @@ const (
 // the keys school closures added to the daily report; 2026-03-01 is a Sunday, a school day.
 const c1DayFields = `"day_notes":null,"day_title":null,"day_type":"school",`
 
+// c1Markers are the fields O1 added to each admin daily item, for child one (device punches) and
+// child two (no punch).
+var c1Markers = [2]string{
+	`,"check_in_source":"device","check_out_source":"device","manual_punches":[]`,
+	`,"check_in_source":null,"check_out_source":null,"manual_punches":[]`,
+}
+
 // c1Setup seeds one parent with two children in March 2026 (a past month, so responses are
 // fixed): child one punches in and out on 1 March, only out on 2 March, has a leave on 3 March;
 // child two never punches.
@@ -106,14 +113,20 @@ func TestC1MonthlyCheckInTime(t *testing.T) {
 		}
 	})
 
-	t.Run("the admin daily report is unchanged but for the day fields", func(t *testing.T) {
+	t.Run("the admin daily report is unchanged but for the day fields and the manual-entry markers", func(t *testing.T) {
 		daily := serve(t, app.AdminMiddleware(app.AdminDailyAttendanceHandler), http.MethodGet, c1DailyPath, admin, "")
 		want := strings.Replace(c1GoldenDaily, `"date":"2026-03-01",`, `"date":"2026-03-01",`+c1DayFields, 1)
+		want = strings.Replace(want, `"check_out_time":"12:30 PM"}`, `"check_out_time":"12:30 PM"`+c1Markers[0]+`}`, 1)
+		want = strings.Replace(want, `"check_out_time":null}`, `"check_out_time":null`+c1Markers[1]+`}`, 1)
 		if daily.Code != http.StatusOK || daily.Body.String() != want {
 			t.Errorf("HTTP %d; body changed:\ngot  %s\nwant %s", daily.Code, daily.Body.String(), want)
 		}
-		if without := strings.Replace(daily.Body.String(), c1DayFields, "", 1); without != c1GoldenDaily {
-			t.Errorf("without the day fields the body differs from before:\ngot  %s\nwant %s", without, c1GoldenDaily)
+		without := strings.Replace(daily.Body.String(), c1DayFields, "", 1)
+		for _, m := range c1Markers {
+			without = strings.Replace(without, m, "", 1)
+		}
+		if without != c1GoldenDaily {
+			t.Errorf("without the day fields and the markers the body differs from before:\ngot  %s\nwant %s", without, c1GoldenDaily)
 		}
 	})
 

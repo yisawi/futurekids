@@ -27,6 +27,13 @@ func SaveNotificationHistory(db *sql.DB, parentID int, title, body string) {
 	}
 }
 
+// SaveNotificationTx stores a notification for the parent with parentID inside tx, so it is
+// written only if the caller commits.
+func SaveNotificationTx(ctx context.Context, tx *sql.Tx, parentID int, title, body string) error {
+	_, err := tx.ExecContext(ctx, "INSERT INTO notifications (parent_id, title, body) VALUES ($1, $2, $3)", parentID, title, body)
+	return err
+}
+
 // SendPushNotification sends an FCM message in the background. If FCM reports the token as
 // unregistered (app uninstalled or token rotated), that device token is deleted so no further
 // pushes are attempted. Tokens never appear in logs; use

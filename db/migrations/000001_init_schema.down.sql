@@ -11,6 +11,8 @@
 --     and AdminScheduleImportHandler read students.
 --   internal/cron/absent_job.go — ProcessDailyAbsences reads students.
 --   internal/notify/broadcast.go — CreateBroadcast and CountRecipients read students.
+--   internal/handlers/manual_attendance.go — the manual attendance routes read students and
+--     write and delete attendance_logs rows.
 -- Data loss: every student, device and attendance punch is deleted permanently. Only run this
 --   when tearing down the whole database.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Future Kids Attendance System API
-  version: 1.16.0
+  version: 1.17.0
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -928,6 +928,11 @@ paths:
         09:31; show it as "not arrived yet" until then. For a date that is not a school day
         (`day_type` is `weekend`, `holiday` or `pause`), `data` is empty: show "عطلة نهاية
         الأسبوع" or the closure's `day_title` instead of absences.
+
+        Punches entered by hand (`createManualAttendance`) count exactly like device punches.
+        `check_in_source` and `check_out_source` say where the shown times came from (mark
+        `manual` ones), and `manual_punches` lists the student's manual entries with the ids
+        to delete them.
       security:
         - AdminJWT: []
       parameters:
@@ -938,13 +943,98 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DailyAttendanceResponse'
+                $ref: '#/components/schemas/AdminDailyAttendanceResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/AdminUnauthorized'
         '403':
           $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/attendance/manual:
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: createManualAttendance
+      summary: Enter a missing check-in or check-out by hand
+      description: |
+        For a student whose fingerprint failed (wet finger, device offline, not enrolled yet).
+        The entry is a normal punch marked `manual`: the daily report, the dashboard, the Excel
+        export, the parent app and the noon absence job treat it exactly like a device punch,
+        so a student with a manual check-in gets no absence notification. A manual check-out
+        alone also makes an absent student `Present`, as a device check-out does.
+
+        With `notify` (the default) the parent gets the normal notification with the recorded
+        time, stored in the same transaction as the entry and pushed to that parent's phones
+        after it is saved. An absence notification already sent at 12:00 cannot be recalled:
+        review the absent list between 10:00 and 11:30. Call it first with `dry_run: true` and
+        show `student_name`, `grade` and `section` in the confirmation. Each request, a dry run
+        or a refused one too, is recorded in the activity log as `attendance.manual_create`
+        (never the note).
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualAttendanceRequest'
+      responses:
+        '200':
+          description: Recorded, or checked for a dry run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualAttendanceResponse'
+        '400':
+          $ref: '#/components/responses/ManualAttendanceBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/ManualAttendanceStudentNotFound'
+        '409':
+          $ref: '#/components/responses/ManualAttendanceConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags:
+        - Admin Dashboard
+      operationId: deleteManualAttendance
+      summary: Delete a manual entry
+      description: |
+        Undo a mistaken manual entry from today or yesterday. Device punches are never deleted
+        (409). The notification the parent already received stays. Recorded in the activity log
+        as `attendance.manual_delete`.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/ManualAttendanceId'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualAttendanceDeleteResponse'
+        '400':
+          $ref: '#/components/responses/ManualAttendanceDeleteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/ManualAttendanceEntryNotFound'
+        '409':
+          $ref: '#/components/responses/ManualAttendanceDeleteConflict'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
@@ -961,7 +1051,9 @@ paths:
         before it, by creation date in Asia/Baghdad), including students without a linked
         parent. A student added after the day is not listed. The header shows the `school_name`
         setting. For a date that is not a school day the file has no student rows, and row 4
-        names the day: `عطلة نهاية الأسبوع` or the closure's title.
+        names the day: `عطلة نهاية الأسبوع` or the closure's title. The last column,
+        `إدخال يدوي`, says which of the shown times were entered by hand: `الدخول`, `الخروج`,
+        `الدخول والخروج`, or empty.
       security:
         - AdminJWT: []
       parameters:
@@ -1675,6 +1767,7 @@ paths:
         | `broadcast.send` | `POST /api/admin/broadcasts` | `broadcast` id; `detail` has the audience type and recipient count |
         | `holiday.create`, `holiday.cancel` | `POST /api/admin/holidays`, `POST /api/admin/holidays/cancel` | `closure` id; `detail` has the kind (and the cancel action) |
         | `banner.create`, `banner.update`, `banner.delete` | `POST`, `PUT`, `DELETE /api/admin/banners` | `banner` id |
+        | `attendance.manual_create`, `attendance.manual_delete` | `POST`, `DELETE /api/admin/attendance/manual` | `student` id; `detail` has the type and date (create: `notify`, `dry_run`; delete: the entry id) |
         | `export.attendance` | `GET /api/admin/export/excel` | `date` |
         | `export.schedule` | `GET /api/admin/schedule/export` | `class` |
       security:
@@ -2199,6 +2292,18 @@ components:
         format: int64
         minimum: 1
       example: 120
+    ManualAttendanceId:
+      name: id
+      in: query
+      required: true
+      description: |
+        The manual entry's id, from `manual_punches` in the daily report or from the create
+        response. Missing or not a positive integer: 400.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 90412
     ActivityLogBefore:
       name: before
       in: query
@@ -2812,7 +2917,7 @@ components:
           section: A
     DailyAttendanceDTO:
       type: object
-      description: One student's attendance for one day. Shared by the admin daily report and the parent's today view.
+      description: One student's attendance for one day, as the parent's today view returns it. The admin daily report returns AdminDailyAttendanceItem, which has the same fields and more.
       properties:
         student_id:
           type: integer
@@ -2902,6 +3007,414 @@ components:
             status: Absent
             check_in_time: null
             check_out_time: null
+    AdminDailyAttendanceItem:
+      type: object
+      description: |
+        One student's attendance for one day in the admin daily report: the fields of
+        DailyAttendanceDTO (same meaning), plus where the check-in and check-out came from and the
+        student's manual entries that day. A manual entry counts exactly like a device punch.
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        full_name:
+          type: string
+        status:
+          type: string
+          enum:
+            - Present
+            - Excused
+            - Absent
+          description: As in DailyAttendanceDTO. A manual check-out alone also makes the student `Present`.
+        check_in_time:
+          type: string
+          nullable: true
+          pattern: ^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$
+          description: Earliest punch in the check-in window (06:30–09:30), device or manual; null when there is none.
+        check_out_time:
+          type: string
+          nullable: true
+          pattern: ^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$
+          description: Earliest punch in the check-out window (11:30–13:30), device or manual; null when there is none.
+        check_in_source:
+          type: string
+          nullable: true
+          enum:
+            - device
+            - manual
+            - null
+          description: Where the punch shown as `check_in_time` came from; null when there is none. Mark `manual` in the report.
+        check_out_source:
+          type: string
+          nullable: true
+          enum:
+            - device
+            - manual
+            - null
+          description: Where the punch shown as `check_out_time` came from; null when there is none.
+        manual_punches:
+          type: array
+          description: |
+            The student's manual entries on this date, oldest first; empty when there are none. Show
+            the delete button only for these. An entry can be listed while `check_in_source` is
+            `device`, when a device punch earlier in the same window arrived after it.
+          items:
+            $ref: '#/components/schemas/ManualPunch'
+      required:
+        - student_id
+        - full_name
+        - status
+        - check_in_time
+        - check_out_time
+        - check_in_source
+        - check_out_source
+        - manual_punches
+      example:
+        student_id: 42
+        full_name: Sara Example
+        status: Present
+        check_in_time: 08:00 AM
+        check_out_time: null
+        check_in_source: manual
+        check_out_source: null
+        manual_punches:
+          - id: 90412
+            type: in
+            time: '08:00:00'
+            note: البصمة لم تعمل
+    ManualPunch:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Pass it to `deleteManualAttendance`.
+        type:
+          type: string
+          enum:
+            - in
+            - out
+        time:
+          type: string
+          pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$
+          description: The recorded time, 24-hour `HH:MM:SS`, Asia/Baghdad.
+        note:
+          type: string
+          nullable: true
+          description: The admin's note, or null.
+      required:
+        - id
+        - type
+        - time
+        - note
+      example:
+        id: 90412
+        type: in
+        time: '08:00:00'
+        note: البصمة لم تعمل
+    AdminDailyAttendanceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        date:
+          type: string
+          format: date
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+        day_type:
+          $ref: '#/components/schemas/DayType'
+        day_title:
+          type: string
+          nullable: true
+          description: The closure's title on a `holiday` or `pause` day; null on a school day or a weekend.
+        day_notes:
+          type: string
+          nullable: true
+          description: The closure's notes on a `holiday` or `pause` day, when it has any; otherwise null.
+        data:
+          type: array
+          description: Empty when `day_type` is not `school`.
+          items:
+            $ref: '#/components/schemas/AdminDailyAttendanceItem'
+      required:
+        - status
+        - date
+        - day_type
+        - day_title
+        - day_notes
+        - data
+      example:
+        status: success
+        date: '2026-09-21'
+        day_type: school
+        day_title: null
+        day_notes: null
+        data:
+          - student_id: 42
+            full_name: Sara Example
+            status: Present
+            check_in_time: 08:00 AM
+            check_out_time: null
+            check_in_source: manual
+            check_out_source: null
+            manual_punches:
+              - id: 90412
+                type: in
+                time: '08:00:00'
+                note: البصمة لم تعمل
+    ManualAttendanceRequest:
+      type: object
+      description: |
+        A punch the admin enters for a student whose fingerprint failed. It is stored as a normal
+        punch, so every report, the parent app and the noon absence job treat it exactly like a
+        device punch.
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Required, positive (400). An unknown or inactive student returns 404.
+        date:
+          type: string
+          format: date
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+          description: |
+            Optional, default today (Asia/Baghdad). Only today or yesterday (400 otherwise), and
+            only a school day (400 on a weekend, holiday or pause) on which the student already
+            existed (400 for a date before the student was added).
+        type:
+          type: string
+          enum:
+            - in
+            - out
+          description: Required. `in` is a check-in, `out` a check-out.
+        time:
+          type: string
+          pattern: ^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$
+          description: |
+            Optional, 24-hour `HH:MM` or `HH:MM:SS`, Asia/Baghdad. Default `08:00` for `in` and
+            `13:00` for `out`. It must lie in the type's window: check-in 06:30:00 to 09:30:59,
+            check-out 11:30:00 to 13:30:59 (400 otherwise). For today it must not be later than
+            now (400).
+        notify:
+          type: boolean
+          default: true
+          description: |
+            Optional. With `true` the parent gets the normal check-in or check-out notification
+            with the recorded time (none when the student has no parent). Anything but `true`,
+            `false` or null returns 400.
+        note:
+          type: string
+          nullable: true
+          maxLength: 200
+          description: |
+            Optional reason, shown in the daily report; surrounding spaces are removed and blank
+            means none; at most 200 characters (longer, not a string, NUL or invalid UTF-8 returns
+            400). Never sent to the parent.
+        dry_run:
+          type: boolean
+          default: false
+          description: |
+            Optional. With `true` everything is checked, the existing punch included (409), but
+            nothing is written or sent; use it for the confirmation dialog. Same type rule as `notify`.
+      required:
+        - student_id
+        - type
+      example:
+        student_id: 42
+        date: '2026-10-13'
+        type: in
+        time: '08:00'
+        notify: true
+        note: البصمة لم تعمل
+        dry_run: true
+    ManualAttendanceItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 1
+          description: The new entry's id (use it to delete); null for a dry run.
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        student_name:
+          type: string
+          description: Show it in the confirmation, so the admin sees who is marked and notified.
+        grade:
+          type: string
+          nullable: true
+        section:
+          type: string
+          nullable: true
+        date:
+          type: string
+          format: date
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+        type:
+          type: string
+          enum:
+            - in
+            - out
+        time:
+          type: string
+          pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$
+          description: The recorded time, 24-hour `HH:MM:SS`.
+        source:
+          type: string
+          enum:
+            - manual
+        note:
+          type: string
+          nullable: true
+        notified:
+          type: boolean
+          description: True when the parent's notification was stored and pushed (for a dry run, would be).
+        dry_run:
+          type: boolean
+      required:
+        - id
+        - student_id
+        - student_name
+        - grade
+        - section
+        - date
+        - type
+        - time
+        - source
+        - note
+        - notified
+        - dry_run
+      example:
+        id: null
+        student_id: 42
+        student_name: Sara Example
+        grade: G3
+        section: A
+        date: '2026-10-13'
+        type: in
+        time: '08:00:00'
+        source: manual
+        note: البصمة لم تعمل
+        notified: true
+        dry_run: true
+    ManualAttendanceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+          description: '`Manual attendance recorded`, or `Preview only` for a dry run.'
+        data:
+          $ref: '#/components/schemas/ManualAttendanceItem'
+      required:
+        - status
+        - message
+        - data
+      example:
+        status: success
+        message: Manual attendance recorded
+        data:
+          id: 90412
+          student_id: 42
+          student_name: Sara Example
+          grade: G3
+          section: A
+          date: '2026-10-13'
+          type: in
+          time: '08:00:00'
+          source: manual
+          note: البصمة لم تعمل
+          notified: true
+          dry_run: false
+    ManualAttendanceDeleteItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        student_name:
+          type: string
+        grade:
+          type: string
+          nullable: true
+        section:
+          type: string
+          nullable: true
+        date:
+          type: string
+          format: date
+          pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+        type:
+          type: string
+          enum:
+            - in
+            - out
+        time:
+          type: string
+          pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$
+      required:
+        - id
+        - student_id
+        - student_name
+        - grade
+        - section
+        - date
+        - type
+        - time
+      example:
+        id: 90412
+        student_id: 42
+        student_name: Sara Example
+        grade: G3
+        section: A
+        date: '2026-10-13'
+        type: in
+        time: '08:00:00'
+    ManualAttendanceDeleteResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+          enum:
+            - Manual attendance deleted
+        data:
+          $ref: '#/components/schemas/ManualAttendanceDeleteItem'
+      required:
+        - status
+        - message
+        - data
+      example:
+        status: success
+        message: Manual attendance deleted
+        data:
+          id: 90412
+          student_id: 42
+          student_name: Sara Example
+          grade: G3
+          section: A
+          date: '2026-10-13'
+          type: in
+          time: '08:00:00'
     LeavePayload:
       type: object
       properties:
@@ -5422,6 +5935,91 @@ components:
           example:
             status: error
             message: Overlaps closure 12 "عطلة الربيع" (2026-03-22 to 2026-03-26); cancel it first or choose other dates
+    ManualAttendanceBadRequest:
+      description: |
+        Malformed JSON; `student_id` missing or not a positive integer; `type` missing or not
+        `in` or `out`; `date` not a real `YYYY-MM-DD`, not today or yesterday, not a school day,
+        or before the student was added; `time` not `HH:MM`/`HH:MM:SS`, outside the type's window,
+        or later than now for today; `note` longer than 200 characters, not a string, or with NUL
+        or invalid UTF-8; `notify` or `dry_run` not a boolean. Nothing was written or sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            outsideWindow:
+              summary: A check-in time outside its window
+              value:
+                status: error
+                message: time must be in the check-in window 06:30:00 to 09:30:59
+            notTodayOrYesterday:
+              summary: An older date
+              value:
+                status: error
+                message: date must be today (2026-10-13) or yesterday (2026-10-12)
+            notSchoolDay:
+              summary: A weekend, holiday or pause
+              value:
+                status: error
+                message: 2026-10-10 is not a school day (weekend)
+    ManualAttendanceStudentNotFound:
+      description: No active student has this id. Nothing was written or sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Student not found
+    ManualAttendanceConflict:
+      description: |
+        The student already has a punch in that window on that date, from a device or entered by
+        hand; `message` gives its time and source. Nothing was written or sent. To correct a
+        manual entry, delete it and enter it again.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Student already has a check-in at 07:45 AM on 2026-10-13 (device)
+    ManualAttendanceDeleteBadRequest:
+      description: '`id` missing or not a positive integer. Nothing was deleted.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: id must be a positive attendance entry id
+    ManualAttendanceEntryNotFound:
+      description: No punch has this id (it may have been deleted already). Nothing was deleted.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Attendance entry not found
+    ManualAttendanceDeleteConflict:
+      description: |
+        The punch came from a device (device punches are never deleted through the API), or it is
+        a manual entry from before yesterday. Nothing was deleted.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            devicePunch:
+              summary: A device punch
+              value:
+                status: error
+                message: Only manual entries can be deleted; this punch came from a device
+            tooOld:
+              summary: A manual entry from before yesterday
+              value:
+                status: error
+                message: Only manual entries from today (2026-10-13) or yesterday (2026-10-12) can be deleted
     HolidayCancelBadRequest:
       description: |
         Malformed JSON; `id` missing or not a positive integer; `notes` longer than 500

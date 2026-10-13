@@ -537,7 +537,7 @@ func TestM1Migration(t *testing.T) {
 		if n := m1Count(t, db, `SELECT COUNT(*) FROM information_schema.columns WHERE column_name IN ('parent_phone_original', 'phone_number_original')`); n != 0 {
 			t.Errorf("000029 down left %d *_original columns", n)
 		}
-		m1Run(t, run, "up")
+		m1Run(t, run, "goto", "31")
 		m1Version(t, run, "31")
 	})
 
@@ -558,7 +558,7 @@ func TestM1Migration(t *testing.T) {
 			} else {
 				m1Exec(t, db, `INSERT INTO notifications (parent_id, parent_phone, title, body) VALUES (7101, '+9647000007101', 't', 'b')`)
 			}
-			m1Run(t, run, "up")
+			m1Run(t, run, "goto", "31")
 			m1Version(t, run, "31")
 			if got := m1Legacy(t, db); got != "" {
 				t.Errorf("at 31: %s", got)
@@ -593,7 +593,7 @@ func TestM1Migration(t *testing.T) {
 		if n := m1Count(t, db, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> 'schema_migrations'`); n != 0 {
 			t.Errorf("%d tables left after down -all", n)
 		}
-		m1Run(t, run, "up")
+		m1Run(t, run, "goto", "31")
 		m1Version(t, run, "31")
 		if got := m1Schema(t, db); got != golden["31"] {
 			t.Errorf("schema after down -all and up differs from a straight up")

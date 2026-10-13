@@ -156,6 +156,73 @@ migrate -path db/migrations -database "$DATABASE_URL" up         # 000029, after
 - **Never run `goto 29` while the new code runs** (its notification inserts would fail): redeploy the old code first.
 - **Not recoverable without the backup** once 000031 has run: every notification phone number and original phone number, and every `students.fcm_token`. A later rollback of 000030 fills each notification's phone with its parent's current number (an empty string when it has no parent), and 000029's rollback then restores no notification phone formats.
 
+### Deploying migration 000032 (manual attendance)
+
+000032 only adds `attendance_logs.source` (default `device`) and `attendance_logs.note`, makes `device_sn` nullable for manual rows only (a check keeps it required on every device row), and adds the checks. The old code runs unchanged on it: its punches are stored as `device` rows and nothing it reads changes. **Production** is built from an empty database through all migrations in one go; this order is for Staging.
+
+**Order on Staging** (Staging is at 31; with `BASE_URL=https://futurekids-staging.up.railway.app`):
+
+1. **Back up:** `pg_dump "$DATABASE_URL" > backup.sql`.
+2. **Migrate** while the old code runs:
+   ```bash
+   migrate -path db/migrations -database "$DATABASE_URL" version    # expect 31
+   migrate -path db/migrations -database "$DATABASE_URL" goto 32
+   ```
+3. **Deploy the new code.** It needs 32: on 31 the daily report and the Excel export answer 500.
+4. **Verify** on a seeded fake student. Run it on a school day after 08:00 Baghdad (the default check-in time must not be in the future).
+   - **Preflight, read-only:**
+     ```sql
+     -- 1004 is active, has a parent (note the phone) and existed before today
+     SELECT s.id, s.is_active, s.parent_id, p.phone_number, s.created_at::date FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.rfid_tag = '1004';
+     -- today is a school day: dow 0-4 and closures 0
+     SELECT EXTRACT(DOW FROM d) AS dow, (SELECT COUNT(*) FROM school_closures WHERE start_date <= d AND (end_date IS NULL OR end_date >= d)) AS closures
+     FROM (SELECT (now() AT TIME ZONE 'Asia/Baghdad')::date AS d) t;
+     -- 1004 has no punch today in the check-in window (06:30:00-09:30:59)
+     SELECT a.id, a.check_time, a.source FROM attendance_logs a JOIN students s ON s.id = a.student_id
+     WHERE s.rfid_tag = '1004' AND a.check_time >= (now() AT TIME ZONE 'Asia/Baghdad')::date ORDER BY a.check_time;
+     ```
+     If 1004 is inactive or has no parent, or already has a check-in today, use another seeded student (`rfid_tag` 1005 to 1050) that passes, and its parent's number below. If today is not a school day, wait for one.
+   - **Admin token and the student id:**
+     ```bash
+     ADMIN=$(curl -s -X POST "$BASE_URL/api/admin/login" -H 'Content-Type: application/json' -d "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" | jq -r .data.token)
+     SID=$(psql "$DATABASE_URL" -X -At -c "SELECT id FROM students WHERE rfid_tag = '1004'")
+     ```
+   - **(a) Preview, then create the check-in.** The preview gives `Preview only`, `id` null and the student's name, grade and section; the create gives `Manual attendance recorded`, `time` `08:00:00` and `notified` true.
+     ```bash
+     curl -s -X POST "$BASE_URL/api/admin/attendance/manual" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+       -d "{\"student_id\":$SID,\"type\":\"in\",\"note\":\"Staging check\",\"dry_run\":true}"
+     MID=$(curl -s -X POST "$BASE_URL/api/admin/attendance/manual" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+       -d "{\"student_id\":$SID,\"type\":\"in\",\"note\":\"Staging check\"}" | jq -r .data.id)
+     ```
+   - **(b) The report marks it:** `check_in_time` `08:00 AM`, `check_in_source` `manual`, and `manual_punches[0].id` equal to `$MID`.
+     ```bash
+     curl -s "$BASE_URL/api/admin/attendance" -H "Authorization: Bearer $ADMIN" | jq ".data[] | select(.student_id == $SID)"
+     ```
+     ```sql
+     SELECT id, check_time, source, device_sn, note FROM attendance_logs WHERE id = <MID>;   -- manual, device_sn NULL, Staging check
+     ```
+   - **(c) The parent got the notification** `إشعار دخول` / `تم تسجيل دخول الطالب … الساعة 08:00` (log in with the parent's number from the preflight and the seeded PIN):
+     ```bash
+     PARENT=$(curl -s -X POST "$BASE_URL/api/mobile/login" -H 'Content-Type: application/json' -d '{"phone":"+9647000002001","pin":"Sd7!Kx4p#Wm9qT2h"}' | jq -r .data.token)
+     curl -s "$BASE_URL/api/mobile/notifications" -H "Authorization: Bearer $PARENT" | jq '.data[0]'
+     ```
+   - **(d) The 409 cases:** the same check-in again names the manual punch, and deleting a device punch is refused.
+     ```bash
+     curl -s -X POST "$BASE_URL/api/admin/attendance/manual" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d "{\"student_id\":$SID,\"type\":\"in\",\"time\":\"09:00\"}"   # 409 … (manual)
+     DEV=$(psql "$DATABASE_URL" -X -At -c "SELECT id FROM attendance_logs WHERE source = 'device' ORDER BY id DESC LIMIT 1")
+     curl -s -X DELETE "$BASE_URL/api/admin/attendance/manual?id=$DEV" -H "Authorization: Bearer $ADMIN"   # 409 Only manual entries can be deleted …
+     ```
+   - **(e) Undo:** the delete gives `Manual attendance deleted`, and the report shows `check_in_source` null and empty `manual_punches` again. The parent's notification stays.
+     ```bash
+     curl -s -X DELETE "$BASE_URL/api/admin/attendance/manual?id=$MID" -H "Authorization: Bearer $ADMIN"
+     curl -s "$BASE_URL/api/admin/attendance" -H "Authorization: Bearer $ADMIN" | jq ".data[] | select(.student_id == $SID)"
+     ```
+   - **Left on Staging afterwards:** the parent's check-in notification and the `attendance.manual_create`, `attendance.manual_delete` and login entries in the activity log. The manual row itself is deleted in step (e).
+
+**Rolling back:**
+- **The code:** redeploy the previous version. It runs on 32 and shows manual entries as normal punches, but cannot create or delete them.
+- **The migration:** `migrate goto 31`, only after the code is rolled back (the new code needs `source`). It **deletes every manual entry** and its note: those students show absent again on those days. Only the backup has them. Notifications already sent stay.
+
 ### Seeding Staging with fake data
 
 `cmd/seed-staging` fills Staging with fake data for the Flutter developers: 47 students (`rfid_tag` 1004 to 1050) for 37 parents (`+9647000002001` to `+9647000002037`, parent credential `Sd7!Kx4p#Wm9qT2h`; parents seeded before that keep their earlier `314159`), weekly schedules, the fake device `SEED-FAKE-0001`, leaves, attendance history since the first day of the previous month, and 3 banners. Everything goes through the real API; it never touches students 1001 to 1003, the real device or the settings. It refuses any `BASE_URL` other than `https://futurekids-staging.up.railway.app`.

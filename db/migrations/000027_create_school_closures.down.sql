@@ -11,6 +11,8 @@
 --     the post-commit notification query fails, so no check-in or check-out notification is sent.
 --   internal/cron/absent_job.go — the noon absence job cannot tell whether today is a school day
 --     and does nothing.
+--   internal/handlers/manual_attendance.go — manual attendance cannot tell whether a date is a
+--     school day and answers 500.
 -- Data loss: every registered closure (holidays and pauses, with their titles and notes). The
 --   notifications sent to parents for them stay. With the code from before school closures,
 --   reports count every weekday as a school day again.

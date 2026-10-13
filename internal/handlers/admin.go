@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -659,7 +660,9 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 			s.full_name,
 			st.status,
 			st.first_check AS check_in_time,
-			st.last_check AS check_out_time
+			st.last_check AS check_out_time,
+			` + punchSourcesSQL + `,
+			` + manualPunchesSQL + `
 		FROM students s
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
 		WHERE s.is_active = true AND ` + fmt.Sprintf(studentExistedOnSQL, "$1::DATE") + `
@@ -673,11 +676,16 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	}
 	defer rows.Close()
 
-	var records []DailyAttendanceDTO
+	var records []AdminDailyAttendanceDTO
 	for rows.Next() {
-		var rec DailyAttendanceDTO
-		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckInTime, &rec.CheckOutTime); err != nil {
+		var rec AdminDailyAttendanceDTO
+		var manual []byte
+		if err := rows.Scan(&rec.StudentID, &rec.FullName, &rec.Status, &rec.CheckInTime, &rec.CheckOutTime, &rec.CheckInSource, &rec.CheckOutSource, &manual); err != nil {
 			respondInternalError(w, "Database error", "AdminDailyAttendanceHandler: scan failed", err, "date", dateParam)
+			return
+		}
+		if err := json.Unmarshal(manual, &rec.ManualPunches); err != nil {
+			respondInternalError(w, "Database error", "AdminDailyAttendanceHandler: manual punches decode failed", err, "date", dateParam)
 			return
 		}
 		records = append(records, rec)
@@ -688,7 +696,7 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	if records == nil {
-		records = []DailyAttendanceDTO{}
+		records = []AdminDailyAttendanceDTO{}
 	}
 
 	respondJSON(w, http.StatusOK, withDay(map[string]interface{}{
@@ -696,6 +704,34 @@ func (app *AppEnv) AdminDailyAttendanceHandler(w http.ResponseWriter, r *http.Re
 		"date":   dateParam,
 		"data":   records,
 	}, day))
+}
+
+// punchSourcesSQL selects, for student s on the date $1, the source of the punch that is the
+// check-in and of the one that is the check-out (each NULL without one).
+var punchSourcesSQL = `(SELECT a.source FROM attendance_logs a WHERE a.student_id = s.id AND ` + fmt.Sprintf(checkInWindowSQL, "a.check_time", "$1::DATE") + ` ORDER BY a.check_time LIMIT 1) AS check_in_source,
+			(SELECT a.source FROM attendance_logs a WHERE a.student_id = s.id AND ` + fmt.Sprintf(checkOutWindowSQL, "a.check_time", "$1::DATE") + ` ORDER BY a.check_time LIMIT 1) AS check_out_source`
+
+// manualPunchesSQL selects student s's manual punches on the date $1 as a JSON array.
+var manualPunchesSQL = `(SELECT COALESCE(json_agg(json_build_object(
+				'id', a.id,
+				'type', CASE WHEN ` + fmt.Sprintf(checkInWindowSQL, "a.check_time", "$1::DATE") + ` THEN 'in' ELSE 'out' END,
+				'time', TO_CHAR(a.check_time, 'HH24:MI:SS'),
+				'note', a.note) ORDER BY a.check_time), '[]')
+			 FROM attendance_logs a
+			 WHERE a.student_id = s.id AND a.source = 'manual' AND a.check_time >= $1::DATE AND a.check_time < $1::DATE + 1) AS manual_punches`
+
+// manualEntryLabel is the "manual entry" column of the daily Excel export.
+func manualEntryLabel(inSource, outSource sql.NullString) string {
+	in, out := inSource.String == SourceManual, outSource.String == SourceManual
+	switch {
+	case in && out:
+		return "الدخول والخروج"
+	case in:
+		return "الدخول"
+	case out:
+		return "الخروج"
+	}
+	return ""
 }
 
 func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Request) {
@@ -736,7 +772,8 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 				ELSE 'غائب'
 			END as status,
 			COALESCE(st.first_check, '') as check_in_time,
-			COALESCE(st.last_check, '') as check_out_time
+			COALESCE(st.last_check, '') as check_out_time,
+			` + punchSourcesSQL + `
 		FROM students s
 		LEFT JOIN parents p ON s.parent_id = p.id
 		CROSS JOIN LATERAL get_student_status(s.id, $1::DATE) st
@@ -744,7 +781,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		ORDER BY st.status DESC, s.full_name ASC
 	`
 
-	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت الدخول", "وقت الخروج"}
+	headers := []string{"رقم الطالب", "اسم الطالب", "الصف", "الشعبة", "ولي الأمر", "رقم الهاتف", "الحالة", "وقت الدخول", "وقت الخروج", "إدخال يدوي"}
 	f, sheet := newReportWorkbook(schoolName, fmt.Sprintf("تقرير الحضور والغياب اليومي الشامل - تاريخ: %s", dateParam), headers)
 	defer f.Close()
 
@@ -773,7 +810,8 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 	for rows.Next() {
 		var id int
 		var studentName, grade, section, parentName, phone, status, checkIn, checkOut string
-		if err := rows.Scan(&id, &studentName, &grade, &section, &parentName, &phone, &status, &checkIn, &checkOut); err != nil {
+		var inSource, outSource sql.NullString
+		if err := rows.Scan(&id, &studentName, &grade, &section, &parentName, &phone, &status, &checkIn, &checkOut, &inSource, &outSource); err != nil {
 			respondInternalError(w, "Database error", "AdminExportExcelHandler: scan failed", err, "date", dateParam, "row", rowIndex)
 			return
 		}
@@ -786,6 +824,7 @@ func (app *AppEnv) AdminExportExcelHandler(w http.ResponseWriter, r *http.Reques
 		f.SetCellValue(sheet, fmt.Sprintf("G%d", rowIndex), status)
 		f.SetCellValue(sheet, fmt.Sprintf("H%d", rowIndex), checkIn)
 		f.SetCellValue(sheet, fmt.Sprintf("I%d", rowIndex), checkOut)
+		f.SetCellValue(sheet, fmt.Sprintf("J%d", rowIndex), manualEntryLabel(inSource, outSource))
 		rowIndex++
 	}
 	if err := rows.Err(); err != nil {

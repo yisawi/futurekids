@@ -12,6 +12,8 @@
 --   internal/notify/broadcast.go — broadcast recipients are parents.
 --   internal/handlers/broadcasts.go — looks up a parent by phone and shows the parent in the
 --     sent log.
+--   internal/handlers/manual_attendance.go — a manual punch notifies the student's parent
+--     (students.parent_id).
 -- Data loss: parents with no student and parents.created_at are lost; the rest is copied back to
 --   students.parent_phone, parent_pin and parent_name.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy

@@ -665,6 +665,72 @@ row 4 names the day.
 - **Notifications:** registering or cancelling a closure sends an ordinary notification; nothing
   else changes in the notifications list.
 
+### Manual attendance (الحضور اليدوي)
+
+When a fingerprint fails (wet finger, device offline, a student not enrolled yet), the student
+shows absent everywhere and gets the noon absence notification. The admin can enter the missing
+check-in or check-out by hand, and undo it if it was a mistake. The entry is a normal punch
+marked `manual`: the daily report, the dashboard, the Excel export, the parent app and the noon
+job treat it exactly like a device punch.
+
+**The form** (`POST /api/admin/attendance/manual`), on the daily report's row or its own dialog:
+
+| Field | Control | Notes |
+|---|---|---|
+| `student_id` | the student (from the report row or a student picker) | required |
+| `date` | today / yesterday | default today; only these two dates are allowed |
+| `type` | check-in (`in`) / check-out (`out`) | required |
+| `time` | time picker, `HH:MM` | default `08:00` for check-in, `13:00` for check-out; check-in only 06:30–09:30, check-out only 11:30–13:30; for today not later than now |
+| `notify` | checkbox "notify the parent", on by default | the parent gets the usual check-in or check-out notification with this time |
+| `note` | optional text, up to 200 characters | the reason, for example "البصمة لم تعمل"; shown in the report, never sent to the parent |
+
+**Confirmation dialog:** send the same body with `"dry_run": true` first. Nothing is written or
+sent, but every check runs (409 too). Show **`student_name`, `grade` and `section`** from the
+response, the date, type and time, and whether the parent will be notified (`notified`), so the
+admin sees who is about to be marked. On confirm, send it without `dry_run`. The response has the
+entry's `id`.
+
+**In the daily report** (`GET /api/admin/attendance`), each item now also has:
+- `check_in_source` / `check_out_source`: `device`, `manual` or `null`. Mark a `manual` time, for
+  example with a small "يدوي" badge.
+- `manual_punches`: the student's manual entries that day (`id`, `type`, `time`, `note`). Show a
+  **delete button only on these**; device punches can't be deleted.
+
+**Undo** (`DELETE /api/admin/attendance/manual?id=<id>`): only for manual entries from today or
+yesterday. Ask for confirmation first ("حذف الإدخال اليدوي؟"). The response repeats the student's
+name, grade and section.
+
+**Messages to show** (from `message`):
+
+| Status | When | Example `message` |
+|---|---|---|
+| 400 | a date other than today or yesterday | `date must be today (2026-10-13) or yesterday (2026-10-12)` |
+| 400 | a weekend, holiday or pause | `2026-10-10 is not a school day (weekend)` |
+| 400 | a time outside the window | `time must be in the check-in window 06:30:00 to 09:30:59` |
+| 400 | a time later than now, today | `time must not be later than now (08:30:00) for today` |
+| 400 | the student was added after that date | `The student was not registered yet on 2026-10-12` |
+| 404 | unknown or deactivated student | `Student not found` |
+| 409 | the student already has that punch (device or manual) | `Student already has a check-in at 07:45 AM on 2026-10-13 (device)` |
+| 409 | deleting a device punch | `Only manual entries can be deleted; this punch came from a device` |
+| 409 | deleting an entry older than yesterday | `Only manual entries from today (2026-10-13) or yesterday (2026-10-12) can be deleted` |
+
+**Good to know** (show the first two near the form):
+
+- **Review the absent list between 10:00 and 11:30**, before the noon job: once the absence
+  notification has gone out at 12:00 it can't be recalled, even if a check-in is entered later.
+- **A manual check-out alone makes an absent student Present**, as a device check-out does: the
+  student was at school but missed the morning punch.
+- **Deleting an entry doesn't recall its notification:** the parent keeps the "arrived" message.
+- **If the device sends a buffered punch later**, the earliest punch of the window counts. When
+  the device punch is earlier than the manual one, the report shows `check_in_source: device`
+  and the manual entry stays in `manual_punches` until deleted.
+- **To correct a manual entry**, delete it and enter it again.
+- **Activity log:** every request is recorded as `attendance.manual_create` or
+  `attendance.manual_delete` with the student; the note never is.
+
+**Excel export:** a new last column `إدخال يدوي` says which times were entered by hand
+(`الدخول`, `الخروج` or `الدخول والخروج`). Columns A–I are unchanged.
+
 ### Admin activity log (سجل النشاط)
 
 A **read-only page** listing what was done in the dashboard, newest first. It has no filters,
@@ -712,6 +778,8 @@ New codes may appear later without an API change.
 | `banner.delete` | حذف إعلان |
 | `export.attendance` | تصدير الحضور |
 | `export.schedule` | تصدير الجدول |
+| `attendance.manual_create` | إدخال حضور يدوي |
+| `attendance.manual_delete` | حذف حضور يدوي |
 
 **Result colours:** `success` green, `rejected` (the server refused the request: 4xx) amber,
 `failed` (server error: 5xx) red.
@@ -792,11 +860,19 @@ dashboard; there are no pasted URLs.
 - **URLs aren't validated:** `avatar_url`, and the `image_url` of banners entered before uploads
   existed, are whatever the school entered, possibly empty. Uploaded banners always have a
   working relative `image_url`.
-- **Ids are 32-bit integers.** No id is a string.
+- **Ids are integers, never strings.** Most are 32-bit; activity log entries and manual
+  attendance entries use 64-bit ids (a Dart `int` holds both).
 
 ## Breaking changes since earlier drafts
 
-**In API 1.16.0 (this release):** a new read-only admin endpoint, `GET /api/admin/activity-log`
+**In API 1.17.0 (this release):** manual attendance (see
+[Manual attendance](#manual-attendance-الحضور-اليدوي)). New: `POST` and
+`DELETE /api/admin/attendance/manual`. Additive: `check_in_source`, `check_out_source` and
+`manual_punches` on each item of `GET /api/admin/attendance` (its item schema is now
+`AdminDailyAttendanceItem`; the parent's `DailyAttendanceDTO` is unchanged), and the Excel
+export's last column `إدخال يدوي`. Nothing breaks: no field, status or parent response changed.
+
+**In API 1.16.0:** a new read-only admin endpoint, `GET /api/admin/activity-log`
 (see [Admin activity log](#admin-activity-log-سجل-النشاط)). Nothing breaks: no existing
 endpoint, response or status changed.
 

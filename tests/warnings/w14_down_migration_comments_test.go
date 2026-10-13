@@ -50,6 +50,7 @@ var w14Rollbacks = map[string]w14Rollback{
 	"000029": {true, []string{"parents.phone_number_original", "notifications.parent_phone_original"}, `phone\.Normalize\(`},
 	"000030": {true, []string{"notifications.parent_phone"}, `INTO notifications \(parent_id, title`},
 	"000031": {false, nil, `parent_phone_original|notifications_fill_parent_id|idx_notifications_phone|INTO notifications \([^)]*parent_phone|\bn\.parent_phone\b|\bs\.fcm_token\b|SET fcm_token|students \([^)]*fcm_token|fcm_token (?:IS|=)`},
+	"000032": {true, []string{"attendance_logs.source", "attendance_logs.note"}, `'manual'|SourceManual|a\.source\b`},
 }
 
 var (
