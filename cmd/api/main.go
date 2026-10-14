@@ -137,6 +137,9 @@ func run() int {
 	mux.HandleFunc("GET /api/mobile/banners/image", appEnv.MobileBannerImageHandler)
 	mux.HandleFunc("PUT /api/mobile/device-token", appEnv.AuthMiddleware(appEnv.RegisterDeviceTokenHandler))
 	mux.HandleFunc("DELETE /api/mobile/device-token", appEnv.AuthMiddleware(appEnv.RemoveDeviceTokenHandler))
+	mux.HandleFunc("GET /api/mobile/notification-settings", appEnv.AuthMiddleware(appEnv.NotificationSettingsHandler))
+	mux.HandleFunc("PUT /api/mobile/notification-settings", appEnv.AuthMiddleware(appEnv.NotificationSettingsHandler))
+	mux.HandleFunc("POST /api/mobile/account/delete", appEnv.AuthMiddleware(appEnv.AccountDeleteHandler))
 
 	// Admin dashboard.
 	mux.HandleFunc("POST /api/admin/login", appEnv.ActivityLog(appEnv.AdminLoginHandler))

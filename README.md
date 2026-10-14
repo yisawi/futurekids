@@ -260,6 +260,60 @@ migrate -path db/migrations -database "$DATABASE_URL" up         # 000029, after
    ```
 5. **Left behind:** the four `student.create` entries in the activity log (results `success`, `rejected`, `rejected`, `rejected`). The parent row is unchanged because the same name was sent; a parent created in step 1 remains until you delete it.
 
+### Deploying migration 000033 (API 1.19.0: account deletion and push switch)
+
+000033 only adds `parents.push_enabled` (`NOT NULL DEFAULT TRUE`), so every existing parent keeps receiving pushes. The old code runs unchanged on it: it never reads the column and its inserts get the default. Account deletion (`POST /api/mobile/account/delete`) needs no migration. **Production** is built from an empty database through all migrations in one go; this order is for Staging.
+
+**Order on Staging** (Staging is at 32; with `BASE_URL=https://futurekids-staging.up.railway.app`):
+
+1. **Back up:** `pg_dump "$DATABASE_URL" > backup.sql`.
+2. **Migrate** while the old code runs:
+   ```bash
+   migrate -path db/migrations -database "$DATABASE_URL" version    # expect 32
+   migrate -path db/migrations -database "$DATABASE_URL" goto 33
+   ```
+3. **Deploy the new code.** It needs 33: on 32 the device-token registration and the settings endpoints answer 500.
+4. **Verify** with a throwaway parent, because a deletion cannot be undone. The test number +9647709990011 and the test ID 99990011 never clash with real data.
+   - **Preflight, read-only (both return no rows):**
+     ```sql
+     SELECT id FROM parents WHERE phone_number = '+9647709990011';
+     SELECT id FROM students WHERE rfid_tag = '99990011';
+     ```
+   - **Create the throwaway parent and log in** (`$ADMIN` is an admin token, as in the 000032 section):
+     ```bash
+     curl -s -X POST "$BASE_URL/api/admin/students" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+       -d '{"name":"طالب اختبار الحذف","parent_name":"ولي أمر اختبار","parent_phone":"+9647709990011","parent_pin":"Tz8#mK3q!Vw6pR2d","rfid_tag":"99990011"}'
+     PARENT=$(curl -s -X POST "$BASE_URL/api/mobile/login" -H 'Content-Type: application/json' -d '{"phone":"+9647709990011","pin":"Tz8#mK3q!Vw6pR2d"}' | jq -r .data.token)
+     ```
+   - **(a) The push switch:** GET gives `push_enabled` true; off gives false; a device registration while off gives `"registered":false`; on, then the registration gives `"registered":true`.
+     ```bash
+     curl -s "$BASE_URL/api/mobile/notification-settings" -H "Authorization: Bearer $PARENT"
+     curl -s -X PUT "$BASE_URL/api/mobile/notification-settings" -H "Authorization: Bearer $PARENT" -H 'Content-Type: application/json' -d '{"push_enabled":false}'
+     curl -s -X PUT "$BASE_URL/api/mobile/device-token" -H "Authorization: Bearer $PARENT" -H 'Content-Type: application/json' -d '{"token":"staging-check-token-0000000001"}'
+     curl -s -X PUT "$BASE_URL/api/mobile/notification-settings" -H "Authorization: Bearer $PARENT" -H 'Content-Type: application/json' -d '{"push_enabled":true}'
+     curl -s -X PUT "$BASE_URL/api/mobile/device-token" -H "Authorization: Bearer $PARENT" -H 'Content-Type: application/json' -d '{"token":"staging-check-token-0000000001"}'
+     ```
+   - **(b) Deletion:** a wrong PIN gives 400 `Incorrect PIN` and the token keeps working; the right PIN gives `Account deleted`; the same token then gets 401.
+     ```bash
+     curl -s -X POST "$BASE_URL/api/mobile/account/delete" -H "Authorization: Bearer $PARENT" -H 'Content-Type: application/json' -d '{"pin":"Wrong#Pin123456789"}'
+     curl -s -X POST "$BASE_URL/api/mobile/account/delete" -H "Authorization: Bearer $PARENT" -H 'Content-Type: application/json' -d '{"pin":"Tz8#mK3q!Vw6pR2d"}'
+     curl -s "$BASE_URL/api/mobile/notification-settings" -H "Authorization: Bearer $PARENT"
+     ```
+   - **(c) The database:** the parent and its device token are gone, the student is kept without a parent, and the activity log names the student only.
+     ```sql
+     SELECT COUNT(*) FROM parents WHERE phone_number = '+9647709990011';                    -- 0
+     SELECT COUNT(*) FROM device_tokens WHERE token = 'staging-check-token-0000000001';     -- 0
+     SELECT id, parent_id FROM students WHERE rfid_tag = '99990011';                        -- parent_id NULL
+     SELECT actor, action, ip, target_type, target_id, detail FROM admin_activity_log
+     WHERE action = 'parent.account_delete' ORDER BY id DESC LIMIT 1;                       -- parent, NULL ip, student, its id, طالب اختبار الحذف
+     ```
+   - **Clean up by SQL:** `DELETE FROM students WHERE rfid_tag = '99990011';`
+   - **Left on Staging afterwards:** the `student.create` and `parent.account_delete` entries in the activity log. The wrong PIN in (b) counted one failed attempt for the test number, which expires after 15 minutes.
+
+**Rolling back:**
+- **The code:** redeploy the previous version. It runs on 33 and ignores `push_enabled`, so parents who turned pushes off get them again once their app registers. Deleted accounts stay deleted: only the backup has them.
+- **The migration:** `migrate goto 32`, only after the code is rolled back. It loses every parent's push choice.
+
 ### Seeding Staging with fake data
 
 `cmd/seed-staging` fills Staging with fake data for the Flutter developers: 47 students (`rfid_tag` 1004 to 1050) for 37 parents (`+9647000002001` to `+9647000002037`, parent credential `Sd7!Kx4p#Wm9qT2h`; parents seeded before that keep their earlier `314159`), weekly schedules, the fake device `SEED-FAKE-0001`, leaves, attendance history since the first day of the previous month, and 3 banners. Everything goes through the real API; it never touches students 1001 to 1003, the real device or the settings. It refuses any `BASE_URL` other than `https://futurekids-staging.up.railway.app`.

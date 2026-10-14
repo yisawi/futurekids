@@ -1,0 +1,13 @@
+-- ⚠ APP-COMPATIBILITY WARNING
+-- Removes: column parents.push_enabled.
+-- Running this down-migration against the current main branch will break:
+--   internal/handlers/parent_account.go — GET and PUT /api/mobile/notification-settings read and
+--     write push_enabled and answer 500.
+--   internal/handlers/mobile.go — registerDeviceToken reads push_enabled, so PUT
+--     /api/mobile/device-token answers 500 and login's fcm_token is no longer registered.
+-- Data loss: every parent's push choice. Parents who turned push notifications off get them again
+--   once their app registers its device token.
+-- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
+-- app code that no longer uses these objects. Do not run this migrate-down without first
+-- reverting or updating those files to match the pre-migration schema.
+ALTER TABLE parents DROP COLUMN IF EXISTS push_enabled;

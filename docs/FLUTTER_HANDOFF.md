@@ -46,7 +46,8 @@ Production is shared separately at release. Don't hard-code URLs; make the base 
 6. **Handle 401:** any parent call answering 401 means the token is no longer valid: it's missing
    or expired, the **school changed the parent's PIN** (which signs the parent out of every phone),
    or the account was removed. Delete the token and show the login screen. Tokens last **30 days**,
-   and there is **no refresh endpoint**.
+   and there is **no refresh endpoint**. **Only 401 and 403 sign the parent out:** a 400 or 429
+   (for example a wrong PIN when deleting the account) never does.
 7. **Register for pushes:** right after login, call `PUT /api/mobile/device-token` (see FCM below).
 8. **Log out:** call `DELETE /api/mobile/device-token` with this phone's FCM token **while you still
    hold the parent token**, then delete the stored token. There is no other server-side logout.
@@ -59,8 +60,9 @@ Every JSON error has this shape:
 {"status": "error", "message": "Invalid or expired token"}
 ```
 
-Decide what to do from the **HTTP status**. `message` is for logs and may change. The one
-extension: a 400 from the admin Excel import (`POST /api/admin/schedule/import`) can add an
+Decide what to do from the **HTTP status**. `message` is for logs and may change, except the
+400 messages of account deletion (`pin is required`, `Incorrect PIN`), which are fixed constants
+you may show. The one extension: a 400 from the admin Excel import (`POST /api/admin/schedule/import`) can add an
 `errors` list (see [Weekly schedule](#weekly-schedule)).
 
 Some responses are **not JSON**: 431, and 502/503 from Railway's edge proxy during a deploy.
@@ -69,13 +71,13 @@ Handle a non-JSON body without crashing.
 | Status | When | What the app does |
 |---|---|---|
 | 200 | Success | — |
-| 400 | Bad input: login without `phone`/`pin`, a malformed `month`, a bad `before` cursor | Fix the request. Show a generic error. |
-| 401 | **Login:** wrong phone or PIN, or not an Iraqi mobile number. **Anything else:** no valid token, including after a PIN change. | Login: "wrong phone or PIN". Otherwise log out and show login ("please sign in again"). |
+| 400 | Bad input: login without `phone`/`pin`, a malformed `month`, a bad `before` cursor. **Account deletion:** `pin is required` or `Incorrect PIN`. | Fix the request. Show a generic error. Account deletion: show `message` and **stay signed in**. |
+| 401 | **Login:** wrong phone or PIN, or not an Iraqi mobile number. **Anything else:** no valid token, including after a PIN change or after the account was deleted. | Login: "wrong phone or PIN". Otherwise log out and show login ("please sign in again"). |
 | 403 | The token isn't a parent token (for example an admin token) | Log out and show login. |
 | 404 | Unknown path (JSON) | App/server version mismatch. Report it. |
 | 405 | Wrong HTTP method (JSON, with an `Allow` header). Decided before authentication. | App bug. |
 | 413 | Request body over 64 KiB | Never happens with normal requests. |
-| 429 | **Login only.** Parent: 5 failed attempts for this phone number (any format) within 15 minutes. Admin: 5 failures for a username from one network, or 20 from one network. | Read `Retry-After` (seconds). Show "try again in N minutes" and disable the button. **Don't auto-retry.** The right PIN or password is also refused until the wait ends. An admin locked out on one network can still log in from another. |
+| 429 | **Login and account deletion only.** Parent: 5 failed attempts for this phone number (any format, login and deletion counted together) within 15 minutes. Admin: 5 failures for a username from one network, or 20 from one network. | Read `Retry-After` (seconds). Show "try again in N minutes" and disable the button. **Don't auto-retry.** The right PIN or password is also refused until the wait ends. An admin locked out on one network can still log in from another. |
 | 431 | Request headers over 64 KiB (plain text) | Never happens with normal requests. |
 | 500 | Server or database error | Show a generic error with a retry button. |
 | 502 / 503 | Railway edge during a deploy or outage (not the API's JSON) | Retry with backoff. |
@@ -271,6 +273,8 @@ children goes to all of them, including children the school adds later.
   logout is safe.
 - **400** when the token isn't 20–1024 characters of letters, digits, `:`, `_`, `.` or `-`.
   Real FCM tokens always fit.
+- **`PUT` answers 200 with `"registered": false`** while the parent has push notifications turned
+  off (see the switch below): nothing was stored. It is not an error; don't retry or show it.
 - **401 / 403** are handled as for any parent call: sign in again.
 
 **Situations the app should expect:**
@@ -297,6 +301,71 @@ children goes to all of them, including children the school adds later.
   there are no ids or types to deep-link on. On tap, open the notifications screen and refresh it.
 - **History:** every notification is also saved to the history list, even when no push could be
   delivered.
+
+### Push notification switch (إشعارات الهاتف)
+
+One switch per parent account: "receive push notifications on this phone". It only stops the
+**push**: every notification is still saved and listed in `GET /api/mobile/notifications`.
+
+**The contract:**
+
+| Call | Body | Answer |
+|---|---|---|
+| `GET /api/mobile/notification-settings` | — | `{"status":"success","data":{"push_enabled":true}}` |
+| `PUT /api/mobile/notification-settings` | `{"push_enabled": false}` or `true` | the same shape, with the new value |
+
+- **400** `push_enabled is required (true or false)` when it's missing or null, `Invalid request
+  body` when it isn't a JSON boolean. Repeating the current value is harmless (200).
+- The setting belongs to the **account**, not the phone: it survives logout, reinstall and a new
+  phone, and applies to all of the parent's phones at once.
+
+**What the app must do:**
+
+- **Read the state with `GET`** when showing the switch; don't keep your own copy as the truth.
+- **Switching off:** warn clearly that attendance arrival and departure alerts (and absence and
+  school notices) will no longer ring on this phone, or any of the parent's phones, and will only
+  appear in the notifications list. Then `PUT` `false`. The server removes all of the parent's
+  registered phones.
+- **Switching on:** `PUT` `true`, **then** `PUT /api/mobile/device-token` with this phone's FCM
+  token (as after login). Other phones of the parent register again at their next app start.
+- **While off**, the usual device-token `PUT` at login and app start answers 200 with
+  `"registered": false`. Keep calling it as usual; it is harmless.
+- **The OS permission is separate:** show the phone's notification permission state on its own
+  (and how to enable it in the system settings). The server switch doesn't replace it: with the
+  switch on but the permission denied, nothing rings.
+
+## Deleting the account (حذف الحساب)
+
+Apple and Google require an in-app way to delete the account. The account is the parent's phone
+number and PIN.
+
+**The contract:** `POST /api/mobile/account/delete` with the parent token and `{"pin": "<the
+parent's PIN>"}`. The PIN is sent exactly as typed (never trimmed), as at login.
+
+| Status | `message` | What the app does |
+|---|---|---|
+| 200 | `Account deleted` | Wipe local storage (parent token, stored parent, cached data), optionally `deleteToken()` in Firebase, and go to the login screen. No `DELETE /api/mobile/device-token` is needed: the server removed every phone. |
+| 400 | `pin is required` | Show it. **Stay signed in.** |
+| 400 | `Incorrect PIN` | Show it and let the parent try again. **Stay signed in.** Wrong PINs count toward the login limit. |
+| 400 | `Invalid request body` | App bug. Stay signed in. |
+| 401 / 403 | — | As for any parent call: sign in again (also what a second, simultaneous delete gets). |
+| 429 | `Too many failed login attempts. Try again later.` | Show "try again in N minutes" from `Retry-After`. **Stay signed in.** Don't auto-retry. |
+| 500 | — | Generic error with retry; nothing was deleted. |
+
+The messages above are fixed constants; there's no separate error-code field.
+
+**What the app must do:**
+
+- **Warn before asking for the PIN:** deleting disconnects **all children linked to this phone
+  number** from the app, permanently. There's no undo; only the school can link the children to a
+  phone again, which creates a new account with a new PIN.
+- **Require the PIN** in that confirmation step.
+- **On success,** clear everything and return to login, as in the table.
+
+**What happens on the server:** the parent (name, number, PIN), all of the parent's registered
+phones and the notification list are deleted. The children and their attendance stay at the
+school, with no parent. The school's activity log records which children were unlinked (by name,
+never the parent's name or number).
 
 ## Admin dashboard
 
@@ -763,11 +832,11 @@ Show a "load more" button while `has_more` is `true`, and call it again with
 | Column | Field | Notes |
 |---|---|---|
 | Time | `created_at` | RFC 3339 with `+03:00`; show it in Baghdad time |
-| Actor | `actor` | always the one shared admin account, or `unknown` for a failed login |
+| Actor | `actor` | the one shared admin account, `unknown` for a failed login, or `parent` for `parent.account_delete` |
 | Action | `action` | a stable code; show an Arabic label (below) |
 | Target | `target_type` + `target_id` | for example "student 42", "class G3/A", "device SN-1"; empty when `null` |
 | Result | `result` | `success`, `rejected` or `failed` |
-| IP | `ip` | can be `null` |
+| IP | `ip` | can be `null`; always `null` for `parent.account_delete` |
 | Detail | `detail` | identifiers and counts, for example `date=2026-10-13` or `audience=class recipients=24`; `dry_run` means it was a preview that changed nothing |
 
 **Action labels:** map each code to an Arabic label, and show any code you don't know as it is.
@@ -798,6 +867,7 @@ New codes may appear later without an API change.
 | `export.schedule` | تصدير الجدول |
 | `attendance.manual_create` | إدخال حضور يدوي |
 | `attendance.manual_delete` | حذف حضور يدوي |
+| `parent.account_delete` | حذف ولي الأمر لحسابه |
 
 **Result colours:** `success` green, `rejected` (the server refused the request: 4xx) amber,
 `failed` (server error: 5xx) red.
@@ -805,8 +875,11 @@ New codes may appear later without an API change.
 **What it records:** every admin request that changes something, including refused ones; the
 two Excel exports; and login attempts that reached the password check. It doesn't record
 reads, requests with a missing or expired token, logins blocked by the rate limit, or anything
-from the parent app or the devices. It never holds passwords, PINs, names, phone numbers,
-titles, notes or setting values.
+from the parent app or the devices, except one: when a parent deletes the account in the app,
+there is one `parent.account_delete` entry per child that was unlinked (`actor` `parent`,
+`target` the student, `detail` the **child's name** so the school knows whom to link again), or
+one entry with `detail` `no linked students`. It never holds passwords, PINs, phone numbers,
+titles, notes or setting values, and no other names.
 
 **Keep in mind:**
 
@@ -814,6 +887,23 @@ titles, notes or setting values.
   but its entry is missing.
 - **The project owner can correct or remove entries** directly in the database, so the page
   isn't a tamper-proof audit trail.
+
+### Students whose parent deleted the account
+
+A parent can now delete the account in the app. The children stay, with no parent:
+
+- **Student list (`GET /api/admin/students`):** `parent_name` and `parent_phone` are empty
+  strings. Show "لا يوجد ولي أمر" (no parent) instead of a blank, and don't treat it as an error.
+- **Excel export:** the parent and phone columns show `-`.
+- **Editing such a student** (`PUT /api/admin/students`) needs the parent fields as for any edit,
+  so saving links the student to that phone number. Verified behaviour:
+  - a number that belongs to an existing parent links without `parent_pin`;
+  - a number that isn't registered (including the deleted parent's old number) without
+    `parent_pin` gives 400 `parent_pin is required for a new parent (parent_phone is not registered
+    yet)`;
+  - with a valid `parent_pin` it creates a new parent account with that PIN and links the student.
+  The form should make the PIN field available when the number isn't registered.
+- **Activity log:** see `parent.account_delete` above: it lists which children were unlinked.
 
 ### Banners
 
@@ -883,7 +973,17 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.18.0 (this release):** the student's device user ID (`rfid_tag`).
+**In API 1.19.0 (this release):** parent account deletion and the push notification switch. New:
+`POST /api/mobile/account/delete` (see [Deleting the account](#deleting-the-account-حذف-الحساب))
+and `GET`/`PUT /api/mobile/notification-settings` (see
+[Push notification switch](#push-notification-switch-إشعارات-الهاتف)). Additive:
+`PUT /api/mobile/device-token` now returns `registered` (always `true` unless the parent turned
+push off, when nothing is stored and it is `false`); the activity log has the
+`parent.account_delete` code with `actor` `parent`. Students may now have no parent (see
+[Students whose parent deleted the account](#students-whose-parent-deleted-the-account)).
+Nothing breaks: no existing field or status changed.
+
+**In API 1.18.0:** the student's device user ID (`rfid_tag`).
 **Breaking for create:** `POST /api/admin/students` now requires `rfid_tag` (400 `rfid_tag is
 required`; it used to store a placeholder `admin-<number>`), and on create and update a value must
 be 1 to 14 ASCII digits without a leading 0 (400 otherwise; on update the stored value resent

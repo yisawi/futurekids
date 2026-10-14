@@ -43,6 +43,8 @@ const (
 	phone3        = "+9647000000303"
 	unknownPhone  = "+9647000000404"
 	limitedPhone  = "+9647000000505"
+	leaverPhone   = "+9647000000606"
+	lockedPhone   = "+9647000000707"
 )
 
 type exchange struct {
@@ -966,7 +968,30 @@ func (r *runner) scenario() {
 		r.call(op, "expired token", "", expiredParent, device, 401)
 		r.call(op, "admin token", "", admin, device, 403)
 	}
-	r.call("PUT /api/mobile/device-token", "register before the PIN change", "", parent, device, 200)
+	// ── Notification settings ──────────────────────────────────────────────────
+	_, d = r.call("GET /api/mobile/notification-settings", "push on by default", "", parent, nil, 200)
+	r.expect("push_enabled defaults to true", at(d, "data", "push_enabled"), true)
+	_, d = r.call("PUT /api/mobile/notification-settings", "switch push off", "", parent, map[string]bool{"push_enabled": false}, 200)
+	r.expect("push switched off", at(d, "data", "push_enabled"), false)
+	r.db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = $1`, r.parentID).Scan(&tokens)
+	r.expect("switching push off removed the parent's device tokens", tokens, 0)
+	_, d = r.call("GET /api/mobile/notification-settings", "push off", "", parent, nil, 200)
+	r.expect("push_enabled reads false", at(d, "data", "push_enabled"), false)
+	_, d = r.call("PUT /api/mobile/device-token", "register while push is off", "", parent, device, 200)
+	r.expect("token not registered while push is off", at(d, "registered"), false)
+	r.db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE parent_id = $1`, r.parentID).Scan(&tokens)
+	r.expect("no device token stored while push is off", tokens, 0)
+	_, d = r.call("PUT /api/mobile/notification-settings", "switch push on", "", parent, map[string]bool{"push_enabled": true}, 200)
+	r.expect("push switched on", at(d, "data", "push_enabled"), true)
+	_, d = r.call("PUT /api/mobile/notification-settings", "push_enabled missing", "", parent, map[string]any{}, 400)
+	r.expect("push_enabled missing message", at(d, "message"), "push_enabled is required (true or false)")
+	r.call("PUT /api/mobile/notification-settings", "push_enabled not a boolean", "", parent, map[string]any{"push_enabled": "no"}, 400)
+	r.call("PUT /api/mobile/notification-settings", "malformed JSON", "", parent, "{", 400)
+	r.call("PUT /api/mobile/notification-settings", "oversized body", "", parent, oversized(), 413)
+	parentDenied("GET /api/mobile/notification-settings", "")
+	parentDenied("PUT /api/mobile/notification-settings", "")
+	_, d = r.call("PUT /api/mobile/device-token", "register before the PIN change", "", parent, device, 200)
+	r.expect("token registered while push is on", at(d, "registered"), true)
 
 	// ── PIN change signs the parent out ────────────────────────────────────────
 	r.call("PUT /api/admin/students", "change the parent's PIN", "", admin, map[string]any{"id": idA, "name": "Sara Example", "parent_name": "Omar Example", "parent_phone": phone1, "parent_pin": "Hb8@nP3e%Yw6sJ5d"}, 200)
@@ -1562,6 +1587,44 @@ func (r *runner) scenario() {
 	r.call("GET /api/admin/activity-log", "invalid cursor", "?before=0", admin, nil, 400)
 	adminDenied("GET /api/admin/activity-log", "", nil)
 
+	// ── Account deletion ───────────────────────────────────────────────────────
+	const leaverPin = "Lv3#wQ8z!Hd5nT2b"
+	idL, _ := create("parent who deletes the account", map[string]any{"name": "Rami Example", "parent_name": "Huda Example", "parent_phone": leaverPhone, "parent_pin": leaverPin, "rfid_tag": "9010"})
+	_, d = r.call("POST /api/mobile/login", "parent who deletes the account", "", "", map[string]string{"phone": leaverPhone, "pin": leaverPin}, 200)
+	leaver := str(at(d, "data", "token"))
+	_, d = r.call("POST /api/mobile/account/delete", "pin missing", "", leaver, map[string]any{}, 400)
+	r.expect("pin missing message", at(d, "message"), "pin is required")
+	_, d = r.call("POST /api/mobile/account/delete", "wrong PIN", "", leaver, map[string]string{"pin": "Wrong#Pin123456789"}, 400)
+	r.expect("wrong PIN message", at(d, "message"), "Incorrect PIN")
+	r.call("POST /api/mobile/account/delete", "pin not a string", "", leaver, map[string]any{"pin": 1234}, 400)
+	r.call("POST /api/mobile/account/delete", "malformed JSON", "", leaver, "{", 400)
+	r.call("POST /api/mobile/account/delete", "oversized body", "", leaver, oversized(), 413)
+	parentDenied("POST /api/mobile/account/delete", "")
+	r.call("GET /api/mobile/students", "a wrong PIN keeps the session", "", leaver, nil, 200)
+	_, d = r.call("POST /api/mobile/account/delete", "correct PIN", "", leaver, map[string]string{"pin": leaverPin}, 200)
+	r.expect("deletion message", at(d, "message"), "Account deleted")
+	r.call("POST /api/mobile/account/delete", "token of the deleted account", "", leaver, map[string]string{"pin": leaverPin}, 401)
+	r.call("GET /api/mobile/notification-settings", "token of the deleted account", "", leaver, nil, 401)
+	var orphanParent any
+	r.db.QueryRow(`SELECT parent_id FROM students WHERE id = $1`, idL).Scan(&orphanParent)
+	r.expect("the child stays, without a parent", orphanParent, nil)
+	_, d = r.call("GET /api/admin/activity-log", "after a parent deleted the account", "", admin, nil, 200)
+	r.expect("deletion entry", fmt.Sprint(at(d, "data", 0, "actor"), " ", at(d, "data", 0, "action"), " ", at(d, "data", 0, "ip"), " ", at(d, "data", 0, "target_id"), " ", at(d, "data", 0, "detail")),
+		fmt.Sprint("parent parent.account_delete <nil> ", idL, " Rami Example"))
+	idM, _ := create("parent locked out of deletion", map[string]any{"name": "Zaid Example", "parent_name": "Reem Example", "parent_phone": lockedPhone, "parent_pin": leaverPin, "rfid_tag": "9011"})
+	_, d = r.call("POST /api/mobile/login", "parent locked out of deletion", "", "", map[string]string{"phone": lockedPhone, "pin": leaverPin}, 200)
+	locked := str(at(d, "data", "token"))
+	for i := 1; i <= 5; i++ {
+		r.call("POST /api/mobile/account/delete", fmt.Sprintf("wrong PIN %d", i), "", locked, map[string]string{"pin": "Wrong#Pin123456789"}, 400)
+	}
+	x, _ = r.call("POST /api/mobile/account/delete", "rate-limited, even with the right PIN", "", locked, map[string]string{"pin": leaverPin}, 429)
+	if n, err := strconv.Atoi(x.header.Get("Retry-After")); err != nil || n < 1 || n > 900 {
+		t.Errorf("deletion Retry-After %q: want whole seconds in 1..900", x.header.Get("Retry-After"))
+	}
+	var lockedParent int
+	r.db.QueryRow(`SELECT COUNT(*) FROM students WHERE id = $1 AND parent_id IS NOT NULL`, idM).Scan(&lockedParent)
+	r.expect("a rate-limited deletion deletes nothing", lockedParent, 1)
+
 	// ── System ─────────────────────────────────────────────────────────────────
 	r.call("GET /health", "liveness", "", "", nil, 200)
 
@@ -1625,6 +1688,9 @@ func (r *runner) databaseFailures() {
 	r.call("GET /api/mobile/settings", "database error", "", "", nil, 500)
 	r.call("PUT /api/mobile/device-token", "database error", "", parent, map[string]string{"token": "contract-device-token-0002"}, 500)
 	r.call("DELETE /api/mobile/device-token", "database error", "", parent, map[string]string{"token": "contract-device-token-0002"}, 500)
+	r.call("GET /api/mobile/notification-settings", "database error", "", parent, nil, 500)
+	r.call("PUT /api/mobile/notification-settings", "database error", "", parent, map[string]bool{"push_enabled": true}, 500)
+	r.call("POST /api/mobile/account/delete", "database error", "", parent, map[string]string{"pin": "Hb8@nP3e%Yw6sJ5d"}, 500)
 	r.call("POST /api/mobile/login", "database error", "", "", map[string]string{"phone": phone1, "pin": "Kq7#vR2m!Tx9pW4z"}, 500)
 	r.call("POST /api/admin/login", "database error", "", "", map[string]string{"username": "admin", "password": adminPassword}, 500)
 	for _, op := range []string{
@@ -2261,6 +2327,11 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 			hdr := node(root, "components", "responses", "HeaderTooLarge", "content")
 			hdr["application/json"] = hdr["text/plain"]
 			delete(hdr, "text/plain")
+		}},
+		{"the device-token response loses registered", []string{"responses"}, func(root map[string]any) {
+			resp := node(schemas(root), "DeviceTokenRegisterResponse")
+			delete(obj(resp["properties"]), "registered")
+			resp["required"] = []any{"status", "message"}
 		}},
 		{"device-token removal documents 404 instead of 200", []string{"responses"}, func(root map[string]any) {
 			responses := node(root, "paths", "/api/mobile/device-token", "delete", "responses")

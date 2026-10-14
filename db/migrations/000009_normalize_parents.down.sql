@@ -14,6 +14,8 @@
 --     sent log.
 --   internal/handlers/manual_attendance.go — a manual punch notifies the student's parent
 --     (students.parent_id).
+--   internal/handlers/parent_account.go — account deletion and the notification settings read,
+--     update and delete parents and unlink students.parent_id.
 -- Data loss: parents with no student and parents.created_at are lost; the rest is copied back to
 --   students.parent_phone, parent_pin and parent_name.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy

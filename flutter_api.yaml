@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Future Kids Attendance System API
-  version: 1.18.0
+  version: 1.19.0
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -104,8 +104,9 @@ paths:
         **Rate limit:** after 5 failed attempts (wrong PIN or unregistered number) for a phone
         number within 15 minutes of that number's first attempt, every attempt for the number
         returns 429 until the window ends, even with the correct PIN. Every format of a number
-        counts as the same number. `Retry-After` gives the seconds left. A successful login
-        clears the count. Show the parent a wait message and do not retry automatically.
+        counts as the same number, and wrong PINs sent to `deleteParentAccount` count too.
+        `Retry-After` gives the seconds left. A successful login clears the count. Show the
+        parent a wait message and do not retry automatically.
 
         Each login returns a token for the parent's current session; it stops working when the
         school changes the PIN.
@@ -599,6 +600,11 @@ paths:
         parent. A parent keeps at most 10 tokens; registering an 11th removes the one seen
         least recently. A token FCM reports as no longer registered is removed automatically,
         and changing the parent's PIN removes all of the parent's tokens.
+
+        While the parent has push notifications turned off (`updateNotificationSettings`), the
+        token is **not stored**: the answer is still 200, with `registered` false, so the app
+        need not treat it as an error. The token is also removed from any other parent, since
+        this phone now belongs to this parent. After turning push back on, call this again.
       security:
         - ParentJWT: []
       requestBody:
@@ -609,14 +615,24 @@ paths:
               $ref: '#/components/schemas/DeviceTokenRequest'
       responses:
         '200':
-          description: Registered (or refreshed).
+          description: Registered (or refreshed), or not stored because push is turned off.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MessageResponse'
-              example:
-                status: success
-                message: Device token registered
+                $ref: '#/components/schemas/DeviceTokenRegisterResponse'
+              examples:
+                registered:
+                  summary: Stored
+                  value:
+                    status: success
+                    message: Device token registered
+                    registered: true
+                pushOff:
+                  summary: Not stored, push notifications are turned off
+                  value:
+                    status: success
+                    message: Push notifications are turned off for this account; device token not registered
+                    registered: false
         '400':
           $ref: '#/components/responses/InvalidDeviceToken'
         '401':
@@ -666,6 +682,134 @@ paths:
           $ref: '#/components/responses/ParentForbidden'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/notification-settings:
+    get:
+      tags:
+        - Parent App
+      operationId: getNotificationSettings
+      summary: Read the push notification switch
+      description: |
+        Whether push notifications reach the parent's phones. The setting belongs to the parent
+        account, so it survives logout, reinstalling the app and a new phone. It says nothing
+        about the phone's own notification permission, which the app reads from the OS.
+      security:
+        - ParentJWT: []
+      responses:
+        '200':
+          description: The current setting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettingsResponse'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags:
+        - Parent App
+      operationId: updateNotificationSettings
+      summary: Turn push notifications on or off
+      description: |
+        `false` stops every push to all of the parent's phones: in one step it records the
+        choice and removes all of the parent's device tokens, and while it is off
+        `PUT /api/mobile/device-token` (and login's `fcm_token`) stores nothing. Notifications are
+        still written to the parent's list (`GET /api/mobile/notifications`) exactly as before;
+        only the push stops.
+
+        `true` records the choice but registers no phone: call `PUT /api/mobile/device-token`
+        right after it.
+
+        Sending the current value again changes nothing and answers 200.
+      security:
+        - ParentJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationSettings'
+      responses:
+        '200':
+          description: Saved; `data` is the new setting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettingsResponse'
+        '400':
+          $ref: '#/components/responses/NotificationSettingsBadRequest'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/mobile/account/delete:
+    post:
+      tags:
+        - Parent App
+      operationId: deleteParentAccount
+      summary: Delete the parent account
+      description: |
+        Permanently deletes the signed-in parent account after checking its PIN. There is no
+        undo and no restore.
+
+        **Deleted:** the parent (name, phone number, PIN), all of the parent's device tokens and
+        the parent's notification list. Every token of the account stops working: the next
+        request with one gets 401.
+
+        **Kept:** every child linked to this phone number, active or not, with its attendance,
+        leaves and schedule; the children are no longer linked to any parent. The school's
+        activity log lists the unlinked children by name (never the parent's name or number),
+        and the school can link them again to a phone number, which creates a new account with a
+        new PIN.
+
+        **PIN check:** as at login: compared exactly, never trimmed or format-checked. A wrong PIN
+        answers 400 `Incorrect PIN` and the session stays valid. Wrong PINs count toward the
+        login rate limit of the parent's phone number (see `parentLogin`): after 5 failures
+        within 15 minutes, login and this operation both answer 429 until the window ends.
+
+        `POST` rather than `DELETE`, because some HTTP clients drop the body of a DELETE.
+      security:
+        - ParentJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeleteRequest'
+      responses:
+        '200':
+          description: Deleted. Clear everything stored for this account and return to login.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                status: success
+                message: Account deleted
+        '400':
+          $ref: '#/components/responses/AccountDeleteBadRequest'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyLoginAttempts'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
@@ -1746,10 +1890,13 @@ paths:
         answered 400, 404, 409 or 500; the two Excel exports; and admin login attempts that
         reached the credential check. **Not recorded:** other GET requests (including reading
         this log), requests the admin authentication rejected, login requests answered 429 by
-        the rate limit or rejected as malformed, parent and device requests.
+        the rate limit or rejected as malformed, parent and device requests. The one parent
+        action recorded is a successful account deletion (`parent.account_delete`).
 
         Entries hold identifiers and counts only: never passwords, PINs, tokens, names, phone
-        numbers, titles, notes or setting values. Recording is best effort: if the database
+        numbers, titles, notes or setting values. The one exception is `parent.account_delete`,
+        whose `detail` names the unlinked child; the parent's name, phone number and address are
+        never stored. Recording is best effort: if the database
         fails at that moment the request is answered as usual and its entry is missing. The
         owner may correct or remove entries directly in the database.
 
@@ -1770,6 +1917,7 @@ paths:
         | `attendance.manual_create`, `attendance.manual_delete` | `POST`, `DELETE /api/admin/attendance/manual` | `student` id; `detail` has the type and date (create: `notify`, `dry_run`; delete: the entry id) |
         | `export.attendance` | `GET /api/admin/export/excel` | `date` |
         | `export.schedule` | `GET /api/admin/schedule/export` | `class` |
+        | `parent.account_delete` | `POST /api/mobile/account/delete` (the parent app; `actor` is `parent`, `ip` null) | one entry per unlinked child: `student` id, `detail` the child's name; a parent without children gives one entry with no target and `detail` `no linked students` |
       security:
         - AdminJWT: []
       parameters:
@@ -2556,8 +2704,9 @@ components:
           description: |
             Optional, kept for compatibility: a valid FCM registration token here is registered
             exactly as `PUT /api/mobile/device-token` would (an invalid one is ignored and the
-            login still succeeds). Use `PUT` and `DELETE /api/mobile/device-token` for refresh and
-            logout; they are the contract.
+            login still succeeds), so while the parent has push notifications turned off it is not
+            stored. Use `PUT` and `DELETE /api/mobile/device-token` for refresh and logout; they
+            are the contract.
       required:
         - phone
         - pin
@@ -2578,6 +2727,74 @@ components:
         - token
       example:
         token: example-fcm-registration-token-0001
+    DeviceTokenRegisterResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+          enum:
+            - Device token registered
+            - Push notifications are turned off for this account; device token not registered
+        registered:
+          type: boolean
+          description: |
+            Whether the token is now stored for this parent. `false` only while the parent has
+            push notifications turned off.
+      required:
+        - status
+        - message
+        - registered
+      example:
+        status: success
+        message: Device token registered
+        registered: true
+    NotificationSettings:
+      type: object
+      properties:
+        push_enabled:
+          type: boolean
+          description: |
+            Whether push notifications reach the parent's phones. New and existing parents start
+            with `true`. Notifications are written to the parent's list either way.
+      required:
+        - push_enabled
+      example:
+        push_enabled: false
+    NotificationSettingsResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          $ref: '#/components/schemas/NotificationSettings'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          push_enabled: true
+    AccountDeleteRequest:
+      type: object
+      properties:
+        pin:
+          type: string
+          minLength: 1
+          maxLength: 72
+          description: |
+            The parent's current credential, exactly as at login (never trimmed). As at login,
+            don't check its format in the app: credentials set before the 16-character rule (4 or
+            6 digits) still work.
+      required:
+        - pin
+      example:
+        pin: Kq7#vR2m!Tx9pW4z
     ParentProfile:
       type: object
       properties:
@@ -2734,7 +2951,10 @@ components:
           type: string
         parent_name:
           type: string
-          description: Empty string when no parent is linked.
+          description: |
+            Empty string when no parent is linked, for example after the parent deleted the
+            account in the app. Editing such a student needs the parent fields again, which links
+            it (a number that is not registered also needs `parent_pin`).
         parent_phone:
           type: string
           pattern: ^(\+9647[0-9]{9})?$
@@ -5379,7 +5599,8 @@ components:
         actor:
           type: string
           description: |
-            The admin account (there is one shared account), or `unknown` for a failed login.
+            The admin account (there is one shared account), `unknown` for a failed login, or
+            `parent` for `parent.account_delete` (a parent deleted the account in the app).
         action:
           type: string
           description: |
@@ -5409,7 +5630,9 @@ components:
         ip:
           type: string
           nullable: true
-          description: The client address, as the login rate limit sees it.
+          description: |
+            The client address, as the login rate limit sees it. Always null for
+            `parent.account_delete`: the parent's address is not stored.
         target_type:
           type: string
           nullable: true
@@ -5439,7 +5662,8 @@ components:
           description: |
             Identifiers and counts only, for example `date=2026-09-24`, `periods=30`,
             `audience=class recipients=24`, `kind=holiday` or `dry_run` (the request was a
-            preview and changed nothing).
+            preview and changed nothing). The one exception is `parent.account_delete`: the name
+            of the unlinked child (or `no linked students`), so the school knows whom to link again.
       required:
         - id
         - created_at
@@ -5671,6 +5895,47 @@ components:
                 message: 'token must be 20 to 1024 characters: letters, digits, '':'', ''_'', ''.'' or ''-'''
             malformed:
               summary: Body is not valid JSON
+              value:
+                status: error
+                message: Invalid request body
+    NotificationSettingsBadRequest:
+      description: Malformed JSON, `push_enabled` not a boolean, or `push_enabled` missing or null.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            required:
+              summary: push_enabled missing or null
+              value:
+                status: error
+                message: push_enabled is required (true or false)
+            malformed:
+              summary: Not valid JSON, or push_enabled is not a boolean
+              value:
+                status: error
+                message: Invalid request body
+    AccountDeleteBadRequest:
+      description: |
+        The account was not deleted and the session stays valid: show `message` and let the
+        parent try again. Never sign the parent out on this answer.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            required:
+              summary: pin missing, null or empty
+              value:
+                status: error
+                message: pin is required
+            incorrectPin:
+              summary: Wrong PIN (counts toward the rate limit)
+              value:
+                status: error
+                message: Incorrect PIN
+            malformed:
+              summary: Not valid JSON, or pin is not a string
               value:
                 status: error
                 message: Invalid request body

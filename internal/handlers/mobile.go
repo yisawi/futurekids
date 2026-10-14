@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"future_kids/internal/auth"
 	"future_kids/internal/notify"
@@ -671,7 +672,7 @@ func (app *AppEnv) MobileLoginHandler(w http.ResponseWriter, r *http.Request) {
 	if req.FCMToken != "" {
 		if !validDeviceToken(req.FCMToken) {
 			slog.Warn("MobileLoginHandler: invalid fcm_token ignored", "parent_id", parentID)
-		} else if err := app.registerDeviceToken(ctx, parentID, req.FCMToken); err != nil {
+		} else if _, err := app.registerDeviceToken(ctx, parentID, req.FCMToken); err != nil {
 			slog.Error("MobileLoginHandler: device token not registered", "parent_id", parentID, "token", notify.TokenFingerprint(req.FCMToken), "error", err)
 		}
 	}
@@ -752,28 +753,45 @@ type DeviceTokenRequest struct {
 // registerDeviceToken stores token for parentID, moving it from any other parent (a phone
 // belongs to one parent at a time) and marking it seen now. A parent keeps at most
 // MaxDeviceTokensPerParent tokens; the least recently seen ones beyond that are deleted.
-func (app *AppEnv) registerDeviceToken(ctx context.Context, parentID int, token string) error {
+// While the parent has push notifications turned off it stores nothing, removes the token from
+// any other parent and reports false. The parent row is read FOR SHARE, so a concurrent switch
+// to off (which updates that row, then deletes the tokens) never leaves this token behind; it
+// returns errParentGone when the parent no longer exists.
+func (app *AppEnv) registerDeviceToken(ctx context.Context, parentID int, token string) (bool, error) {
 	tx, err := app.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
+	var enabled bool
+	switch err := tx.QueryRowContext(ctx, `SELECT push_enabled FROM parents WHERE id = $1 FOR SHARE`, parentID).Scan(&enabled); {
+	case err == sql.ErrNoRows:
+		return false, errParentGone
+	case err != nil:
+		return false, err
+	}
+	if !enabled {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM device_tokens WHERE token = $1`, token); err != nil {
+			return false, err
+		}
+		return false, tx.Commit()
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO device_tokens (parent_id, token) VALUES ($1, $2)
 		ON CONFLICT (token) DO UPDATE
 		SET created_at = CASE WHEN device_tokens.parent_id = EXCLUDED.parent_id THEN device_tokens.created_at ELSE CURRENT_TIMESTAMP END,
 		    parent_id = EXCLUDED.parent_id,
 		    last_seen_at = CURRENT_TIMESTAMP`, parentID, token); err != nil {
-		return err
+		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM device_tokens WHERE id IN (
 			SELECT id FROM device_tokens WHERE parent_id = $1
 			ORDER BY last_seen_at DESC, id DESC
 			OFFSET $2)`, parentID, MaxDeviceTokensPerParent); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	return true, tx.Commit()
 }
 
 // decodeDeviceToken reads {"token": "..."}, writing 400 or 413 and returning false when it is
@@ -791,7 +809,8 @@ func decodeDeviceToken(w http.ResponseWriter, r *http.Request) (string, bool) {
 }
 
 // RegisterDeviceTokenHandler (PUT /api/mobile/device-token) registers or refreshes this phone's
-// FCM token for the authenticated parent.
+// FCM token for the authenticated parent. While the parent has push notifications turned off it
+// stores nothing and still answers 200, with registered false.
 func (app *AppEnv) RegisterDeviceTokenHandler(w http.ResponseWriter, r *http.Request) {
 	parentID, ok := r.Context().Value(ParentIDKey).(int)
 	if !ok {
@@ -802,11 +821,20 @@ func (app *AppEnv) RegisterDeviceTokenHandler(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	if err := app.registerDeviceToken(r.Context(), parentID, token); err != nil {
+	registered, err := app.registerDeviceToken(r.Context(), parentID, token)
+	if errors.Is(err, errParentGone) {
+		respondParentGone(w, r, "RegisterDeviceTokenHandler", parentID)
+		return
+	}
+	if err != nil {
 		respondInternalError(w, "Internal server error", "RegisterDeviceTokenHandler: register failed", err, "parent_id", parentID, "token", notify.TokenFingerprint(token))
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]string{"status": "success", "message": "Device token registered"})
+	message := DeviceTokenRegisteredMessage
+	if !registered {
+		message = PushDisabledTokenMessage
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"status": "success", "message": message, "registered": registered})
 }
 
 // RemoveDeviceTokenHandler (DELETE /api/mobile/device-token) removes this phone's FCM token
