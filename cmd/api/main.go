@@ -39,17 +39,24 @@ func run() int {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	// 1. Load the config
+	// 1. Load the config and run the startup checks. Every problem is logged in the same boot:
+	// in production they stop the server, elsewhere they are only warnings.
 	cfg, err := config.LoadConfig()
+	startup := config.ReadStartupEnv()
+	problems := config.StartupProblems(startup)
 	if err != nil {
+		logStartupProblems(startup.Production, problems)
 		slog.Error("Invalid configuration", "error", err)
 		return 1
 	}
-	auth.InitAuth(cfg.JWTSecret)
+	if startup.Production && cfg.DBUrl == "" {
+		return refuseToStart(problems)
+	}
 
 	// 2. Connect to the database
 	db, err := database.NewConnection(cfg.DBUrl, cfg.DBPool)
 	if err != nil {
+		logStartupProblems(startup.Production, problems)
 		slog.Error("Failed to connect to database", "error", err)
 		return 1
 	}
@@ -59,6 +66,24 @@ func run() int {
 		db.Close()
 		return 1
 	}
+	adminCtx, cancelAdmin := context.WithTimeout(context.Background(), 10*time.Second)
+	problem, warning := config.SeededAdminProblem(adminCtx, db)
+	cancelAdmin()
+	if warning != "" {
+		slog.Warn(warning)
+	}
+	if problem != "" {
+		problems = append(problems, problem)
+	}
+	logStartupProblems(startup.Production, problems)
+	if startup.Production {
+		if len(problems) > 0 {
+			db.Close()
+			return refuseToStart(nil)
+		}
+		slog.Info("Production startup checks passed")
+	}
+	auth.InitAuth(cfg.JWTSecret)
 
 	// Initialize Firebase FCM
 	ctx := context.Background()
@@ -210,7 +235,12 @@ func run() int {
 	case len(cfg.TrustedProxies) > 0:
 		slog.Info("Trusting client-IP headers from proxies", "trusted_proxy_cidrs", fmt.Sprint(cfg.TrustedProxies))
 	case cfg.OnRailway:
-		slog.Warn("TRUSTED_PROXY_CIDRS is not set: every client appears as Railway's proxy address, so admin-login limits are shared by all clients; set it from the 'Observed client address' logs")
+		msg := "TRUSTED_PROXY_CIDRS is not set: every client appears as Railway's proxy address, so admin-login limits are shared by all clients; set it from the 'Observed client address' logs (docs/PRODUCTION_RUNBOOK.md, step 5)"
+		if startup.Production {
+			slog.Error(msg)
+		} else {
+			slog.Warn(msg)
+		}
 	default:
 		slog.Info("TRUSTED_PROXY_CIDRS is not set: the client IP is the connection's remote address and forwarding headers are ignored")
 	}
@@ -233,6 +263,26 @@ func run() int {
 	}
 	stopSignals()
 	return shutdown(srv, c, bg, db, cfg.ShutdownTimeout)
+}
+
+// logStartupProblems logs each startup problem: as an ERROR in production, where the server then
+// refuses to start, and as a WARN elsewhere, where nothing else changes.
+func logStartupProblems(production bool, problems []string) {
+	for _, p := range problems {
+		if production {
+			slog.Error("Startup check failed", "problem", p)
+		} else {
+			slog.Warn("Startup check failed (enforced only in production)", "problem", p)
+		}
+	}
+}
+
+// refuseToStart logs problems (if any are given) and the production refusal, and returns the
+// exit code.
+func refuseToStart(problems []string) int {
+	logStartupProblems(true, problems)
+	slog.Error("Refusing to start in production: startup checks failed; see docs/PRODUCTION_RUNBOOK.md")
+	return 1
 }
 
 // shutdown drains the process within timeout, in order: stop accepting connections and let

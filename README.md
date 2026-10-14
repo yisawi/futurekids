@@ -12,6 +12,8 @@ This system is designed to serve a specific elementary school by automating the 
 
 ## Operations
 
+**Production:** bring-up, release process, backups, monitoring and rollback are in [docs/PRODUCTION_RUNBOOK.md](docs/PRODUCTION_RUNBOOK.md). In the Railway environment named `production` the server refuses to start with an unsafe configuration (see `RAILWAY_ENVIRONMENT_NAME` below).
+
 ### Graceful shutdown
 
 On `SIGTERM` (every Railway deploy) or `SIGINT`, the server shuts down in this order, logging each phase (`Shutdown: …`):
@@ -337,7 +339,11 @@ unset ADMIN_PASSWORD
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TRUSTED_PROXY_CIDRS` | empty (also on Railway) | Proxies whose client-IP headers are believed (comma-separated CIDRs or addresses) |
+| `DATABASE_URL` | — (`DB_URL` is a local fallback) | PostgreSQL URL. Don't add a `timezone` parameter: the server pins every connection to Asia/Baghdad |
+| `JWT_SECRET` | — (required) | Signs every token. In production it must be at least 32 characters with at least 12 distinct ones and no placeholder word (`secret`, `changeme`, `password`, …); generate it with `openssl rand -base64 48`, different per environment |
+| `FIREBASE_CREDENTIALS_JSON` / `FIREBASE_CREDENTIALS_PATH` | — / `firebase-credentials.json` | Firebase service-account key (the JSON wins over the file). Checked at startup: valid JSON, `type` `service_account`, non-empty `project_id` and `client_email`, a PEM `private_key`. Use a separate key per environment |
+| `RAILWAY_ENVIRONMENT_NAME` | set by Railway | `production` turns the startup checks (the two rows above, `DATABASE_URL`, and no admin account accepting the password seeded by migration 000008) into a refusal to start that lists every problem; any other environment only logs them as WARN |
+| `TRUSTED_PROXY_CIDRS` | empty (also on Railway) | Proxies whose client-IP headers are believed (comma-separated CIDRs or addresses). Unset on Railway: a WARN at startup, an ERROR in production (runbook step 5) |
 | `SHUTDOWN_TIMEOUT` | `25s` | Deadline for the whole graceful shutdown |
 | `ABSENCE_CRON_SCHEDULE` | `0 12 * * 0-4` | When absence notifications go out (Asia/Baghdad; Sunday–Thursday at noon). The job does nothing on a day that is not a school day (weekend, holiday or pause) |
 | `FAKE_TODAY` | empty | Tests only: the date (`YYYY-MM-DD`) the server takes as today, at the real time of day. Refused on Railway; the server logs a WARN when it is set |

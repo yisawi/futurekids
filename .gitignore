@@ -20,6 +20,7 @@ firebase-credentials.json
 REPORT.md
 # Admin password rotation copies containing real passwords (see db/scripts/README.md)
 db/scripts/rotate_admin_password*.with_password.sql
-AUDIT_REPORT.md*.sql.bak
+AUDIT_REPORT.md
+*.sql.bak
 staging_before_*.sql
 /flutter/
