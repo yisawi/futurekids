@@ -12,7 +12,7 @@ This system is designed to serve a specific elementary school by automating the 
 
 ## Operations
 
-**Production:** bring-up, release process, backups, monitoring and rollback are in [docs/PRODUCTION_RUNBOOK.md](docs/PRODUCTION_RUNBOOK.md). In the Railway environment named `production` the server refuses to start with an unsafe configuration (see `RAILWAY_ENVIRONMENT_NAME` below).
+**Production:** bring-up, release process, backups, monitoring and rollback are in [docs/PRODUCTION_RUNBOOK.md](docs/PRODUCTION_RUNBOOK.md). **Backups:** a daily encrypted backup runs in GitHub Actions (`.github/workflows/db-backup.yml`, `scripts/db-backup.sh`); setup, restore and the rule to keep Production backups off while the repository is public are in [runbook section 8](docs/PRODUCTION_RUNBOOK.md#8-backups). In the Railway environment named `production` the server refuses to start with an unsafe configuration (see `RAILWAY_ENVIRONMENT_NAME` below).
 
 ### Graceful shutdown
 

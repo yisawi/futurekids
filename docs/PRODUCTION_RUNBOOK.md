@@ -127,38 +127,90 @@ curl -s "$BASE_URL/api/mobile/settings"     # public: shows both
 
 ## 8. Backups
 
-**Manual dump** (before go-live, before every release with a migration, and on a regular schedule):
+Two layers:
+- **a daily encrypted backup** made by GitHub Actions;
+- **a manual monthly dump** kept on the owner's computer.
+
+Railway's scheduled backups aren't available on our plan.
+
+### 8.1 Daily encrypted backup (GitHub Actions)
+
+**How it works:**
+- **When:** `.github/workflows/db-backup.yml` runs every day at 01:17 UTC (04:17 Baghdad), and on demand from the Actions tab.
+- **What it runs:** `scripts/db-backup.sh`, which pipes `pg_dump --no-owner --no-acl -Fc` (PostgreSQL 18 client) straight into `age`, encrypting to a public key. **No plaintext dump is ever written to disk.**
+- **What it stores:** only the `.age` file, as an artifact named `futurekids-<target>-<run id>-<attempt>`, kept **30 days**, so there are about 30 daily backups at any time.
+- **What it prints:** the URL, password and dump content are never printed; a `pg_dump` error is shown with the connection details replaced by `<redacted>`.
+- **Target:** the scheduled run backs up the database named by the repository variable `BACKUP_TARGET` (default `production`); a manual run uses the target you choose.
+- **Failure:** the run fails (red in Actions) when the dump, the encryption or the upload fails, when the dump is under 1 KB, or when its secret or the key variable is missing. The message names what is missing and never prints a value.
+
+**Configure, in this order** (GitHub → the repository → Settings → Secrets and variables → Actions):
+1. **Railway:** enable **Public Access** (the TCP proxy) on the database ([docs](https://docs.railway.com/guides/postgresql)); GitHub reaches it through `DATABASE_PUBLIC_URL`.
+2. **Generate the key pair on your own computer:**
+   ```bash
+   age-keygen -o futurekids-backup.key     # prints "Public key: age1…"
+   ```
+   **The private key file never goes to GitHub, Railway, a chat or any repository.** Keep **two offline copies** (for example a USB drive and the password manager). Losing it makes every backup unreadable.
+3. **Variable** `BACKUP_AGE_PUBLIC_KEY`: the `age1…` public key (not secret).
+4. **Secret** `BACKUP_DATABASE_URL_STAGING`: Staging's `DATABASE_PUBLIC_URL`, ending in `?sslmode=require`.
+5. **Variable** `BACKUP_TARGET`: `staging`.
+6. **A manual run on Staging:** Actions → Database backup → Run workflow → target `staging`. It must turn green with one artifact.
+7. **A restore drill** (8.2) from that artifact.
+8. **Only after the repository is private (8.4) and Production exists:**
+   - secret `BACKUP_DATABASE_URL_PRODUCTION`;
+   - a manual `production` run and a restore drill;
+   - then set `BACKUP_TARGET` to `production`.
+
+**Rotating the database password** (or recreating the proxy) changes the public URL: update the matching GitHub secret, then run the workflow by hand once.
+
+### 8.2 Restore (and the drill)
+
+**A restore drill must be done once before go-live, from a real encrypted artifact.**
+
+1. **Download** the artifact from the run's page, or with `gh run download <run-id> -n <artifact name>`, and unzip it to get `futurekids-<target>-<timestamp>.dump.age`.
+2. **Restore into a local throwaway database, then check it:**
+   ```bash
+   createdb -h localhost fk_restore_check
+   age -d -i /path/to/futurekids-backup.key futurekids-<target>-<timestamp>.dump.age \
+     | pg_restore --no-owner --no-acl -d postgres://localhost:5432/fk_restore_check
+   psql postgres://localhost:5432/fk_restore_check -XAtc "SELECT version, dirty FROM schema_migrations; SELECT count(*) FROM students; SELECT count(*) FROM attendance_logs; SELECT count(*) FROM parents;"
+   dropdb -h localhost fk_restore_check
+   rm futurekids-<target>-<timestamp>.dump.age
+   ```
+   The local `pg_restore` must be at least the dump's PostgreSQL version (18).
+   - **Check:** `schema_migrations` shows the current migration count and `f`, and the row counts match what the dashboard shows.
+3. **For a real recovery,** restore into a new Railway database the same way (`-d` with its public URL), then switch the service's `DATABASE_URL` to it (section 10).
+
+### 8.3 Watching it
+
+- **Monthly:** open Actions → Database backup and confirm that the last run succeeded and that about 30 daily artifacts exist.
+  - **Why:** a scheduled workflow can stop silently and nobody is notified. GitHub's docs: "In a public repository, scheduled workflows are automatically disabled when no repository activity has occurred in 60 days" ([docs](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/disabling-and-enabling-a-workflow)).
+  - **Fix:** re-enable it in the Actions tab.
+- **Failure emails:**
+  - "Notifications for scheduled workflows are sent to the user who last modified the cron syntax in the workflow file" ([docs](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows));
+  - that user must have Actions notifications on: Notification settings → System → Actions → "On GitHub" and/or "Email", optionally "Only notify for failed workflows" ([docs](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications)).
+
+### 8.4 Gating: no Production schedule while the repository is public
+
+**Anyone signed in to GitHub can download a public repository's artifacts:**
+- downloading needs only "Read access to the repository" ([downloading workflow artifacts](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/downloading-workflow-artifacts)), which everyone has on a public repository;
+- the only extra condition is being signed in: the download API requires authentication ([REST: artifacts](https://docs.github.com/en/rest/actions/artifacts)), and the upload-artifact action notes "Users must be logged-in in order for this URL to work".
+
+**So:**
+- **Don't add the Production secret or set `BACKUP_TARGET=production` until the repository is private.**
+- **Staging tests are acceptable:** the files are encrypted and Staging holds test data.
+- Until then, keep `BACKUP_TARGET=staging`, or disable the workflow; otherwise every scheduled run fails with "secret BACKUP_DATABASE_URL_PRODUCTION is not set".
+
+### 8.5 Manual monthly dump (second layer)
+
+Once a month, and before every release with a migration, take a dump on the owner's computer. Keep it encrypted, outside this repository, and delete old copies on purpose: it contains children's and parents' personal data.
 
 ```bash
-psql "$PROD_DB" -XAtc 'SHOW server_version'   # the server's major version, e.g. 16.x
-pg_dump --version                               # must have the same major version; install that client if not
-pg_dump --no-owner --no-acl -Fc -d "$PROD_DB" -f "futurekids-prod-$(date +%F).dump"
+psql "$PROD_DB" -XAtc 'SHOW server_version'   # the server's major version (18.x)
+pg_dump --version                               # must be at least the server's major version; install that client if not
+pg_dump --no-owner --no-acl -Fc -d "$PROD_DB" | age -r <your age1… public key> > "futurekids-prod-$(date +%F).dump.age"
 ```
 
-- The dump contains children's and parents' personal data.
-- Keep it encrypted, outside this repository, and delete old copies on purpose.
-
-**Restore test** (at least once before go-live), into a local throwaway database:
-
-```bash
-createdb -h localhost fk_restore_check
-pg_restore --no-owner --no-acl -d postgres://localhost:5432/fk_restore_check "futurekids-prod-<date>.dump"
-psql postgres://localhost:5432/fk_restore_check -XAtc "SELECT version, dirty FROM schema_migrations; SELECT count(*) FROM students; SELECT count(*) FROM attendance_logs;"
-dropdb -h localhost fk_restore_check
-```
-
-### Automated backups: decision pending
-
-Nothing is automated yet, and this runbook builds no automation.
-
-**What Railway documents** ([backups](https://docs.railway.com/reference/backups)):
-- volume backups "can also be scheduled to run on a Daily / Weekly / Monthly schedule", kept 6, 27 and 89 days respectively;
-- "Backups can only be restored into the same project + environment";
-- "Wiping a volume deletes all backups".
-
-**To decide:**
-- whether to enable them for the Production Postgres volume, and at what cost and plan;
-- whether off-Railway manual dumps (above) stay the copy that survives losing the environment.
+Restore it as in 8.2.
 
 ## 9. Monitoring
 
@@ -237,7 +289,7 @@ Nothing in this runbook configures Railway for you.
 - [ ] Section 5: `TRUSTED_PROXY_CIDRS` set; no `TRUSTED_PROXY_CIDRS is not set` ERROR after the redeploy.
 - [ ] Section 6: `GET /api/mobile/settings` shows the real `whatsapp_number` and `school_name`.
 - [ ] Section 7: every device registered, its stored records cleared, **device clock verified** (Asia/Baghdad, checked against a phone), pointed at Production, `last_sync` recent; one test punch seen.
-- [ ] Section 8: a fresh dump taken and a restore test passed.
+- [ ] Section 8: a fresh dump taken; **backup restored once from an encrypted artifact** (8.2); the daily workflow green on Staging; Production backups enabled only after the repository is private (8.4).
 - [ ] Section 9: uptime monitor on `/health` running; the log searches bookmarked.
 - [ ] Section 11: Production's trigger branch decided and set.
 

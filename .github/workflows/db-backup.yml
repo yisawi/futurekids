@@ -1,0 +1,104 @@
+# Daily encrypted database backup (docs/PRODUCTION_RUNBOOK.md §8). pg_dump is piped into age by
+# scripts/db-backup.sh, so only the encrypted .age file ever exists; it is kept as a workflow
+# artifact for 30 days. Configure: secrets BACKUP_DATABASE_URL_STAGING / _PRODUCTION, variables
+# BACKUP_AGE_PUBLIC_KEY and BACKUP_TARGET (the scheduled run's target; default production).
+name: Database backup
+
+on:
+  schedule:
+    - cron: "17 1 * * *" # 01:17 UTC daily (04:17 Baghdad), off the hour
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Database to back up
+        type: choice
+        options: [staging, production]
+        default: staging
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Choose the target
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TARGET: ${{ inputs.target }}
+          VAR_TARGET: ${{ vars.BACKUP_TARGET }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            target="$INPUT_TARGET"
+          else
+            target="${VAR_TARGET:-production}"
+          fi
+          case "$target" in
+            staging | production) ;;
+            *) echo "::error::the backup target must be staging or production (variable BACKUP_TARGET or the run input)"; exit 1 ;;
+          esac
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "Backup target: $target"
+
+      - name: Install the PostgreSQL 18 client (PGDG) and age
+        run: |
+          set -euo pipefail
+          # The official PGDG apt repository, configured as postgresql.org/download/linux/ubuntu shows.
+          sudo rm -f /etc/apt/sources.list.d/pgdg.list /etc/apt/sources.list.d/pgdg.sources
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          printf 'Types: deb\nURIs: https://apt.postgresql.org/pub/repos/apt\nSuites: %s-pgdg\nArchitectures: amd64\nComponents: main\nSigned-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc\n' "$codename" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.sources > /dev/null
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends postgresql-client-18 age
+          # Use the 18 client, never an older one preinstalled on the runner (pg_dump must be >= the server).
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+          /usr/lib/postgresql/18/bin/pg_dump --version
+          age --version
+
+      - name: Back up
+        env:
+          URL_STAGING: ${{ secrets.BACKUP_DATABASE_URL_STAGING }}
+          URL_PRODUCTION: ${{ secrets.BACKUP_DATABASE_URL_PRODUCTION }}
+          BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_PUBLIC_KEY }}
+          BACKUP_LABEL: ${{ steps.target.outputs.target }}
+          BACKUP_OUT_DIR: ${{ runner.temp }}/db-backup
+        run: |
+          set -euo pipefail
+          # Chosen here, not with an expression, so a missing production secret can never fall back
+          # to the staging URL.
+          case "$BACKUP_LABEL" in
+            staging) url="$URL_STAGING"; secret=BACKUP_DATABASE_URL_STAGING ;;
+            production) url="$URL_PRODUCTION"; secret=BACKUP_DATABASE_URL_PRODUCTION ;;
+          esac
+          unset URL_STAGING URL_PRODUCTION
+          if [[ -z "$url" ]]; then
+            echo "::error::secret $secret is not set"
+            exit 1
+          fi
+          if [[ -z "$BACKUP_AGE_RECIPIENT" ]]; then
+            echo "::error::variable BACKUP_AGE_PUBLIC_KEY is not set"
+            exit 1
+          fi
+          BACKUP_DATABASE_URL="$url" scripts/db-backup.sh
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: futurekids-${{ steps.target.outputs.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/db-backup/*.dump.age
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
