@@ -85,6 +85,7 @@ func TestW5ADMSErrorHandling(t *testing.T) {
 			day++
 			d := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, day)
 			if d.Weekday() != time.Friday && d.Weekday() != time.Saturday {
+				pinToday(t, d.Format("2006-01-02")+" 13:00") // only punches dated today notify
 				return d.Format("2006-01-02")
 			}
 		}

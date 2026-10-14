@@ -37,7 +37,7 @@ type b2Page struct {
 // PUT /api/mobile/notifications/read-all marks all of the caller's, with the list reporting
 // unread_count; both routes sit behind the parent middleware.
 func TestB2NotificationHistory(t *testing.T) {
-	srv, db := a14Server(t, "b2api")
+	srv, db := a14Server(t, "b2api", "FAKE_TODAY=2026-09-23") // the day of the device punch below: only today's punches notify
 	admin := a14AdminToken(t, srv)
 
 	newParent := func(name, phone, pin, rfid string) (int, any) {

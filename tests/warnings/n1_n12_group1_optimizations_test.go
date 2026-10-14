@@ -158,7 +158,10 @@ func TestGroup1Optimizations(t *testing.T) {
 	}
 
 	t.Run("N6/round trips per ADMS batch are constant", func(t *testing.T) {
+		// Each batch is dated today, so the notification query runs (only today's punches notify).
+		pinToday(t, "2026-03-01 13:00")
 		one := push(t, batch("2026-03-01", 1, 1))
+		pinToday(t, "2026-03-02 13:00")
 		fifty := push(t, batch("2026-03-02", 2, 51))
 		t.Logf("database round trips: 1-punch batch = %d, 50-punch batch = %d", len(one), len(fifty))
 		t.Logf("1-punch batch statements: %q", one)
@@ -208,6 +211,7 @@ func TestGroup1Optimizations(t *testing.T) {
 				t.Fatalf("seed: %v", err)
 			}
 		}
+		pinToday(t, "2026-03-05 13:00") // only punches dated today notify
 		push(t, "PAR-D\t2026-03-05 07:05:00\t1\t1\n")
 		push(t, strings.Join([]string{
 			"PAR-A\t2026-03-05 07:15:00", "PAR-A\t2026-03-05 07:18:00", "PAR-A\t2026-03-05 10:30:00",

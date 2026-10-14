@@ -116,9 +116,14 @@ curl -s "$BASE_URL/api/mobile/settings"     # public: shows both
 
    An ID that matches no student is skipped (WARN `ADMSHandler: punches for unknown device PINs skipped`).
 3. **Clear the device's stored attendance records first.** Use its data-management menu (the menu path depends on the model).
-   - **Why:** a stored backlog is pushed when the device connects. Old punches are stored as attendance, and today the server also sends their check-in and check-out notifications to parents, days late.
-4. **Point the device at Production:** in its cloud (ADMS) server settings, set the server address to `<production-domain>`. Keep the port and protocol settings the Staging device uses; only the address changes.
-5. **Confirm:** `GET /api/admin/devices` shows a recent `last_sync` for the device, and a test punch by a staff ID appears in the logs.
+   - **Why:** a stored backlog is pushed when the device connects, and its old punches are stored as attendance on their own dates (test punches included). The server doesn't notify them: only punches dated today are notified. It logs `ADMSHandler: punches not dated today were stored without notifications` instead.
+4. **Set the device's clock:**
+   - date, time and time zone to Asia/Baghdad (UTC+3, no daylight saving);
+   - compare it with a phone before the first real punch.
+
+   **Why:** the server takes each punch's date and time from the device. A device whose clock is off by a day sends **no notifications at all**: its punches are stored and only a WARN is logged. A clock off by minutes or hours can put punches in the wrong check-in or check-out window.
+5. **Point the device at Production:** in its cloud (ADMS) server settings, set the server address to `<production-domain>`. Keep the port and protocol settings the Staging device uses; only the address changes.
+6. **Confirm:** `GET /api/admin/devices` shows a recent `last_sync` for the device, and a test punch by a staff ID appears in the logs.
 
 ## 8. Backups
 
@@ -165,6 +170,7 @@ Nothing is automated yet, and this runbook builds no automation.
 | `TRUSTED_PROXY_CIDRS is not set` | step 5 not done |
 | `Railway will SIGKILL this process before graceful shutdown can finish` | `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` is missing |
 | `ADMSHandler: punches for unknown device PINs skipped` | a device ID with no student (`rfid_tag` mismatch) |
+| `ADMSHandler: punches not dated today were stored without notifications` | device clock wrong, or an offline backlog was flushed (`stale` and `future` give the counts) |
 | `ADMSHandler: unregistered device attempted ADMS push`, `ADMSHandler: disabled device attempted ADMS push`, `DeviceAuthMiddleware: unregistered device rejected` | a device not registered in step 7, or disabled |
 | `ADMSHandler: batch rolled back — replying 503 so the device resends it`, `ADMSHandler: punch rejected by the database — skipped` | database trouble while storing punches |
 | `parseATTLOG:` (any) | malformed device data |
@@ -230,7 +236,7 @@ Nothing in this runbook configures Railway for you.
 - [ ] Section 4: **After deploy, confirm the log line `Production startup checks passed` appears. If it does not, the checks are not active.** That is the case if the environment is no longer named `production`: every check then only warns. `/health` answers 200.
 - [ ] Section 5: `TRUSTED_PROXY_CIDRS` set; no `TRUSTED_PROXY_CIDRS is not set` ERROR after the redeploy.
 - [ ] Section 6: `GET /api/mobile/settings` shows the real `whatsapp_number` and `school_name`.
-- [ ] Section 7: every device registered, its stored records cleared, pointed at Production, `last_sync` recent; one test punch seen.
+- [ ] Section 7: every device registered, its stored records cleared, **device clock verified** (Asia/Baghdad, checked against a phone), pointed at Production, `last_sync` recent; one test punch seen.
 - [ ] Section 8: a fresh dump taken and a restore test passed.
 - [ ] Section 9: uptime monitor on `/health` running; the log searches bookmarked.
 - [ ] Section 11: Production's trigger branch decided and set.

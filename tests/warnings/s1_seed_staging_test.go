@@ -367,13 +367,11 @@ func TestS1SeedStaging(t *testing.T) {
 			}
 		}
 
-		m := regexp.MustCompile(`Expected parent notifications from it: (\d+) check-in \+ (\d+) check-out = (\d+)`).FindStringSubmatch(out)
-		if m == nil {
-			t.Fatalf("no notification estimate in the output")
+		if !strings.Contains(out, "Parent notifications from it: none (the server notifies only punches dated today, and the history never includes today).") {
+			t.Errorf("no notification statement in the output")
 		}
-		want, _ := strconv.Atoi(m[3])
-		if got := s1Notifications(t, db); got != want {
-			t.Errorf("%d notifications stored, the tool expected %s", got, m[3])
+		if got := s1Notifications(t, db); got != 0 {
+			t.Errorf("%d notifications stored for history punches, want 0 (none is dated today)", got)
 		}
 	})
 

@@ -497,7 +497,7 @@ func TestGroup3N16GracefulShutdown(t *testing.T) {
 			CREATE TRIGGER g3_slow_note BEFORE INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION g3_slow_note();`); err != nil {
 			t.Fatal(err)
 		}
-		srv := g3Start(t, dsn, g3FreePort(t), true)
+		srv := g3Start(t, dsn, g3FreePort(t), true, "FAKE_TODAY=2026-05-03") // the punches' day: only today's punches notify
 		var body strings.Builder
 		for i := 0; i < 40; i++ {
 			fmt.Fprintf(&body, "G3-SLOW\t2026-05-03 07:00:%02d\t1\t1\n", i)

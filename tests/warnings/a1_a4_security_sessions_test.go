@@ -85,15 +85,15 @@ func a14Bearer(token string) map[string]string {
 
 // a14Server starts the real API (G3_API_BINARY selects another build) with an admin whose
 // password is a14AdminPassword, trusting 127.0.0.1 as a proxy so tests can act as many clients
-// through X-Real-IP.
-func a14Server(t *testing.T, label string) (*g3Server, *sql.DB) {
+// through X-Real-IP. extraEnv adds server variables (for example FAKE_TODAY).
+func a14Server(t *testing.T, label string, extraEnv ...string) (*g3Server, *sql.DB) {
 	t.Helper()
 	db, dsn := setupThrowawayDB(t, label)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(a14AdminPassword), bcrypt.DefaultCost)
 	if _, err := db.Exec(`UPDATE admins SET password_hash = $1 WHERE username = 'admin'`, string(hash)); err != nil {
 		t.Fatal(err)
 	}
-	return g3Start(t, dsn, g3FreePort(t), true, "TRUSTED_PROXY_CIDRS=127.0.0.1/32", "ABSENCE_CRON_SCHEDULE=0 0 1 1 *"), db
+	return g3Start(t, dsn, g3FreePort(t), true, append([]string{"TRUSTED_PROXY_CIDRS=127.0.0.1/32", "ABSENCE_CRON_SCHEDULE=0 0 1 1 *"}, extraEnv...)...), db
 }
 
 func a14AdminLogin(t *testing.T, srv *g3Server, ip, username, password string) a14Response {

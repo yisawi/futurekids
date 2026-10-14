@@ -250,6 +250,7 @@ func TestGroup2Cleanup(t *testing.T) {
 			notify.SendPushNotification(nil, client, db, tok, "t", "b")
 		}
 		appWithFCM := &handlers.AppEnv{DB: db, FCMClient: client}
+		pinToday(t, "2026-04-02 13:00") // the punch's day: only today's punches notify
 		call(t, appWithFCM.ADMSHandler, "POST", "/iclock/cdata?SN=G2-DEV&table=ATTLOG", "", "G2-FCM-5\t2026-04-02 07:15:00\t1\t1\n")
 
 		stored := func(tok string) bool {

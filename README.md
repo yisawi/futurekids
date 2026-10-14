@@ -332,7 +332,7 @@ unset ADMIN_PASSWORD
 `read -s` keeps the password out of the screen and the shell history; never pass it on the command line. The output ends with the parents' phone numbers and PIN for the parent app.
 
 - **Seeded data cannot be removed through the API.** Students can only be deactivated, punches and notifications are never deleted, and parents stay. Plan on keeping it, or clean it up with SQL after a backup.
-- **Notifications:** the attendance history creates one check-in and one check-out notification per present day (about 1,800 history rows, dated the day you seed). Afterwards, the noon absence job notifies the parent of every seeded student without a punch, each school day.
+- **Notifications:** the attendance history creates none, because the server notifies only device punches dated today and the history never includes today. Afterwards, the noon absence job notifies the parent of every seeded student without a punch, each school day.
 - **If a run stops midway,** it prints what was done. Re-running `--apply` is safe; if the history of students created in the stopped run was not sent, add `--resume-history`.
 
 ### Settings

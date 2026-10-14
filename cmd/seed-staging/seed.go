@@ -24,18 +24,17 @@ type existingStudent struct {
 }
 
 type counts struct {
-	studentsCreated, studentsSkipped    int
-	parentsNew, parentsExisting         int
-	schedulesSet, schedulesUnchanged    int
-	deviceCreated, deviceExisted        bool
-	leavesSent                          int
-	batchesSent, punchesSent            int
-	expectedCheckIns, expectedCheckOuts int
-	bannersCreated, bannersSkipped      int
-	verifiedDay                         string
-	verifiedStudents                    int
-	replacedSchedules                   []string
-	historyStudents                     int
+	studentsCreated, studentsSkipped int
+	parentsNew, parentsExisting      int
+	schedulesSet, schedulesUnchanged int
+	deviceCreated, deviceExisted     bool
+	leavesSent                       int
+	batchesSent, punchesSent         int
+	bannersCreated, bannersSkipped   int
+	verifiedDay                      string
+	verifiedStudents                 int
+	replacedSchedules                []string
+	historyStudents                  int
 }
 
 type seeder struct {
@@ -328,12 +327,6 @@ func (s *seeder) seedAttendance() error {
 			for _, t := range a.punches {
 				lines = append(lines, fmt.Sprintf("%d\t%s\t1\t0", tag, t.Format("2006-01-02 15:04:05")))
 			}
-			if a.checkIn {
-				s.n.expectedCheckIns++
-			}
-			if a.checkOut {
-				s.n.expectedCheckOuts++
-			}
 		}
 		if len(lines) == 0 {
 			continue
@@ -354,8 +347,7 @@ func (s *seeder) seedAttendance() error {
 	s.printf("Attendance history: %d punches %s as device %s in %d batches (one per school day, %s to %s, never today) for %d students.\n",
 		s.n.punchesSent, verb, seedDevice, s.n.batchesSent, first, last, len(s.targets))
 	s.history = true
-	s.printf("Expected parent notifications from it: %d check-in + %d check-out = %d (history rows dated now; pushes only reach phones the seeded parents have registered).\n",
-		s.n.expectedCheckIns, s.n.expectedCheckOuts, s.n.expectedCheckIns+s.n.expectedCheckOuts)
+	s.printf("Parent notifications from it: none (the server notifies only punches dated today, and the history never includes today).\n")
 	return nil
 }
 

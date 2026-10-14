@@ -266,8 +266,15 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("ADMSHandler: batch stored",
 		append(summary, "inserted", len(res.inserted), "duplicates", res.duplicates)...)
 
-	// ── Notify (only for committed punches; failures never change the response) ──
-	app.notifyPunches(r.Context(), res.inserted)
+	// ── Notify (only for committed punches dated today; failures never change the response) ──
+	// A backlog from an offline device, or a wrong device clock, is stored but not notified.
+	today := Clock().Format("2006-01-02")
+	todays, stale, future := splitPunchesByDay(res.inserted, today)
+	if stale > 0 || future > 0 {
+		slog.Warn("ADMSHandler: punches not dated today were stored without notifications",
+			"device_sn", deviceSN, "today", today, "stale", stale, "future", future)
+	}
+	app.notifyPunches(r.Context(), todays)
 
 	// Always ACK with plain-text OK — the device clears its buffer on receipt.
 	writeADMSOK(w)
@@ -277,6 +284,23 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 type storedPunch struct {
 	studentID int
 	checkTime time.Time
+}
+
+// splitPunchesByDay returns the punches whose date is today (YYYY-MM-DD, Asia/Baghdad) and counts
+// those dated before it (stale: a backlog) and after it (future: a wrong device clock). check_time
+// holds Baghdad wall time, so its formatted date is the Baghdad date.
+func splitPunchesByDay(punches []storedPunch, today string) (todays []storedPunch, stale, future int) {
+	for _, p := range punches {
+		switch day := p.checkTime.Format("2006-01-02"); {
+		case day < today:
+			stale++
+		case day > today:
+			future++
+		default:
+			todays = append(todays, p)
+		}
+	}
+	return todays, stale, future
 }
 
 // attlogResult summarizes one ATTLOG batch. When err is set the whole batch was rolled back.

@@ -1063,6 +1063,7 @@ func TestK1PunchNotifications(t *testing.T) {
 	app := &handlers.AppEnv{DB: db, Background: &background.Group{}}
 	push := func(t *testing.T, date string) (*httptest.ResponseRecorder, []string) {
 		t.Helper()
+		pinToday(t, date+" 13:00") // only punches dated today notify; the day type decides the rest
 		before := k1Count(t, db, `SELECT COUNT(*) FROM notifications`)
 		body := fmt.Sprintf("K1P-1\t%[1]s 07:15:00\t1\t1\nK1P-1\t%[1]s 07:20:00\t1\t1\nK1P-1\t%[1]s 10:30:00\t1\t1\nK1P-1\t%[1]s 12:30:00\t1\t1\n", date)
 		rec := httptest.NewRecorder()
