@@ -46,7 +46,7 @@ type StudentPayload struct {
 	ParentPin   string `json:"parent_pin,omitempty"`
 	RfidTag     string `json:"rfid_tag"` // IMPORTANT: this must equal the PIN the student is enrolled under on the ZKTeco device, not a physical RFID card value
 	// Nullable. On PUT, an omitted or null grade/section (and an empty rfid_tag, or the stored one
-	// resent unchanged even if it breaks ValidRFIDTag) keeps the stored value.
+	// resent unchanged even if it breaks ValidRFIDTag or the student range) keeps the stored value.
 	Grade   *string `json:"grade"`
 	Section *string `json:"section"`
 }
@@ -307,6 +307,7 @@ const (
 	RFIDTagTakenMessage    = "rfid_tag is already used by another student"
 	RFIDTagRequiredMessage = "rfid_tag is required"
 	RFIDTagFormatMessage   = "rfid_tag must be digits only (1 to 14, not starting with 0): it must equal the student's user ID on the ZKTeco device"
+	RFIDTagStaffMessage    = "rfid_tag 1 to 99 is reserved for staff on the device; student IDs start at 100"
 	rfidTagUniqueIndex     = "students_rfid_tag_key"
 )
 
@@ -314,6 +315,18 @@ var rfidTagRE = regexp.MustCompile(`^[1-9][0-9]{0,13}$`)
 
 // ValidRFIDTag reports whether tag is a ZKTeco user ID: 1 to 14 ASCII digits, not starting with 0.
 func ValidRFIDTag(tag string) bool { return rfidTagRE.MatchString(tag) }
+
+// studentTagProblem returns the 400 message for a new or changed student rfid_tag, or "". Student
+// IDs start at 100: 1 to 99 belongs to staff (teachers), so a student and a teacher never share one.
+func studentTagProblem(tag string) string {
+	switch {
+	case !ValidRFIDTag(tag):
+		return RFIDTagFormatMessage
+	case len(tag) < 3:
+		return RFIDTagStaffMessage
+	}
+	return ""
+}
 
 // nextFreeRFIDTagSQL selects the first number above $1 that is no student's rfid_tag and has at
 // most 14 digits, or NULL. The candidates are $1 + 1 and the successor of every taken numeric tag
@@ -452,8 +465,8 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, RFIDTagRequiredMessage)
 			return
 		}
-		if !ValidRFIDTag(req.RfidTag) {
-			respondError(w, http.StatusBadRequest, RFIDTagFormatMessage)
+		if msg := studentTagProblem(req.RfidTag); msg != "" {
+			respondError(w, http.StatusBadRequest, msg)
 			return
 		}
 
@@ -501,7 +514,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, msg)
 			return
 		}
-		if req.RfidTag != "" && !ValidRFIDTag(req.RfidTag) {
+		if msg := studentTagProblem(req.RfidTag); req.RfidTag != "" && msg != "" {
 			var stored string
 			err := app.DB.QueryRowContext(r.Context(), `SELECT rfid_tag FROM students WHERE id = $1`, req.ID).Scan(&stored)
 			if err != nil && err != sql.ErrNoRows {
@@ -509,7 +522,7 @@ func (app *AppEnv) AdminStudentsHandler(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			if err == sql.ErrNoRows || (stored != rawTag && stored != req.RfidTag) {
-				respondError(w, http.StatusBadRequest, RFIDTagFormatMessage)
+				respondError(w, http.StatusBadRequest, msg)
 				return
 			}
 			req.RfidTag = ""

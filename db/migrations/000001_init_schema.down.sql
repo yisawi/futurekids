@@ -14,6 +14,7 @@
 --   internal/handlers/manual_attendance.go — the manual attendance routes read students and
 --     write and delete attendance_logs rows.
 --   internal/handlers/parent_account.go — account deletion unlinks the parent's students.
+--   internal/handlers/teachers.go — teacher writes check that no student holds the rfid_tag.
 -- Data loss: every student, device and attendance punch is deleted permanently. Only run this
 --   when tearing down the whole database.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy

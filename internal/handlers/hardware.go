@@ -261,10 +261,12 @@ func (app *AppEnv) ADMSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(res.unknownPINs) > 0 {
-		slog.Warn("ADMSHandler: punches for unknown device PINs skipped", "device_sn", deviceSN, "pins", res.unknownPINs)
+		// INFO, not WARN: staff enrolled on the device but not in the system punch every day.
+		slog.Info("ADMSHandler: punches for unknown device PINs skipped", "device_sn", deviceSN, "pins", res.unknownPINs)
 	}
 	slog.Info("ADMSHandler: batch stored",
-		append(summary, "inserted", len(res.inserted), "duplicates", res.duplicates)...)
+		append(summary, "inserted", len(res.inserted), "duplicates", res.duplicates,
+			"teacher_inserted", res.teacherInserted, "teacher_duplicates", res.teacherDuplicates)...)
 
 	// ── Notify (only for committed punches dated today; failures never change the response) ──
 	// A backlog from an offline device, or a wrong device clock, is stored but not notified.
@@ -304,20 +306,24 @@ func splitPunchesByDay(punches []storedPunch, today string) (todays []storedPunc
 }
 
 // attlogResult summarizes one ATTLOG batch. When err is set the whole batch was rolled back.
+// inserted holds only student punches: teacher punches are counted, never notified.
 type attlogResult struct {
-	inserted    []storedPunch
-	duplicates  int
-	unknownPINs []string
-	rejected    int
-	err         error
+	inserted          []storedPunch
+	duplicates        int
+	teacherInserted   int
+	teacherDuplicates int
+	unknownPINs       []string
+	rejected          int
+	err               error
 }
 
 // admsTxTimeout bounds how long one batch may hold its transaction.
 const admsTxTimeout = 20 * time.Second
 
-// persistATTLOG stores a batch in one transaction. Unknown PINs are skipped. The batch is
-// inserted in one statement; if Postgres rejects it for a data reason, records are retried
-// one by one and each rejected record is skipped and logged. Any transient database error
+// persistATTLOG stores a batch in one transaction. The student punches are inserted in one
+// statement; if Postgres rejects it for a data reason, records are retried one by one and each
+// rejected record is skipped and logged. PINs that match no student are then looked up among the
+// teachers (storeTeacherPunches); PINs matching neither are skipped. Any transient database error
 // rolls the whole batch back and is returned, so no partial batch is ever committed.
 func (app *AppEnv) persistATTLOG(ctx context.Context, deviceSN string, events []AttendanceEvent) attlogResult {
 	var res attlogResult
@@ -385,6 +391,13 @@ func (app *AppEnv) persistATTLOG(ctx context.Context, deviceSN string, events []
 		res.err = err
 		return res
 	}
+	if len(res.unknownPINs) > 0 {
+		res.teacherInserted, res.teacherDuplicates, res.unknownPINs, err = storeTeacherPunches(ctx, tx, deviceSN, events, res.unknownPINs)
+		if err != nil {
+			res.err = err
+			return res
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		res.err = err
 		return res
@@ -393,6 +406,68 @@ func (app *AppEnv) persistATTLOG(ctx context.Context, deviceSN string, events []
 	res.rejected = rejected
 	res.duplicates = len(batch) - len(inserted) - rejected
 	return res
+}
+
+// storeTeacherPunches stores, inside tx, the punches of the PINs (which matched no student) that
+// match a teacher, whatever the teacher's status, and returns how many were inserted and how many
+// were already stored, and the PINs that match no teacher either. A transient error is returned
+// and rolls the batch back; if the database rejects the teacher rows for a data reason they are
+// skipped and logged, so the student punches still commit and the device still gets OK.
+func storeTeacherPunches(ctx context.Context, tx *sql.Tx, deviceSN string, events []AttendanceEvent, pins []string) (inserted, duplicates int, unknown []string, err error) {
+	ids := make(map[string]int, len(pins))
+	rows, err := tx.QueryContext(ctx, `SELECT rfid_tag, id FROM teachers WHERE rfid_tag = ANY($1::text[])`, pins)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	for rows.Next() {
+		var tag string
+		var id int
+		if err := rows.Scan(&tag, &id); err != nil {
+			rows.Close()
+			return 0, 0, nil, err
+		}
+		ids[tag] = id
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, nil, err
+	}
+	for _, pin := range pins {
+		if _, ok := ids[pin]; !ok {
+			unknown = append(unknown, pin)
+		}
+	}
+	var teacherIDs []int
+	var times []time.Time
+	for _, ev := range events {
+		if id, ok := ids[ev.PIN]; ok {
+			teacherIDs, times = append(teacherIDs, id), append(times, ev.CheckTime)
+		}
+	}
+	if len(teacherIDs) == 0 {
+		return 0, 0, unknown, nil
+	}
+	if _, err := tx.ExecContext(ctx, "SAVEPOINT attlog_teachers"); err != nil {
+		return 0, 0, nil, err
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO teacher_attendance_logs (teacher_id, device_sn, check_time)
+		SELECT u.teacher_id, $2, u.check_time FROM unnest($1::int[], $3::timestamp[]) AS u(teacher_id, check_time)
+		ON CONFLICT (teacher_id, check_time) DO NOTHING`, teacherIDs, deviceSN, times)
+	if err != nil {
+		if isTransientDBError(err) {
+			return 0, 0, nil, err
+		}
+		if _, rbErr := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT attlog_teachers"); rbErr != nil {
+			return 0, 0, nil, rbErr
+		}
+		slog.Error("ADMSHandler: teacher punches rejected by the database — skipped", "device_sn", deviceSN, "records", len(teacherIDs), "error", err)
+		return 0, 0, unknown, nil
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	return int(n), len(teacherIDs) - int(n), unknown, nil
 }
 
 type admsPunch struct {

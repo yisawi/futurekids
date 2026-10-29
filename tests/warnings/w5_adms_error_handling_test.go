@@ -239,7 +239,7 @@ func TestW5ADMSErrorHandling(t *testing.T) {
 			if n := stored(t, []string{d + " 07:00:00", d + " 07:04:00"}); n != 2 {
 				t.Errorf("stored %d of 2 known punches", n)
 			}
-			w := findLog(r.logs, slog.LevelWarn, "ADMSHandler: punches for unknown device PINs")
+			w := findLog(r.logs, slog.LevelInfo, "ADMSHandler: punches for unknown device PINs")
 			if w == nil || w.Attrs["pins"] != "[GHOST-1 GHOST-2]" {
 				t.Errorf("unknown PINs not listed once each, got %+v", w)
 			}

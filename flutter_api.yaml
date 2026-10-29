@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Future Kids Attendance System API
-  version: 1.19.0
+  version: 1.20.0
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -1873,6 +1873,257 @@ paths:
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/admin/teachers:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listTeachers
+      summary: List teachers, or get one
+      description: |
+        Every teacher matching the filters, sorted by full name (no pagination: a school has
+        dozens). Without `status`, teachers of every status are listed. With `id`, `data` holds
+        just that teacher (404 when there is none); the other filters still apply.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/TeacherStatusQuery'
+        - $ref: '#/components/parameters/TeacherSearchQuery'
+        - $ref: '#/components/parameters/TeacherIdQuery'
+      responses:
+        '200':
+          description: The matching teachers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeacherListResponse'
+              example:
+                status: success
+                data:
+                  - id: 3
+                    first_name: أحمد
+                    father_name: علي
+                    grandfather_name: حسن
+                    full_name: أحمد علي حسن
+                    phone: '+9647000009101'
+                    gender: male
+                    status: active
+                    specialization: الرياضيات
+                    notes: null
+                    rfid_tag: '12'
+                    created_at: '2026-10-29T09:15:04+03:00'
+                    updated_at: '2026-10-29T09:15:04+03:00'
+        '400':
+          $ref: '#/components/responses/TeacherQueryBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/TeacherNotFound'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: createTeacher
+      summary: Add a teacher
+      description: |
+        Teachers have no app and no login: this record is for the dashboard and for matching the
+        teacher's fingerprint punches (`rfid_tag`, the user ID on the device, 1 to 99). A
+        teacher's phone may be the same as a parent's. Recorded in the activity log as
+        `teacher.create`.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeacherCreateRequest'
+      responses:
+        '200':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeacherWriteResponse'
+              example:
+                status: success
+                message: Teacher created
+                data:
+                  id: 3
+                  first_name: أحمد
+                  father_name: علي
+                  grandfather_name: حسن
+                  full_name: أحمد علي حسن
+                  phone: '+9647000009101'
+                  gender: male
+                  status: active
+                  specialization: الرياضيات
+                  notes: null
+                  rfid_tag: '12'
+                  created_at: '2026-10-29T09:15:04+03:00'
+                  updated_at: '2026-10-29T09:15:04+03:00'
+        '400':
+          $ref: '#/components/responses/TeacherWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '409':
+          $ref: '#/components/responses/TeacherConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags:
+        - Admin Dashboard
+      operationId: updateTeacher
+      summary: Replace a teacher's record
+      description: |
+        Replaces the whole record of the teacher `id`: send every field, as on create, plus
+        `status`. An optional field that is omitted, null or blank is cleared, so leaving
+        `rfid_tag` out un-enrols the teacher (their punches are then skipped). There is no delete:
+        set `status` instead. Recorded in the activity log as `teacher.update`.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeacherUpdateRequest'
+      responses:
+        '200':
+          description: Updated; `data` is the stored record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeacherWriteResponse'
+              example:
+                status: success
+                message: Teacher updated
+                data:
+                  id: 3
+                  first_name: أحمد
+                  father_name: علي
+                  grandfather_name: حسن
+                  full_name: أحمد علي حسن
+                  phone: '+9647000009101'
+                  gender: male
+                  status: on_leave
+                  specialization: الرياضيات
+                  notes: إجازة
+                  rfid_tag: '12'
+                  created_at: '2026-10-29T09:15:04+03:00'
+                  updated_at: '2026-10-30T08:02:11+03:00'
+        '400':
+          $ref: '#/components/responses/TeacherWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/TeacherNotFound'
+        '409':
+          $ref: '#/components/responses/TeacherConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/teachers/attendance:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: getTeachersAttendance
+      summary: Teachers' punches on a day
+      description: |
+        For the date (default today in Asia/Baghdad): every `active` teacher added on or before
+        it, and every teacher of any status with at least one punch that day. Teachers with
+        punches come first, by first punch; then the others by name.
+
+        `first_punch` is the earliest punch and `last_punch` the latest (null when there is only
+        one). `not_punched` is true for an `active` teacher without punches on a school day that is
+        today or earlier; it is false on a closed day and for every teacher on a future date. There
+        are no lateness or absence rules: the arrival time is the information. Teacher punches
+        never send notifications.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/Date'
+      responses:
+        '200':
+          description: The day's teacher punches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeacherAttendanceResponse'
+              example:
+                status: success
+                date: '2026-10-29'
+                school_day: true
+                day_type: school
+                day_title: null
+                day_notes: null
+                data:
+                  - teacher_id: 3
+                    full_name: أحمد علي حسن
+                    status: active
+                    first_punch: 07:12 AM
+                    last_punch: 01:05 PM
+                    punch_count: 2
+                    not_punched: false
+                  - teacher_id: 5
+                    full_name: سارة محمد علي
+                    status: active
+                    first_punch: null
+                    last_punch: null
+                    punch_count: 0
+                    not_punched: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/teachers/specializations:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listTeacherSpecializations
+      summary: Names to suggest for a teacher's specialization
+      description: |
+        The distinct, non-empty subject names of the weekly schedules and the teachers'
+        specializations, trimmed and sorted, so the form can suggest a name that matches the
+        schedule. There is no link between the two.
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: The names.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeacherSpecializationsResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/admin/activity-log:
     get:
       tags:
@@ -1915,6 +2166,7 @@ paths:
         | `holiday.create`, `holiday.cancel` | `POST /api/admin/holidays`, `POST /api/admin/holidays/cancel` | `closure` id; `detail` has the kind (and the cancel action) |
         | `banner.create`, `banner.update`, `banner.delete` | `POST`, `PUT`, `DELETE /api/admin/banners` | `banner` id |
         | `attendance.manual_create`, `attendance.manual_delete` | `POST`, `DELETE /api/admin/attendance/manual` | `student` id; `detail` has the type and date (create: `notify`, `dry_run`; delete: the entry id) |
+        | `teacher.create`, `teacher.update` | `POST`, `PUT /api/admin/teachers` | `teacher` id |
         | `export.attendance` | `GET /api/admin/export/excel` | `date` |
         | `export.schedule` | `GET /api/admin/schedule/export` | `class` |
         | `parent.account_delete` | `POST /api/mobile/account/delete` (the parent app; `actor` is `parent`, `ip` null) | one entry per unlinked child: `student` id, `detail` the child's name; a parent without children gives one entry with no target and `detail` `no linked students` |
@@ -2452,6 +2704,39 @@ components:
         format: int64
         minimum: 1
       example: 90412
+    TeacherStatusQuery:
+      name: status
+      in: query
+      required: false
+      description: Only teachers with this status.
+      schema:
+        type: string
+        enum:
+          - active
+          - on_leave
+          - transferred
+          - retired
+      example: active
+    TeacherSearchQuery:
+      name: search
+      in: query
+      required: false
+      description: |
+        Part of the full name (case-insensitive), or at least 3 digits of the phone in any format
+        (`0770…`, `+964770…`, Arabic-Indic digits).
+      schema:
+        type: string
+      example: أحمد
+    TeacherIdQuery:
+      name: id
+      in: query
+      required: false
+      description: Only this teacher (404 when there is none).
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+      example: 3
     ActivityLogBefore:
       name: before
       in: query
@@ -3028,7 +3313,7 @@ components:
           type: string
           minLength: 1
           maxLength: 14
-          pattern: ^[1-9][0-9]{0,13}$
+          pattern: ^[1-9][0-9]{2,13}$
           description: |
             Required. The student's user ID on the ZKTeco device (the PIN the device sends with
             each punch), so it must be exactly the number enrolled there: ASCII digits only, 1 to
@@ -3036,9 +3321,10 @@ components:
             empty or blank returns 400 `rfid_tag is required`; anything else that breaks the rule
             (Arabic-Indic or Persian digits, a leading 0, a letter, a space inside, more than 14
             digits) returns 400 with the format message, and over 50 characters returns 400
-            naming the limit. Must be unique: another student's tag (inactive students included)
-            returns 409 with a suggested free number. The server reserves no range; the school's
-            convention (1 to 99 for staff, 100 and up for students) is not checked.
+            naming the limit. 1 to 99 is the staff range (teachers): a student tag must be 100 or
+            more, otherwise 400 `rfid_tag 1 to 99 is reserved for staff on the device; student IDs
+            start at 100`. Must be unique: another student's tag (inactive students included)
+            returns 409 with a suggested free number (always 100 or more).
         grade:
           type: string
           nullable: true
@@ -5585,6 +5871,397 @@ components:
             kind: holiday
             title: عطلة الربيع
             notes: null
+    Teacher:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        first_name:
+          type: string
+        father_name:
+          type: string
+        grandfather_name:
+          type: string
+        full_name:
+          type: string
+          description: The three names joined with spaces.
+        phone:
+          type: string
+          pattern: ^\+9647[0-9]{9}$
+        gender:
+          type: string
+          enum:
+            - male
+            - female
+        status:
+          type: string
+          enum:
+            - active
+            - on_leave
+            - transferred
+            - retired
+          description: Descriptive only; it never stops punches from being stored.
+        specialization:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        rfid_tag:
+          type: string
+          nullable: true
+          pattern: ^[1-9][0-9]?$
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - first_name
+        - father_name
+        - grandfather_name
+        - full_name
+        - phone
+        - gender
+        - status
+        - specialization
+        - notes
+        - rfid_tag
+        - created_at
+        - updated_at
+      example:
+        id: 3
+        first_name: أحمد
+        father_name: علي
+        grandfather_name: حسن
+        full_name: أحمد علي حسن
+        phone: '+9647000009101'
+        gender: male
+        status: active
+        specialization: الرياضيات
+        notes: null
+        rfid_tag: '12'
+        created_at: '2026-10-29T09:15:04+03:00'
+        updated_at: '2026-10-29T09:15:04+03:00'
+    TeacherCreateRequest:
+      type: object
+      properties:
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required; surrounding spaces are removed.
+        father_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required; surrounding spaces are removed.
+        grandfather_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required; surrounding spaces are removed.
+        phone:
+          type: string
+          description: |
+            Required. An Iraqi mobile number in any accepted format (`07XXXXXXXXX`, `+9647…`,
+            `009647…`, Arabic-Indic digits); stored and returned as `+9647XXXXXXXXX`. Unique among
+            teachers; it may be the same as a parent's phone.
+        gender:
+          type: string
+          enum:
+            - male
+            - female
+        specialization:
+          type: string
+          nullable: true
+          maxLength: 100
+          description: Optional free text, meant to match a subject name of the weekly schedule (see `listTeacherSpecializations`). Omitted, null or blank stores null.
+        notes:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: Optional. Omitted, null or blank stores null.
+        rfid_tag:
+          type: string
+          nullable: true
+          pattern: ^[1-9][0-9]?$
+          description: |
+            The teacher's user ID on the fingerprint device: 1 to 99, digits only, not starting
+            with 0 (students use 100 and up). Optional: a teacher can be added before being
+            enrolled. Unique among teachers and never equal to a student's tag (409).
+        status:
+          type: string
+          enum:
+            - active
+            - on_leave
+            - transferred
+            - retired
+          description: Optional; default `active`.
+      required:
+        - first_name
+        - father_name
+        - grandfather_name
+        - phone
+        - gender
+      example:
+        first_name: أحمد
+        father_name: علي
+        grandfather_name: حسن
+        phone: '07000009101'
+        gender: male
+        specialization: الرياضيات
+        rfid_tag: '12'
+    TeacherUpdateRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required; surrounding spaces are removed.
+        father_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required; surrounding spaces are removed.
+        grandfather_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required; surrounding spaces are removed.
+        phone:
+          type: string
+          description: |
+            Required. An Iraqi mobile number in any accepted format (`07XXXXXXXXX`, `+9647…`,
+            `009647…`, Arabic-Indic digits); stored and returned as `+9647XXXXXXXXX`. Unique among
+            teachers; it may be the same as a parent's phone.
+        gender:
+          type: string
+          enum:
+            - male
+            - female
+        specialization:
+          type: string
+          nullable: true
+          maxLength: 100
+          description: Optional free text, meant to match a subject name of the weekly schedule (see `listTeacherSpecializations`). Omitted, null or blank stores null.
+        notes:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: Optional. Omitted, null or blank stores null.
+        rfid_tag:
+          type: string
+          nullable: true
+          pattern: ^[1-9][0-9]?$
+          description: |
+            The teacher's user ID on the fingerprint device: 1 to 99, digits only, not starting
+            with 0 (students use 100 and up). Optional: a teacher can be added before being
+            enrolled. Unique among teachers and never equal to a student's tag (409).
+        status:
+          type: string
+          enum:
+            - active
+            - on_leave
+            - transferred
+            - retired
+      required:
+        - id
+        - first_name
+        - father_name
+        - grandfather_name
+        - phone
+        - gender
+        - status
+      example:
+        id: 3
+        first_name: أحمد
+        father_name: علي
+        grandfather_name: حسن
+        phone: '07000009101'
+        gender: male
+        status: on_leave
+        specialization: الرياضيات
+        notes: إجازة أمومة
+        rfid_tag: '12'
+    TeacherListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Teacher'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data: []
+    TeacherWriteResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+          enum:
+            - Teacher created
+            - Teacher updated
+        data:
+          $ref: '#/components/schemas/Teacher'
+      required:
+        - status
+        - message
+        - data
+      example:
+        status: success
+        message: Teacher created
+        data:
+          id: 3
+          first_name: أحمد
+          father_name: علي
+          grandfather_name: حسن
+          full_name: أحمد علي حسن
+          phone: '+9647000009101'
+          gender: male
+          status: active
+          specialization: null
+          notes: null
+          rfid_tag: null
+          created_at: '2026-10-29T09:15:04+03:00'
+          updated_at: '2026-10-29T09:15:04+03:00'
+    TeacherAttendanceItem:
+      type: object
+      properties:
+        teacher_id:
+          type: integer
+          format: int32
+          minimum: 1
+        full_name:
+          type: string
+        status:
+          type: string
+          enum:
+            - active
+            - on_leave
+            - transferred
+            - retired
+        first_punch:
+          type: string
+          nullable: true
+          pattern: ^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$
+          description: The earliest punch, `hh:mm AM`; null without punches.
+        last_punch:
+          type: string
+          nullable: true
+          pattern: ^(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$
+          description: The latest punch; null with fewer than two punches.
+        punch_count:
+          type: integer
+          format: int32
+          minimum: 0
+        not_punched:
+          type: boolean
+          description: An `active` teacher with no punch on a school day that is today or earlier.
+      required:
+        - teacher_id
+        - full_name
+        - status
+        - first_punch
+        - last_punch
+        - punch_count
+        - not_punched
+      example:
+        teacher_id: 3
+        full_name: أحمد علي حسن
+        status: active
+        first_punch: 07:12 AM
+        last_punch: 01:05 PM
+        punch_count: 2
+        not_punched: false
+    TeacherAttendanceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        date:
+          type: string
+          format: date
+        school_day:
+          type: boolean
+          description: Whether the date is a school day (not a weekend, holiday or pause).
+        day_type:
+          type: string
+          enum:
+            - school
+            - weekend
+            - holiday
+            - pause
+        day_title:
+          type: string
+          nullable: true
+          description: The closure's title on a holiday or pause; otherwise null.
+        day_notes:
+          type: string
+          nullable: true
+          description: The closure's notes on a holiday or pause; otherwise null.
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeacherAttendanceItem'
+      required:
+        - status
+        - date
+        - school_day
+        - day_type
+        - day_title
+        - day_notes
+        - data
+      example:
+        status: success
+        date: '2026-10-30'
+        school_day: false
+        day_type: weekend
+        day_title: null
+        day_notes: null
+        data: []
+    TeacherSpecializationsResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          - الرياضيات
+          - العلوم
+          - اللغة العربية
     ActivityLogItem:
       type: object
       properties:
@@ -5638,6 +6315,7 @@ components:
           nullable: true
           enum:
             - student
+            - teacher
             - device
             - setting
             - class
@@ -5939,14 +6617,89 @@ components:
               value:
                 status: error
                 message: Invalid request body
+    TeacherWriteBadRequest:
+      description: |
+        Malformed JSON; `id` (update) missing or not positive; a name, `phone` or `gender`
+        missing or blank; `status` missing (update) or not one of the four values; `phone` not an
+        Iraqi mobile number; `gender` not `male` or `female`; a field longer than its limit; or an
+        `rfid_tag` that is not 1 to 99. Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            required:
+              summary: A required field missing or blank
+              value:
+                status: error
+                message: first_name is required
+            phone:
+              summary: Not an Iraqi mobile number
+              value:
+                status: error
+                message: phone must be an Iraqi mobile number, for example 07XXXXXXXXX or +9647XXXXXXXXX
+            rfid:
+              summary: rfid_tag outside 1 to 99
+              value:
+                status: error
+                message: 'rfid_tag must be the teacher''s user ID on the device: 1 to 99, digits only, not starting with 0'
+    TeacherQueryBadRequest:
+      description: '`status` is not one of the four values, or `id` is not a positive integer.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            status:
+              summary: Unknown status
+              value:
+                status: error
+                message: status must be active, on_leave, transferred or retired
+            id:
+              summary: Malformed id
+              value:
+                status: error
+                message: id must be a positive teacher id
+    TeacherNotFound:
+      description: No teacher has this `id`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Teacher not found
+    TeacherConflict:
+      description: The `phone` or `rfid_tag` is taken by another teacher, or the `rfid_tag` by a student. Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            phone:
+              summary: Phone of another teacher
+              value:
+                status: error
+                message: phone is already used by another teacher
+            rfidTeacher:
+              summary: rfid_tag of another teacher
+              value:
+                status: error
+                message: rfid_tag is already used by another teacher
+            rfidStudent:
+              summary: rfid_tag of a student
+              value:
+                status: error
+                message: rfid_tag is already used by a student
     StudentWriteBadRequest:
       description: |
         Malformed JSON; `id` (update) missing or 0; `name`, `parent_name` or `parent_phone`
         missing or blank; `parent_phone` not an Iraqi mobile number; `parent_pin` missing for a
         new parent or not 16 to 72 ASCII characters with a letter, a digit and a symbol; a
         field longer than its limit; `rfid_tag` missing on create; or an `rfid_tag` that is not
-        1 to 14 ASCII digits without a leading 0 (on update, unless it is the student's stored
-        tag). The other fields are checked first. Nothing was written.
+        1 to 14 ASCII digits without a leading 0, or is under 100 (the staff range); on update
+        either is accepted only when it is the student's stored tag. The other fields are checked
+        first. Nothing was written.
       content:
         application/json:
           schema:
@@ -5987,6 +6740,11 @@ components:
               value:
                 status: error
                 message: 'rfid_tag must be digits only (1 to 14, not starting with 0): it must equal the student''s user ID on the ZKTeco device'
+            rfidStaffRange:
+              summary: rfid_tag under 100 (reserved for staff)
+              value:
+                status: error
+                message: rfid_tag 1 to 99 is reserved for staff on the device; student IDs start at 100
     RFIDTagTaken:
       description: |
         Another student (inactive students included) already has this `rfid_tag`. Nothing was

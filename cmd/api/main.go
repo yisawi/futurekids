@@ -201,6 +201,11 @@ func run() int {
 	mux.HandleFunc("DELETE /api/admin/banners", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminBannersHandler)))
 	mux.HandleFunc("GET /api/admin/banners/image", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminBannerImageHandler)))
 	mux.HandleFunc("GET /api/admin/activity-log", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminActivityLogHandler)))
+	mux.HandleFunc("GET /api/admin/teachers", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTeachersHandler)))
+	mux.HandleFunc("POST /api/admin/teachers", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTeachersHandler)))
+	mux.HandleFunc("PUT /api/admin/teachers", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTeachersHandler)))
+	mux.HandleFunc("GET /api/admin/teachers/attendance", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTeachersAttendanceHandler)))
+	mux.HandleFunc("GET /api/admin/teachers/specializations", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTeacherSpecializationsHandler)))
 
 	if cfg.FakeToday != "" {
 		day, _ := time.ParseInLocation("2006-01-02", cfg.FakeToday, tz.Baghdad)

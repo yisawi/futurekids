@@ -316,6 +316,35 @@ migrate -path db/migrations -database "$DATABASE_URL" up         # 000029, after
 - **The code:** redeploy the previous version. It runs on 33 and ignores `push_enabled`, so parents who turned pushes off get them again once their app registers. Deleted accounts stay deleted: only the backup has them.
 - **The migration:** `migrate goto 32`, only after the code is rolled back. It loses every parent's push choice.
 
+### Deploying migration 000034 (API 1.20.0: teachers)
+
+000034 only adds the tables `teachers` and `teacher_attendance_logs`. The old code runs unchanged on it: nothing it reads changes. The server never runs migrations itself: run them with the `migrate` CLI **before** deploying the code, as below.
+
+**What changes with the code:**
+- **New admin routes:** `/api/admin/teachers`, `/api/admin/teachers/attendance`, `/api/admin/teachers/specializations`.
+- **Device punches:** a punch whose PIN matches no student but a teacher (`rfid_tag` 1 to 99) is now stored as a teacher punch, never notified.
+- **Unknown PINs:** the line for a PIN matching neither is now INFO instead of WARN.
+- **Breaking for student writes:** a new or changed student `rfid_tag` under 100 is refused (1 to 99 is the staff range). A student already holding one keeps it and may resend it unchanged.
+
+**Order** (Staging is at 33; the same on Production):
+1. **Preflight, read-only:** students holding a tag in the staff range.
+   ```sql
+   SELECT id, full_name, rfid_tag, is_active FROM students WHERE rfid_tag ~ '^[1-9][0-9]?$' ORDER BY rfid_tag::int;
+   ```
+   Those students keep working. Each such tag can't be given to a teacher (409 `rfid_tag is already used by a student`) until the student is moved to a tag of 100 or more, and the device enrolment changed to match.
+2. **Back up:** `pg_dump "$DATABASE_URL" > backup.sql`.
+3. **Migrate** while the old code runs:
+   ```bash
+   migrate -path db/migrations -database "$DATABASE_URL" version    # expect 33
+   migrate -path db/migrations -database "$DATABASE_URL" goto 34
+   ```
+4. **Deploy the new code.** On 33 it would answer 500 on the teachers routes, and 503 to every device batch containing a PIN no student has. So the order matters.
+5. **Smoke checks** (`$ADMIN` is an admin token, as in the 000032 section): a teacher create gives 200; the list and the attendance give 200; a student create with `rfid_tag` `50` gives 400.
+
+**Rolling back:**
+- **The code:** redeploy the previous version. It runs on 34; teacher punches are then skipped again as unknown PINs, as before.
+- **The migration:** `migrate goto 33`, only after the code is rolled back. It deletes every teacher and teacher punch.
+
 ### Seeding Staging with fake data
 
 `cmd/seed-staging` fills Staging with fake data for the Flutter developers: 47 students (`rfid_tag` 1004 to 1050) for 37 parents (`+9647000002001` to `+9647000002037`, parent credential `Sd7!Kx4p#Wm9qT2h`; parents seeded before that keep their earlier `314159`), weekly schedules, the fake device `SEED-FAKE-0001`, leaves, attendance history since the first day of the previous month, and 3 banners. Everything goes through the real API; it never touches students 1001 to 1003, the real device or the settings. It refuses any `BASE_URL` other than `https://futurekids-staging.up.railway.app`.

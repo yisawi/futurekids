@@ -52,6 +52,7 @@ var w14Rollbacks = map[string]w14Rollback{
 	"000031": {false, nil, `parent_phone_original|notifications_fill_parent_id|idx_notifications_phone|INTO notifications \([^)]*parent_phone|\bn\.parent_phone\b|\bs\.fcm_token\b|SET fcm_token|students \([^)]*fcm_token|fcm_token (?:IS|=)`},
 	"000032": {true, []string{"attendance_logs.source", "attendance_logs.note"}, `'manual'|SourceManual|a\.source\b`},
 	"000033": {true, []string{"parents.push_enabled"}, `push_enabled`},
+	"000034": {true, []string{"teachers", "teacher_attendance_logs"}, `teacher_attendance_logs|(?:FROM|JOIN|INTO|UPDATE)\s+teachers\b`},
 }
 
 var (

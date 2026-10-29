@@ -1625,6 +1625,64 @@ func (r *runner) scenario() {
 	r.db.QueryRow(`SELECT COUNT(*) FROM students WHERE id = $1 AND parent_id IS NOT NULL`, idM).Scan(&lockedParent)
 	r.expect("a rate-limited deletion deletes nothing", lockedParent, 1)
 
+	// ── Teachers ───────────────────────────────────────────────────────────────
+	_, d = r.call("POST /api/admin/students", "student tag in the staff range", "", admin, map[string]any{"name": "Staff Range Kid", "parent_name": "Omar Example", "parent_phone": phone1, "rfid_tag": "50"}, 400)
+	r.expect("staff-range message", at(d, "message"), "rfid_tag 1 to 99 is reserved for staff on the device; student IDs start at 100")
+	teacher := func(kv ...any) map[string]any {
+		m := map[string]any{"first_name": "أحمد", "father_name": "علي", "grandfather_name": "حسن", "phone": "07701239001", "gender": "male"}
+		for i := 0; i+1 < len(kv); i += 2 {
+			if kv[i+1] == nil {
+				delete(m, kv[i].(string))
+			} else {
+				m[kv[i].(string)] = kv[i+1]
+			}
+		}
+		return m
+	}
+	_, d = r.call("POST /api/admin/teachers", "every field", "", admin, teacher("specialization", "الرياضيات", "notes", "ملاحظة", "rfid_tag", "12"), 200)
+	teacherA := toInt(at(d, "data", "id"))
+	r.expect("teacher phone stored canonically", at(d, "data", "phone"), "+9647701239001")
+	_, d = r.call("POST /api/admin/teachers", "required fields only", "", admin, teacher("phone", "07701239002", "gender", "female"), 200)
+	teacherB := toInt(at(d, "data", "id"))
+	r.expect("optional fields are null", []any{at(d, "data", "rfid_tag"), at(d, "data", "specialization"), at(d, "data", "status")}, []any{nil, nil, "active"})
+	r.call("POST /api/admin/teachers", "first_name missing", "", admin, teacher("first_name", nil, "phone", "07701239003"), 400)
+	r.call("POST /api/admin/teachers", "rfid_tag 100", "", admin, teacher("phone", "07701239003", "rfid_tag", "100"), 400)
+	r.call("POST /api/admin/teachers", "malformed JSON", "", admin, "{", 400)
+	r.call("POST /api/admin/teachers", "oversized body", "", admin, oversized(), 413)
+	_, d = r.call("POST /api/admin/teachers", "phone of another teacher", "", admin, teacher("phone", "+9647701239001"), 409)
+	r.expect("teacher phone conflict message", at(d, "message"), "phone is already used by another teacher")
+	r.call("POST /api/admin/teachers", "rfid_tag of another teacher", "", admin, teacher("phone", "07701239004", "rfid_tag", "12"), 409)
+	adminDenied("POST /api/admin/teachers", "", teacher("phone", "07701239005"))
+
+	_, d = r.call("GET /api/admin/teachers", "every teacher", "", admin, nil, 200)
+	r.expect("teachers listed", len(list(at(d, "data"))), 2)
+	r.call("GET /api/admin/teachers", "status filter", "?status=active", admin, nil, 200)
+	r.call("GET /api/admin/teachers", "search", "?search=0770%20123%209002", admin, nil, 200)
+	_, d = r.call("GET /api/admin/teachers", "one teacher", fmt.Sprintf("?id=%d", teacherA), admin, nil, 200)
+	r.expect("one teacher by id", toInt(at(d, "data", 0, "id")), teacherA)
+	r.call("GET /api/admin/teachers", "unknown status", "?status=fired", admin, nil, 400)
+	r.call("GET /api/admin/teachers", "unknown id", "?id=999999", admin, nil, 404)
+	adminDenied("GET /api/admin/teachers", "", nil)
+
+	_, d = r.call("PUT /api/admin/teachers", "full replacement", "", admin, teacher("id", teacherB, "phone", "07701239002", "gender", "female", "status", "on_leave", "rfid_tag", "13"), 200)
+	r.expect("updated status and tag", []any{at(d, "data", "status"), at(d, "data", "rfid_tag")}, []any{"on_leave", "13"})
+	r.call("PUT /api/admin/teachers", "status missing", "", admin, teacher("id", teacherB, "phone", "07701239002"), 400)
+	r.call("PUT /api/admin/teachers", "unknown id", "", admin, teacher("id", 999999, "status", "active", "phone", "07701239006"), 404)
+	r.call("PUT /api/admin/teachers", "rfid_tag of another teacher", "", admin, teacher("id", teacherB, "phone", "07701239002", "status", "active", "rfid_tag", "12"), 409)
+	r.call("PUT /api/admin/teachers", "oversized body", "", admin, oversized(), 413)
+	adminDenied("PUT /api/admin/teachers", "", teacher("id", teacherB, "status", "active"))
+
+	x, _ = r.call("POST /iclock/cdata", "teacher punch", "?SN=TEST-SN-0001&table=ATTLOG", "", "12\t"+today+" 07:12:00\t1\t1\n", 200)
+	r.expect("ADMS body for a teacher punch", string(x.body), "OK")
+	_, d = r.call("GET /api/admin/teachers/attendance", "today", "", admin, nil, 200)
+	r.expect("teacher punch listed", fmt.Sprint(at(d, "data", 0, "teacher_id"), " ", at(d, "data", 0, "first_punch"), " ", at(d, "data", 0, "last_punch")), fmt.Sprint(teacherA, " 07:12 AM <nil>"))
+	r.call("GET /api/admin/teachers/attendance", "a past date", "?date="+schoolDays(contractNow())[0], admin, nil, 200)
+	r.call("GET /api/admin/teachers/attendance", "malformed date", "?date=2026-13-01", admin, nil, 400)
+	adminDenied("GET /api/admin/teachers/attendance", "", nil)
+	_, d = r.call("GET /api/admin/teachers/specializations", "suggestions", "", admin, nil, 200)
+	r.expect("specializations include the teacher's", strings.Contains(fmt.Sprint(at(d, "data")), "الرياضيات"), true)
+	adminDenied("GET /api/admin/teachers/specializations", "", nil)
+
 	// ── System ─────────────────────────────────────────────────────────────────
 	r.call("GET /health", "liveness", "", "", nil, 200)
 
@@ -1673,7 +1731,7 @@ func (r *runner) databaseFailures() {
 	}
 	admin, parent := r.admin, r.parent
 
-	tables := []string{"students", "parents", "settings", "devices", "notifications", "banners", "admins", "device_tokens", "school_closures", "admin_activity_log"}
+	tables := []string{"students", "parents", "settings", "devices", "notifications", "banners", "admins", "device_tokens", "school_closures", "admin_activity_log", "teachers"}
 	for _, tb := range tables {
 		exec("ALTER TABLE " + tb + " RENAME TO " + tb + "_offline")
 	}
@@ -1708,6 +1766,11 @@ func (r *runner) databaseFailures() {
 	r.call("GET /api/admin/broadcasts", "database error", "", admin, nil, 500)
 	r.call("GET /api/admin/holidays", "database error", "", admin, nil, 500)
 	r.call("GET /api/admin/activity-log", "database error", "", admin, nil, 500)
+	r.call("GET /api/admin/teachers", "database error", "", admin, nil, 500)
+	r.call("POST /api/admin/teachers", "database error", "", admin, map[string]any{"first_name": "D", "father_name": "D", "grandfather_name": "D", "phone": "07701239099", "gender": "male"}, 500)
+	r.call("PUT /api/admin/teachers", "database error", "", admin, map[string]any{"id": 1, "first_name": "D", "father_name": "D", "grandfather_name": "D", "phone": "07701239099", "gender": "male", "status": "active"}, 500)
+	r.call("GET /api/admin/teachers/attendance", "database error", "", admin, nil, 500)
+	r.call("GET /api/admin/teachers/specializations", "database error", "", admin, nil, 500)
 	r.call("POST /api/admin/attendance/manual", "database error", "", admin, map[string]any{"student_id": 1, "date": contractNow().AddDate(0, 0, -1).Format("2006-01-02"), "type": "in"}, 500)
 	r.call("DELETE /api/admin/attendance/manual", "database error", "?id=1", admin, nil, 500)
 	r.call("POST /api/admin/holidays", "database error", "", admin, map[string]any{"kind": "holiday", "start_date": "2099-01-04", "title": "Down", "notify": false}, 500)
@@ -2327,6 +2390,11 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 			hdr := node(root, "components", "responses", "HeaderTooLarge", "content")
 			hdr["application/json"] = hdr["text/plain"]
 			delete(hdr, "text/plain")
+		}},
+		{"a teacher's full_name is undocumented", []string{"responses"}, func(root map[string]any) {
+			teacher := node(schemas(root), "Teacher")
+			delete(obj(teacher["properties"]), "full_name")
+			teacher["required"] = []any{"id", "first_name", "father_name", "grandfather_name", "phone", "gender", "status", "specialization", "notes", "rfid_tag", "created_at", "updated_at"}
 		}},
 		{"the device-token response loses registered", []string{"responses"}, func(root map[string]any) {
 			resp := node(schemas(root), "DeviceTokenRegisterResponse")

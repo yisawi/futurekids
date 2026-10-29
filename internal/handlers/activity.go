@@ -55,6 +55,8 @@ var ActivityActions = map[string]string{
 	"DELETE /api/admin/banners":           "banner.delete",
 	"POST /api/admin/attendance/manual":   "attendance.manual_create",
 	"DELETE /api/admin/attendance/manual": "attendance.manual_delete",
+	"POST /api/admin/teachers":            "teacher.create",
+	"PUT /api/admin/teachers":             "teacher.update",
 	"GET /api/admin/export/excel":         "export.attendance",
 	"GET /api/admin/schedule/export":      "export.schedule",
 }

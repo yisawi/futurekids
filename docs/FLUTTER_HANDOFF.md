@@ -412,11 +412,13 @@ never the parent's name or number).
     student is accepted unchanged even if it breaks the rule (students created earlier may have a
     placeholder `admin-<number>` or another old value). Ask the admin to replace such values with
     the real device ID.
-  - **The school's convention**, 1 to 99 for staff and 100 and up for students, is only an
-    agreement: the server doesn't check or reserve any range. You may show it as a hint.
+  - **Student IDs start at 100:** 1 to 99 is the staff range (teachers, see below). A new or
+    changed student tag under 100 gets 400 `rfid_tag 1 to 99 is reserved for staff on the device;
+    student IDs start at 100`. A student who already has a tag under 100 keeps it, and the edit
+    form may resend it unchanged.
 - **409 on a student create or update:** another student (also a deactivated one) already has that
   `rfid_tag`. Nothing was saved. The body has **`suggested_rfid_tag`**, the first higher number no
-  student has (or `null` when there is none). Show "الرقم 33 مسجل لطالب آخر، يمكنك استخدام 34" with
+  student has (or `null` when there is none). Show "الرقم 133 مسجل لطالب آخر، يمكنك استخدام 134" with
   a button that puts the suggestion in the field. It is **only a hint, not reserved**: if someone
   takes it first, saving gives this 409 again with the next number. Don't branch on `message`.
 - **404 on `POST /api/admin/leaves`:** the student doesn't exist or was deactivated. Refresh the
@@ -868,6 +870,8 @@ New codes may appear later without an API change.
 | `attendance.manual_create` | إدخال حضور يدوي |
 | `attendance.manual_delete` | حذف حضور يدوي |
 | `parent.account_delete` | حذف ولي الأمر لحسابه |
+| `teacher.create` | إضافة معلم |
+| `teacher.update` | تعديل معلم |
 
 **Result colours:** `success` green, `rejected` (the server refused the request: 4xx) amber,
 `failed` (server error: 5xx) red.
@@ -904,6 +908,43 @@ A parent can now delete the account in the app. The children stay, with no paren
   - with a valid `parent_pin` it creates a new parent account with that PIN and links the student.
   The form should make the PIN field available when the number isn't registered.
 - **Activity log:** see `parent.account_delete` above: it lists which children were unlinked.
+
+### Teachers (المعلمون)
+
+The admin manages teachers here; teachers have no app and no login. A teacher punches the same fingerprint device as the students, and the dashboard shows each teacher's arrival and departure time. Teacher punches never send notifications.
+
+**Endpoints** (admin token):
+
+| Call | Body or query | Answer |
+|---|---|---|
+| `GET /api/admin/teachers` | `?status=`, `?search=`, `?id=` | `data`: teachers sorted by full name (no paging). With `id`: just that one, or 404. |
+| `POST /api/admin/teachers` | the teacher | `data`: the created teacher |
+| `PUT /api/admin/teachers` | the whole teacher, with `id` and `status` | `data`: the stored teacher |
+| `GET /api/admin/teachers/attendance` | `?date=YYYY-MM-DD` (default today) | the day (`school_day`, `day_type`, `day_title`) and one row per teacher |
+| `GET /api/admin/teachers/specializations` | — | `data`: names to suggest |
+
+**The teacher:**
+
+| Field | Rule |
+|---|---|
+| `first_name`, `father_name`, `grandfather_name` | required, up to 100 characters; `full_name` joins them |
+| `phone` | required; any Iraqi mobile format, stored and returned as `+9647…`; unique among teachers; may equal a parent's phone |
+| `gender` | `male` or `female` |
+| `status` | `active` (على رأس العمل, the default), `on_leave` (مجاز), `transferred` (منقول), `retired` (متقاعد). There is no delete: change the status. It never stops punches from being stored. |
+| `specialization` | optional, up to 100; suggest names from `/specializations` (the schedule's subjects) |
+| `notes` | optional, up to 500 |
+| `rfid_tag` | optional; the user ID on the fingerprint device, **1 to 99** (students use 100 and up), unique, never a student's |
+
+**The form:**
+- **Edit is a full replacement:** `PUT` sends every field. A field left out or empty is cleared, so keep `rfid_tag` in the form; leaving it out un-enrols the teacher.
+- **400:** show `message` under the field.
+- **409:** `phone is already used by another teacher`, `rfid_tag is already used by another teacher` or `rfid_tag is already used by a student`.
+
+**The attendance page:**
+- **Who is listed:** every `active` teacher, plus any teacher with a punch that day.
+- **Times:** `first_punch` is the arrival and `last_punch` the latest punch (empty with one punch).
+- **`not_punched`:** true only for an `active` teacher with no punch on a school day that is today or earlier. On a closed day, and for every teacher on a future date, it is false.
+- **No lateness rules:** the server has no lateness or absence rules; show the times as they are.
 
 ### Banners
 
@@ -973,7 +1014,14 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.19.0 (this release):** parent account deletion and the push notification switch. New:
+**In API 1.20.0 (this release):** teachers (see [Teachers](#teachers-المعلمون)). New: `GET`, `POST`
+and `PUT /api/admin/teachers`, `GET /api/admin/teachers/attendance` and
+`GET /api/admin/teachers/specializations`; activity codes `teacher.create` and `teacher.update`.
+**Breaking for the student form:** a new or changed student `rfid_tag` must be 100 or more (400
+`rfid_tag 1 to 99 is reserved for staff on the device; student IDs start at 100`); a student
+already holding a tag under 100 keeps it. Nothing changes in the parent app.
+
+**In API 1.19.0:** parent account deletion and the push notification switch. New:
 `POST /api/mobile/account/delete` (see [Deleting the account](#deleting-the-account-حذف-الحساب))
 and `GET`/`PUT /api/mobile/notification-settings` (see
 [Push notification switch](#push-notification-switch-إشعارات-الهاتف)). Additive:

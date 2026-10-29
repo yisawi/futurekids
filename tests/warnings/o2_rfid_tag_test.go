@@ -139,7 +139,7 @@ func TestO2Validation(t *testing.T) {
 			t.Errorf("refused creates wrote students:\nbefore %s\nafter  %s", before, after)
 		}
 		for _, tc := range []struct{ tag, stored string }{
-			{"1", "1"}, {"99", "99"}, {"100", "100"}, {"1004", "1004"}, {"12345678901234", "12345678901234"}, {"  1005 ", "1005"}, {"\t2005\n", "2005"},
+			{"101", "101"}, {"999", "999"}, {"100", "100"}, {"1004", "1004"}, {"12345678901234", "12345678901234"}, {"  1005 ", "1005"}, {"\t2005\n", "2005"},
 		} {
 			r := post(o2Body(tc.tag))
 			if r.status != 200 {
@@ -231,12 +231,12 @@ func TestO2Validation(t *testing.T) {
 func TestO2Suggestion(t *testing.T) {
 	srv, db, admin := o2Server(t, "o2suggest")
 	k1Exec(t, db, `INSERT INTO students (id, full_name, rfid_tag, parent_id, is_active) VALUES
-		(5301, 'S', '33', 5101, true),
-		(5302, 'S', '40', 5101, true), (5303, 'S', '42', 5101, true),
-		(5304, 'S', '50', 5101, true), (5305, 'S', '51', 5101, true), (5306, 'S', '52', 5101, true),
-		(5307, 'S', '60', 5101, true), (5308, 'S', 'MM-60', 5101, true), (5309, 'S', '061', 5101, true), (5310, 'S', '62a', 5101, true), (5311, 'S', 'admin-61', 5101, true),
-		(5312, 'S', '70', 5101, true), (5313, 'S', '71', 5101, false),
-		(5314, 'S', '80', 5101, true), (5315, 'S', '81', 5101, true),
+		(5301, 'S', '333', 5101, true),
+		(5302, 'S', '340', 5101, true), (5303, 'S', '342', 5101, true),
+		(5304, 'S', '350', 5101, true), (5305, 'S', '351', 5101, true), (5306, 'S', '352', 5101, true),
+		(5307, 'S', '360', 5101, true), (5308, 'S', 'MM-360', 5101, true), (5309, 'S', '0361', 5101, true), (5310, 'S', '362a', 5101, true), (5311, 'S', 'admin-361', 5101, true),
+		(5312, 'S', '370', 5101, true), (5313, 'S', '371', 5101, false),
+		(5314, 'S', '380', 5101, true), (5315, 'S', '381', 5101, true),
 		(5316, 'S', '99999999999999', 5101, true), (5317, 'S', '99999999999998', 5101, true),
 		(5318, 'S', '9999999999990', 5101, true)`)
 	conflict := func(t *testing.T, r a14Response) any {
@@ -251,12 +251,12 @@ func TestO2Suggestion(t *testing.T) {
 		name, tag string
 		want      any
 	}{
-		{"the next number is free", "33", "34"},
-		{"a gap", "40", "41"},
-		{"three taken in a row", "50", "53"},
-		{"from inside a run", "51", "53"},
-		{"tags that are not numbers are ignored", "60", "61"},
-		{"an inactive student's tag is taken", "70", "72"},
+		{"the next number is free", "333", "334"},
+		{"a gap", "340", "341"},
+		{"three taken in a row", "350", "353"},
+		{"from inside a run", "351", "353"},
+		{"tags that are not numbers are ignored", "360", "361"},
+		{"an inactive student's tag is taken", "370", "372"},
 		{"no 14-digit number above it", "99999999999999", nil},
 		{"the only number above it is taken", "99999999999998", nil},
 		{"13 digits growing to 14", "9999999999990", "9999999999991"},
@@ -269,18 +269,18 @@ func TestO2Suggestion(t *testing.T) {
 	}
 
 	t.Run("the exact body", func(t *testing.T) {
-		r := a14Do(t, srv, "POST", "/api/admin/students", l1Header(admin), o2Body("33"))
-		if want := `{"message":"rfid_tag is already used by another student","status":"error","suggested_rfid_tag":"34"}` + "\n"; string(r.body) != want || r.header.Get("Content-Type") != "application/json" {
+		r := a14Do(t, srv, "POST", "/api/admin/students", l1Header(admin), o2Body("333"))
+		if want := `{"message":"rfid_tag is already used by another student","status":"error","suggested_rfid_tag":"334"}` + "\n"; string(r.body) != want || r.header.Get("Content-Type") != "application/json" {
 			t.Errorf("body %q (%s), want %q", r.body, r.header.Get("Content-Type"), want)
 		}
 	})
 
 	t.Run("an update to a taken tag", func(t *testing.T) {
-		r := a14Do(t, srv, "PUT", "/api/admin/students", l1Header(admin), o2Body("81", "id", 5314))
-		if got := conflict(t, r); got != "82" {
-			t.Errorf("suggested %v, want 82", got)
+		r := a14Do(t, srv, "PUT", "/api/admin/students", l1Header(admin), o2Body("381", "id", 5314))
+		if got := conflict(t, r); got != "382" {
+			t.Errorf("suggested %v, want 382", got)
 		}
-		if o2Tag(t, db, 5314) != "80" {
+		if o2Tag(t, db, 5314) != "380" {
 			t.Errorf("the refused update changed the tag")
 		}
 	})

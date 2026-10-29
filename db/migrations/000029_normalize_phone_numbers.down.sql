@@ -8,6 +8,7 @@
 --   internal/handlers/admin.go — AdminStudentsHandler links students by the normalised number,
 --     so creating a student for such a parent creates a second parent instead.
 --   internal/handlers/broadcasts.go — normalises the audience parent_phone.
+--   internal/handlers/teachers.go — teacher phone numbers are normalised the same way.
 -- Data loss: none; numbers stored or changed after the up-migration keep their canonical form.
 --   After a rollback of 000031, notifications.parent_phone_original is empty, so notification
 --   numbers keep their canonical form (the original formats were dropped by 000031).

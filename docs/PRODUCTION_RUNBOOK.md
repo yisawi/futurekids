@@ -110,11 +110,11 @@ curl -s "$BASE_URL/api/mobile/settings"     # public: shows both
    curl -s -X POST "$BASE_URL/api/admin/devices" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
      -d '{"serial_number":"<device SN>","location_name":"<gate>","is_active":true}'
    ```
-2. **Device user IDs** equal the students' `rfid_tag`:
-   - 1 to 14 digits, **never a leading zero**;
-   - by school convention, **1–99 for staff and 100+ for students**.
+2. **Device user IDs** equal the `rfid_tag` of a student or a teacher:
+   - digits only, **never a leading zero**;
+   - **1–99 for staff (teachers) and 100+ for students**, enforced by the server.
 
-   An ID that matches no student is skipped (WARN `ADMSHandler: punches for unknown device PINs skipped`).
+   A teacher's punches are stored for the dashboard's teacher attendance and never notified. An ID that matches neither is skipped (INFO `ADMSHandler: punches for unknown device PINs skipped`).
 3. **Clear the device's stored attendance records first.** Use its data-management menu (the menu path depends on the model).
    - **Why:** a stored backlog is pushed when the device connects, and its old punches are stored as attendance on their own dates (test punches included). The server doesn't notify them: only punches dated today are notified. It logs `ADMSHandler: punches not dated today were stored without notifications` instead.
 4. **Set the device's clock:**
@@ -221,7 +221,8 @@ Restore it as in 8.2.
 | `Startup check failed`, `Refusing to start in production` | unsafe configuration; the deploy failed |
 | `TRUSTED_PROXY_CIDRS is not set` | step 5 not done |
 | `Railway will SIGKILL this process before graceful shutdown can finish` | `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` is missing |
-| `ADMSHandler: punches for unknown device PINs skipped` | a device ID with no student (`rfid_tag` mismatch) |
+| `ADMSHandler: punches for unknown device PINs skipped` (INFO) | a device ID with no student or teacher (`rfid_tag` mismatch, or staff not entered as teachers) |
+| `ADMSHandler: teacher punches rejected by the database — skipped` | teacher punches lost; investigate |
 | `ADMSHandler: punches not dated today were stored without notifications` | device clock wrong, or an offline backlog was flushed (`stale` and `future` give the counts) |
 | `ADMSHandler: unregistered device attempted ADMS push`, `ADMSHandler: disabled device attempted ADMS push`, `DeviceAuthMiddleware: unregistered device rejected` | a device not registered in step 7, or disabled |
 | `ADMSHandler: batch rolled back — replying 503 so the device resends it`, `ADMSHandler: punch rejected by the database — skipped` | database trouble while storing punches |

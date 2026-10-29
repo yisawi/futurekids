@@ -13,6 +13,7 @@
 --     and does nothing.
 --   internal/handlers/manual_attendance.go — manual attendance cannot tell whether a date is a
 --     school day and answers 500.
+--   internal/handlers/teachers.go — GET /api/admin/teachers/attendance reads the day type (DayOn).
 -- Data loss: every registered closure (holidays and pauses, with their titles and notes). The
 --   notifications sent to parents for them stay. With the code from before school closures,
 --   reports count every weekday as a school day again.
