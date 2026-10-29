@@ -345,6 +345,40 @@ migrate -path db/migrations -database "$DATABASE_URL" up         # 000029, after
 - **The code:** redeploy the previous version. It runs on 34; teacher punches are then skipped again as unknown PINs, as before.
 - **The migration:** `migrate goto 33`, only after the code is rolled back. It deletes every teacher and teacher punch.
 
+### Deploying migration 000035 (API 1.21.0: tuition)
+
+000035 only adds the tables `tuition_fees`, `tuition_accounts` and `tuition_payments`, and the setting `academic_year` = `2026-2027` (kept if it already exists). The old code runs unchanged on it. The server never runs migrations itself: run them with the `migrate` CLI **before** deploying the code. No fee, discount or payment is seeded: the school manager enters them on Production.
+
+**What changes with the code:**
+- **New admin routes:** `/api/admin/tuition`, `/api/admin/tuition/student`, `/api/admin/tuition/fees`, `/api/admin/tuition/discount`, `/api/admin/tuition/payments`, `/api/admin/tuition/payments/void`.
+- **New parent route:** `GET /api/mobile/tuition` (the remaining balance per child, current year only).
+- **`PUT /api/admin/settings` with `academic_year`** is validated (two consecutive years) and switches the year (see below).
+- **No silent default:** if the `academic_year` row is missing or invalid, every tuition route answers 500 and logs an ERROR (`the academic_year setting is missing or invalid`). To fix it, re-insert the row: `INSERT INTO settings (setting_key, setting_value) VALUES ('academic_year', '2026-2027');`.
+
+**How balances stay fixed:** a student's account for a year (`tuition_accounts`) freezes the grade, its fee and the discount. It is created on the student's first discount or payment, and for every active student whose grade has a fee when the academic year changes. Before that, the current year follows the grade's fee live. Payments are never edited or deleted, only voided. `remaining` = fee − discount − non-voided payments, computed on every read.
+- **A mistyped grade fee after accounts exist:** save the grade's fee again with `apply_to_existing: true`. It re-prices every current-year account whose student is now in that grade, or refuses (409, nothing changed) when one would go negative. The same call fixes a student moved to another grade after paying: correct the student's grade first.
+- **The year switch:** change the academic year **first**, then the students' grades. Promoting first freezes the old year's unpaid balances at the old-year fee of the **new** grade (visible only in the admin view of the old year).
+
+**Order** (Staging is at 34; the same on Production):
+1. **Preflight, read-only:** the grades that will need a fee, and whether an `academic_year` setting already exists (the migration keeps an existing value; it must look like `2026-2027`).
+   ```sql
+   SELECT btrim(grade) AS grade, count(*) FROM students WHERE is_active = true GROUP BY 1 ORDER BY 1;
+   SELECT setting_key, setting_value FROM settings WHERE setting_key = 'academic_year';
+   ```
+   The second query should return no row before 000035.
+2. **Back up:** `pg_dump "$DATABASE_URL" > backup.sql`.
+3. **Migrate** while the old code runs:
+   ```bash
+   migrate -path db/migrations -database "$DATABASE_URL" version    # expect 34
+   migrate -path db/migrations -database "$DATABASE_URL" goto 35
+   ```
+4. **Deploy the new code.** On 34 it would answer 500 on every tuition route. So the order matters.
+5. **Smoke checks** (`$ADMIN` is an admin token): `GET /api/admin/settings` lists `academic_year`; `GET /api/admin/tuition/fees` and `GET /api/admin/tuition` give 200. Don't record a test payment on Production: payments can't be deleted.
+
+**Rolling back:**
+- **The code:** redeploy the previous version. It runs on 35; the old settings endpoint then stores `academic_year` without validation, so don't change it meanwhile.
+- **The migration:** `migrate goto 34`, only after the code is rolled back. It deletes every fee, discount and payment, and the `academic_year` setting.
+
 ### Seeding Staging with fake data
 
 `cmd/seed-staging` fills Staging with fake data for the Flutter developers: 47 students (`rfid_tag` 1004 to 1050) for 37 parents (`+9647000002001` to `+9647000002037`, parent credential `Sd7!Kx4p#Wm9qT2h`; parents seeded before that keep their earlier `314159`), weekly schedules, the fake device `SEED-FAKE-0001`, leaves, attendance history since the first day of the previous month, and 3 banners. Everything goes through the real API; it never touches students 1001 to 1003, the real device or the settings. It refuses any `BASE_URL` other than `https://futurekids-staging.up.railway.app`.

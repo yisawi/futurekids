@@ -13,6 +13,8 @@
 --   internal/handlers/manual_attendance.go — the manual attendance responses show the
 --     student's grade and section.
 --   internal/handlers/teachers.go — GET /api/admin/teachers/specializations reads weekly_schedules.
+--   internal/handlers/tuition.go — a student's tuition fee is the fee of students.grade; the
+--     tuition list shows and filters grade and section.
 -- Data loss: the whole weekly timetable and every student's grade and section.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first

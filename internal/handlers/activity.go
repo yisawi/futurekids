@@ -59,6 +59,11 @@ var ActivityActions = map[string]string{
 	"PUT /api/admin/teachers":             "teacher.update",
 	"GET /api/admin/export/excel":         "export.attendance",
 	"GET /api/admin/schedule/export":      "export.schedule",
+
+	"PUT /api/admin/tuition/fees":           "tuition.fee_set",
+	"PUT /api/admin/tuition/discount":       "tuition.discount_set",
+	"POST /api/admin/tuition/payments":      "tuition.payment_create",
+	"POST /api/admin/tuition/payments/void": "tuition.payment_void",
 }
 
 // activityExports are the GET routes recorded because they export children's data.

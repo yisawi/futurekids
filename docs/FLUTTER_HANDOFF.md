@@ -872,6 +872,10 @@ New codes may appear later without an API change.
 | `parent.account_delete` | حذف ولي الأمر لحسابه |
 | `teacher.create` | إضافة معلم |
 | `teacher.update` | تعديل معلم |
+| `tuition.fee_set` | تحديد قسط الصف |
+| `tuition.discount_set` | تحديد خصم |
+| `tuition.payment_create` | تسجيل دفعة |
+| `tuition.payment_void` | إلغاء دفعة |
 
 **Result colours:** `success` green, `rejected` (the server refused the request: 4xx) amber,
 `failed` (server error: 5xx) red.
@@ -946,6 +950,43 @@ The admin manages teachers here; teachers have no app and no login. A teacher pu
 - **`not_punched`:** true only for an `active` teacher with no punch on a school day that is today or earlier. On a closed day, and for every teacher on a future date, it is false.
 - **No lateness rules:** the server has no lateness or absence rules; show the times as they are.
 
+### Tuition (الأقساط)
+
+The school records tuition here, in **whole Iraqi dinars** (integers, never decimals), per **academic year** (`2026-2027`). The parent app shows only what is left to pay.
+
+**Endpoints** (admin token):
+
+| Call | Body or query | Answer |
+|---|---|---|
+| `GET /api/admin/tuition/fees` | — | `academic_year`, `data`: each grade with its fee (`null` = not set) |
+| `PUT /api/admin/tuition/fees` | `grade`, `fee`, optional `apply_to_existing` | `data`: the saved fee and `updated_accounts` |
+| `GET /api/admin/tuition` | `?academic_year=`, `?grade=`, `?section=`, `?search=`, `?has_remaining=true` | `summary` (totals of the listed rows) and one row per student (no paging) |
+| `GET /api/admin/tuition/student` | `?student_id=`, `?academic_year=` | the student's figures and every payment, newest first |
+| `PUT /api/admin/tuition/discount` | `student_id`, `discount`, optional `note`, `academic_year` | the student's updated figures |
+| `POST /api/admin/tuition/payments` | `student_id`, `amount`, optional `paid_at`, `note`, `academic_year` | the student's updated figures |
+| `POST /api/admin/tuition/payments/void` | `id`, `reason` | the student's updated figures |
+| `GET /api/mobile/tuition` (parent token) | — | per active child: `remaining`, `fee_set`, `academic_year`, `last_updated` |
+
+**Rules:**
+- **The fee** is per grade, for the current academic year. A student's fee is their grade's fee.
+- **The discount** is one fixed amount per student per year (no percentages), with an optional note. Sending it replaces the previous one; `0` clears it.
+- **Payments** are cash received at school. They are **never edited or deleted**. A wrong one is **voided** with a reason: it stays in the history (`status` `voided`) and counts in no sum. Then record the correct one.
+- **`remaining`** = fee − discount − non-voided payments. It's `null`, with `fee_set: false`, when the grade has no fee: show "not set", never 0.
+- **Refused (409):** a payment above the remaining balance (this catches an extra zero), a discount above the fee or above what's left, any payment or discount before the grade has a fee, and voiding twice.
+- **Balances never change by themselves.** A student's first discount or payment in a year freezes the grade and its fee for that student and year. After that, changing the grade's fee doesn't change that student, unless the admin saves the fee with `apply_to_existing: true`, the correction tool for a mistyped fee. It re-prices every current-year account of students now in that grade, or is refused with 409 (`apply_to_existing would make N balances negative (student ids: …)`, at most 10 ids) and changes nothing. The same call fixes a student moved to another grade after paying.
+- **Students who left** keep their records: the list shows them (`is_active: false`) when they have figures that year, and `total_collected` includes their payments.
+
+**The academic year must have its own screen.** `academic_year` appears in `GET /api/admin/settings` with the other settings, but it **must not be an ordinary editable text field** on the settings screen. Changing it (`PUT /api/admin/settings` with `{"key":"academic_year","value":"2027-2028"}`) freezes the old year's balance of every active student, so it needs **its own screen with an explicit confirmation**.
+- **The order is: switch the year first, then change the students' grades** (promotion).
+- **Known limitation:** promoting first freezes the old year's unpaid balances at the old-year fee of the **new** grade. Only the admin view of the old year (`?academic_year=2026-2027`) shows it.
+- The value must be two consecutive years (400 otherwise).
+
+**Screens:**
+- **Dashboard, fees:** the grades with their fee; editing one saves it. Offer `apply_to_existing` as a separate, explained "correct existing students" action.
+- **Dashboard, tuition list:** filters, the summary totals and one row per student; tap a row for the detail.
+- **Dashboard, student detail:** the figures, the discount (with its note) and the payments history, voided ones greyed out with their reason. The actions: record a payment, void a payment (reason required), set the discount.
+- **Parent app, "remaining":** for each child, the remaining amount (or "not set yet") and when it was last updated. Nothing else: no fee, discount or payments.
+
 ### Banners
 
 The pictures the school shows parents as a carousel on the home screen (dashboard label
@@ -1014,7 +1055,16 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.20.0 (this release):** teachers (see [Teachers](#teachers-المعلمون)). New: `GET`, `POST`
+**In API 1.21.0 (this release):** tuition (see [Tuition](#tuition-الأقساط)). New: `GET /api/admin/tuition`,
+`GET /api/admin/tuition/student`, `GET` and `PUT /api/admin/tuition/fees`, `PUT /api/admin/tuition/discount`,
+`POST /api/admin/tuition/payments`, `POST /api/admin/tuition/payments/void` and, in the parent app,
+`GET /api/mobile/tuition`; activity codes `tuition.fee_set`, `tuition.discount_set`,
+`tuition.payment_create` and `tuition.payment_void`, with targets `fee` and `payment`. The
+`academic_year` setting appears in `GET /api/admin/settings` and is validated on `PUT` (400 for
+anything but two consecutive years): give it its own screen with a confirmation, not a text field.
+Nothing else changes.
+
+**In API 1.20.0:** teachers (see [Teachers](#teachers-المعلمون)). New: `GET`, `POST`
 and `PUT /api/admin/teachers`, `GET /api/admin/teachers/attendance` and
 `GET /api/admin/teachers/specializations`; activity codes `teacher.create` and `teacher.update`.
 **Breaking for the student form:** a new or changed student `rfid_tag` must be 100 or more (400

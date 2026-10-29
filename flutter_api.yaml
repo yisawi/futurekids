@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Future Kids Attendance System API
-  version: 1.20.0
+  version: 1.21.0
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -814,6 +814,33 @@ paths:
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/mobile/tuition:
+    get:
+      tags:
+        - Parent App
+      operationId: getParentTuition
+      summary: What is left to pay for each child
+      description: |
+        For each active child of the parent in the token, the current academic year's remaining
+        balance (null when no fee is set) and when it last changed. No fee, discount or payment
+        details. A missing or invalid `academic_year` setting gives 500 (and an error log); it is never replaced by a default.
+      security:
+        - ParentJWT: []
+      responses:
+        '200':
+          description: One entry per active child.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileTuitionResponse'
+        '401':
+          $ref: '#/components/responses/ParentUnauthorized'
+        '403':
+          $ref: '#/components/responses/ParentForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/admin/login:
     post:
       tags:
@@ -1389,7 +1416,15 @@ paths:
         - Admin Dashboard
       operationId: upsertSetting
       summary: Create or replace a setting
-      description: Only `whatsapp_number` and `school_name` are visible to parents (`GET /api/mobile/settings`).
+      description: |
+        Only `whatsapp_number` and `school_name` are visible to parents (`GET /api/mobile/settings`).
+
+        `academic_year` (the current school year, for tuition) is validated: two consecutive
+        years such as `2027-2028` (400 otherwise). Changing it first creates, for every active
+        student whose grade has a fee in the old year and who has no account yet, an account
+        freezing that fee, so the old year's balances never change afterwards; the new year
+        starts with no fees or payments, and no data is edited or deleted. Switch the year before
+        changing the students' grades. A missing `academic_year` setting gives 500.
       security:
         - AdminJWT: []
       requestBody:
@@ -1409,14 +1444,22 @@ paths:
                 status: success
                 message: Setting saved
         '400':
-          description: Malformed JSON, an empty `key`, or a `key` longer than 100 characters.
+          description: Malformed JSON, an empty `key`, a `key` longer than 100 characters, or an invalid `academic_year` value.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                status: error
-                message: Invalid payload
+              examples:
+                payload:
+                  summary: Malformed JSON or an empty key
+                  value:
+                    status: error
+                    message: Invalid payload
+                academicYear:
+                  summary: academic_year not two consecutive years
+                  value:
+                    status: error
+                    message: academic_year must be two consecutive years, for example 2026-2027
         '401':
           $ref: '#/components/responses/AdminUnauthorized'
         '403':
@@ -2124,6 +2167,297 @@ paths:
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/admin/tuition:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listTuition
+      summary: Tuition of every student for a year
+      description: |
+        One row per active student, plus every student who left but has an account that year
+        (`is_active` false), sorted by name, with the totals of the listed rows (no pagination).
+
+        Figures: once a student has an account for the year (created by the first discount or
+        payment, or by switching the academic year), its frozen grade, fee and discount are used;
+        before that, the current year follows the grade's fee live, and another year has no fee.
+        `remaining` is computed on every read. A missing or invalid `academic_year` setting gives 500 (and an error log); it is never replaced by a default.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/AcademicYearQuery'
+        - $ref: '#/components/parameters/TuitionGradeQuery'
+        - $ref: '#/components/parameters/TuitionSectionQuery'
+        - $ref: '#/components/parameters/TuitionSearchQuery'
+        - $ref: '#/components/parameters/TuitionHasRemainingQuery'
+      responses:
+        '200':
+          description: The rows and their totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuitionListResponse'
+              example:
+                status: success
+                academic_year: 2026-2027
+                summary:
+                  total_fee: 1500000
+                  total_discount: 100000
+                  total_collected: 500000
+                  total_remaining: 900000
+                  not_set_count: 1
+                data:
+                  - student_id: 42
+                    full_name: أحمد علي حسن
+                    grade: الصف الأول الابتدائي
+                    section: أ
+                    is_active: true
+                    fee: 1500000
+                    discount: 100000
+                    paid: 500000
+                    remaining: 900000
+                    fee_set: true
+                  - student_id: 43
+                    full_name: سارة علي حسن
+                    grade: الصف الثاني الابتدائي
+                    section: أ
+                    is_active: true
+                    fee: null
+                    discount: 0
+                    paid: 0
+                    remaining: null
+                    fee_set: false
+        '400':
+          $ref: '#/components/responses/TuitionQueryBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/tuition/student:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: getStudentTuition
+      summary: One student's tuition with every payment
+      description: |
+        The student's figures for the year and every payment, newest first, voided ones included
+        with their reason. Students who left are allowed. A missing or invalid `academic_year` setting gives 500 (and an error log); it is never replaced by a default.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/TuitionStudentIdQuery'
+        - $ref: '#/components/parameters/AcademicYearQuery'
+      responses:
+        '200':
+          description: The student's tuition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuitionStudentResponse'
+        '400':
+          $ref: '#/components/responses/TuitionQueryBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/TuitionNotFound'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/tuition/fees:
+    get:
+      tags:
+        - Admin Dashboard
+      operationId: listTuitionFees
+      summary: Fee per grade for the current year
+      description: |
+        The grades of the active students plus every grade with a fee this year, sorted by name,
+        each with its current-year fee (null when not set). A missing or invalid `academic_year` setting gives 500 (and an error log); it is never replaced by a default.
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: The grades and their fees.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuitionFeesResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags:
+        - Admin Dashboard
+      operationId: setTuitionFee
+      summary: Set one grade's fee for the current year
+      description: |
+        Students of the grade without an account (no discount or payment yet) follow the new fee
+        at once. Accounts keep their frozen fee unless `apply_to_existing` is true, which re-prices
+        every current-year account whose student is now in this grade (this also corrects a
+        student moved to another grade after paying). Recorded in the activity log as
+        `tuition.fee_set`.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TuitionFeeRequest'
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuitionFeeWriteResponse'
+        '400':
+          $ref: '#/components/responses/TuitionWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '409':
+          $ref: '#/components/responses/TuitionFeeConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/tuition/discount:
+    put:
+      tags:
+        - Admin Dashboard
+      operationId: setTuitionDiscount
+      summary: Set a student's discount for a year
+      description: |
+        One fixed amount per student and year (no percentages), replacing the previous one; 0
+        without a note clears it. The first discount or payment creates the student's account for
+        the year, freezing the grade and its fee. Recorded in the activity log as
+        `tuition.discount_set`.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TuitionDiscountRequest'
+      responses:
+        '200':
+          description: Saved; `data` is the student's updated tuition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuitionWriteResponse'
+        '400':
+          $ref: '#/components/responses/TuitionWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/TuitionNotFound'
+        '409':
+          $ref: '#/components/responses/TuitionConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/tuition/payments:
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: createTuitionPayment
+      summary: Record a cash payment
+      description: |
+        Payments are never edited or deleted: void a wrong one and record the right one. A
+        payment above the remaining balance is refused (409), which catches an extra zero.
+        Recorded in the activity log as `tuition.payment_create`.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TuitionPaymentRequest'
+      responses:
+        '200':
+          description: Recorded; `data` is the student's updated tuition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuitionWriteResponse'
+        '400':
+          $ref: '#/components/responses/TuitionWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/TuitionNotFound'
+        '409':
+          $ref: '#/components/responses/TuitionConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/admin/tuition/payments/void:
+    post:
+      tags:
+        - Admin Dashboard
+      operationId: voidTuitionPayment
+      summary: Void a payment
+      description: |
+        The payment stays in the history with `status` `voided`, `voided_at` and the reason, and
+        leaves every sum. Recorded in the activity log as `tuition.payment_void`.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TuitionVoidRequest'
+      responses:
+        '200':
+          description: Voided; `data` is the student's updated tuition for the payment's year.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuitionWriteResponse'
+        '400':
+          $ref: '#/components/responses/TuitionWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/TuitionNotFound'
+        '409':
+          $ref: '#/components/responses/TuitionConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/admin/activity-log:
     get:
       tags:
@@ -2159,7 +2493,7 @@ paths:
         | `student.create`, `student.update`, `student.deactivate` | `POST`, `PUT`, `DELETE /api/admin/students` | `student` id |
         | `device.create`, `device.update`, `device.disable` | `POST`, `PUT`, `DELETE /api/admin/devices` | `device` serial number |
         | `leave.create`, `leave.delete` | `POST`, `DELETE /api/admin/leaves` | `student` id; `detail` has the date |
-        | `settings.update` | `PUT /api/admin/settings` | `setting` keys, never values |
+        | `settings.update` | `PUT /api/admin/settings` | `setting` keys, never values; for `academic_year`, `detail` has the count of accounts the switch created |
         | `schedule.save` | `PUT /api/admin/schedule` | `class` (`grade/section`); `detail` has the period count |
         | `schedule.import` | `POST /api/admin/schedule/import` | `class` when the class guard was sent; `detail` has class and period counts |
         | `broadcast.send` | `POST /api/admin/broadcasts` | `broadcast` id; `detail` has the audience type and recipient count |
@@ -2167,6 +2501,9 @@ paths:
         | `banner.create`, `banner.update`, `banner.delete` | `POST`, `PUT`, `DELETE /api/admin/banners` | `banner` id |
         | `attendance.manual_create`, `attendance.manual_delete` | `POST`, `DELETE /api/admin/attendance/manual` | `student` id; `detail` has the type and date (create: `notify`, `dry_run`; delete: the entry id) |
         | `teacher.create`, `teacher.update` | `POST`, `PUT /api/admin/teachers` | `teacher` id |
+        | `tuition.fee_set` | `PUT /api/admin/tuition/fees` | `fee` id; `detail` has the year and the re-priced account count |
+        | `tuition.discount_set` | `PUT /api/admin/tuition/discount` | `student` id; `detail` has the year |
+        | `tuition.payment_create`, `tuition.payment_void` | `POST /api/admin/tuition/payments`, `POST /api/admin/tuition/payments/void` | `payment` id; `detail` has the student id (and the year on create) |
         | `export.attendance` | `GET /api/admin/export/excel` | `date` |
         | `export.schedule` | `GET /api/admin/schedule/export` | `class` |
         | `parent.account_delete` | `POST /api/mobile/account/delete` (the parent app; `actor` is `parent`, `ip` null) | one entry per unlinked child: `student` id, `detail` the child's name; a parent without children gives one entry with no target and `detail` `no linked students` |
@@ -2737,6 +3074,62 @@ components:
         format: int32
         minimum: 1
       example: 3
+    AcademicYearQuery:
+      name: academic_year
+      in: query
+      required: false
+      description: |
+        The academic year, two consecutive years such as `2026-2027` (400 otherwise). Default: the
+        current one (the `academic_year` setting).
+      schema:
+        type: string
+        pattern: ^20[0-9]{2}-20[0-9]{2}$
+      example: 2026-2027
+    TuitionGradeQuery:
+      name: grade
+      in: query
+      required: false
+      description: Only students in this grade (the frozen grade once the student has an account that year).
+      schema:
+        type: string
+      example: الصف الأول الابتدائي
+    TuitionSectionQuery:
+      name: section
+      in: query
+      required: false
+      description: Only students in this section.
+      schema:
+        type: string
+      example: أ
+    TuitionSearchQuery:
+      name: search
+      in: query
+      required: false
+      description: Part of the student's full name (case-insensitive; `%` and `_` match themselves).
+      schema:
+        type: string
+      example: أحمد
+    TuitionHasRemainingQuery:
+      name: has_remaining
+      in: query
+      required: false
+      description: '`true`: only students with a fee set and a remaining balance above 0. `false` or omitted: no filter.'
+      schema:
+        type: string
+        enum:
+          - 'true'
+          - 'false'
+      example: 'true'
+    TuitionStudentIdQuery:
+      name: student_id
+      in: query
+      required: true
+      description: The student (active or not). Missing or not a positive integer gives 400.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+      example: 42
     ActivityLogBefore:
       name: before
       in: query
@@ -6262,6 +6655,657 @@ components:
           - الرياضيات
           - العلوم
           - اللغة العربية
+    TuitionRow:
+      type: object
+      description: One student's tuition for an academic year. Amounts are whole Iraqi dinars.
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        full_name:
+          type: string
+        grade:
+          type: string
+          nullable: true
+          description: |
+            The grade the fee was frozen at once the student has an account that year, otherwise
+            the student's current grade.
+        section:
+          type: string
+          nullable: true
+          description: The student's current section.
+        is_active:
+          type: boolean
+          description: false for a student who left; such a student is listed only with an account that year.
+        fee:
+          type: integer
+          format: int64
+          nullable: true
+          description: Whole Iraqi dinars; null when no fee applies (`fee_set` false).
+        discount:
+          type: integer
+          format: int64
+          minimum: 0
+        paid:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The sum of the payments that are not voided.
+        remaining:
+          type: integer
+          format: int64
+          nullable: true
+          description: '`fee - discount - paid`, computed on every read; null when `fee_set` is false.'
+        fee_set:
+          type: boolean
+      required:
+        - student_id
+        - full_name
+        - grade
+        - section
+        - is_active
+        - fee
+        - discount
+        - paid
+        - remaining
+        - fee_set
+      example:
+        student_id: 42
+        full_name: أحمد علي حسن
+        grade: الصف الأول الابتدائي
+        section: أ
+        is_active: true
+        fee: 1500000
+        discount: 100000
+        paid: 500000
+        remaining: 900000
+        fee_set: true
+    TuitionSummary:
+      type: object
+      description: Totals of the listed rows. Rows without a fee add only to `not_set_count`.
+      properties:
+        total_fee:
+          type: integer
+          format: int64
+        total_discount:
+          type: integer
+          format: int64
+        total_collected:
+          type: integer
+          format: int64
+          description: Every non-voided payment of the listed rows, including students who left.
+        total_remaining:
+          type: integer
+          format: int64
+        not_set_count:
+          type: integer
+          format: int32
+      required:
+        - total_fee
+        - total_discount
+        - total_collected
+        - total_remaining
+        - not_set_count
+      example:
+        total_fee: 4500000
+        total_discount: 100000
+        total_collected: 1700000
+        total_remaining: 2700000
+        not_set_count: 1
+    TuitionListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        academic_year:
+          type: string
+          pattern: ^20[0-9]{2}-20[0-9]{2}$
+        summary:
+          $ref: '#/components/schemas/TuitionSummary'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/TuitionRow'
+      required:
+        - status
+        - academic_year
+        - summary
+        - data
+      example:
+        status: success
+        academic_year: 2026-2027
+        summary:
+          total_fee: 0
+          total_discount: 0
+          total_collected: 0
+          total_remaining: 0
+          not_set_count: 0
+        data: []
+    TuitionPayment:
+      type: object
+      description: A cash payment. Never edited or deleted; a wrong one is voided and stays here.
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+        paid_at:
+          type: string
+          format: date
+          description: The day the cash was received (Asia/Baghdad).
+        note:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - active
+            - voided
+          description: A voided payment counts in no sum.
+        created_at:
+          type: string
+          format: date-time
+        voided_at:
+          type: string
+          format: date-time
+          nullable: true
+        void_reason:
+          type: string
+          nullable: true
+      required:
+        - id
+        - amount
+        - paid_at
+        - note
+        - status
+        - created_at
+        - voided_at
+        - void_reason
+      example:
+        id: 7
+        amount: 500000
+        paid_at: '2026-10-01'
+        note: القسط الأول
+        status: active
+        created_at: '2026-10-01T09:30:00+03:00'
+        voided_at: null
+        void_reason: null
+    TuitionDetail:
+      type: object
+      description: A `TuitionRow` with the discount note and every payment, newest first.
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        full_name:
+          type: string
+        grade:
+          type: string
+          nullable: true
+          description: |
+            The grade the fee was frozen at once the student has an account that year, otherwise
+            the student's current grade.
+        section:
+          type: string
+          nullable: true
+          description: The student's current section.
+        is_active:
+          type: boolean
+          description: false for a student who left; such a student is listed only with an account that year.
+        fee:
+          type: integer
+          format: int64
+          nullable: true
+          description: Whole Iraqi dinars; null when no fee applies (`fee_set` false).
+        discount:
+          type: integer
+          format: int64
+          minimum: 0
+        paid:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The sum of the payments that are not voided.
+        remaining:
+          type: integer
+          format: int64
+          nullable: true
+          description: '`fee - discount - paid`, computed on every read; null when `fee_set` is false.'
+        fee_set:
+          type: boolean
+        discount_note:
+          type: string
+          nullable: true
+        payments:
+          type: array
+          items:
+            $ref: '#/components/schemas/TuitionPayment'
+      required:
+        - student_id
+        - full_name
+        - grade
+        - section
+        - is_active
+        - fee
+        - discount
+        - paid
+        - remaining
+        - fee_set
+        - discount_note
+        - payments
+      example:
+        student_id: 42
+        full_name: أحمد علي حسن
+        grade: الصف الأول الابتدائي
+        section: أ
+        is_active: true
+        fee: 1500000
+        discount: 100000
+        paid: 500000
+        remaining: 900000
+        fee_set: true
+        discount_note: خصم الأخوة
+        payments:
+          - id: 7
+            amount: 500000
+            paid_at: '2026-10-01'
+            note: القسط الأول
+            status: active
+            created_at: '2026-10-01T09:30:00+03:00'
+            voided_at: null
+            void_reason: null
+          - id: 6
+            amount: 5000000
+            paid_at: '2026-10-01'
+            note: null
+            status: voided
+            created_at: '2026-10-01T09:20:00+03:00'
+            voided_at: '2026-10-01T09:25:00+03:00'
+            void_reason: صفر زائد
+    TuitionStudentResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        academic_year:
+          type: string
+          pattern: ^20[0-9]{2}-20[0-9]{2}$
+        data:
+          $ref: '#/components/schemas/TuitionDetail'
+      required:
+        - status
+        - academic_year
+        - data
+      example:
+        status: success
+        academic_year: 2026-2027
+        data:
+          student_id: 42
+          full_name: أحمد علي حسن
+          grade: الصف الأول الابتدائي
+          section: أ
+          is_active: true
+          fee: 1500000
+          discount: 100000
+          paid: 500000
+          remaining: 900000
+          fee_set: true
+          discount_note: خصم الأخوة
+          payments:
+            - id: 7
+              amount: 500000
+              paid_at: '2026-10-01'
+              note: القسط الأول
+              status: active
+              created_at: '2026-10-01T09:30:00+03:00'
+              voided_at: null
+              void_reason: null
+            - id: 6
+              amount: 5000000
+              paid_at: '2026-10-01'
+              note: null
+              status: voided
+              created_at: '2026-10-01T09:20:00+03:00'
+              voided_at: '2026-10-01T09:25:00+03:00'
+              void_reason: صفر زائد
+    TuitionWriteResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+          enum:
+            - Discount saved
+            - Payment recorded
+            - Payment voided
+        academic_year:
+          type: string
+          pattern: ^20[0-9]{2}-20[0-9]{2}$
+          description: The year the write applied to.
+        data:
+          $ref: '#/components/schemas/TuitionDetail'
+      required:
+        - status
+        - message
+        - academic_year
+        - data
+      example:
+        status: success
+        message: Payment recorded
+        academic_year: 2026-2027
+        data:
+          student_id: 42
+          full_name: أحمد علي حسن
+          grade: الصف الأول الابتدائي
+          section: أ
+          is_active: true
+          fee: 1500000
+          discount: 100000
+          paid: 500000
+          remaining: 900000
+          fee_set: true
+          discount_note: خصم الأخوة
+          payments:
+            - id: 7
+              amount: 500000
+              paid_at: '2026-10-01'
+              note: القسط الأول
+              status: active
+              created_at: '2026-10-01T09:30:00+03:00'
+              voided_at: null
+              void_reason: null
+            - id: 6
+              amount: 5000000
+              paid_at: '2026-10-01'
+              note: null
+              status: voided
+              created_at: '2026-10-01T09:20:00+03:00'
+              voided_at: '2026-10-01T09:25:00+03:00'
+              void_reason: صفر زائد
+    TuitionFee:
+      type: object
+      properties:
+        grade:
+          type: string
+        fee:
+          type: integer
+          format: int64
+          nullable: true
+          description: The grade's fee for the current academic year; null when not set yet.
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - grade
+        - fee
+        - updated_at
+      example:
+        grade: الصف الأول الابتدائي
+        fee: 1500000
+        updated_at: '2026-09-01T10:00:00+03:00'
+    TuitionFeesResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        academic_year:
+          type: string
+          pattern: ^20[0-9]{2}-20[0-9]{2}$
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/TuitionFee'
+      required:
+        - status
+        - academic_year
+        - data
+      example:
+        status: success
+        academic_year: 2026-2027
+        data:
+          - grade: الصف الأول الابتدائي
+            fee: 1500000
+            updated_at: '2026-09-01T10:00:00+03:00'
+          - grade: الصف الثاني الابتدائي
+            fee: null
+            updated_at: null
+    TuitionFeeRequest:
+      type: object
+      properties:
+        grade:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Trimmed; the same text as the students' `grade`.
+        fee:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 1000000000
+        apply_to_existing:
+          type: boolean
+          default: false
+          description: |
+            Also re-price every current-year account whose student is now in this grade (their
+            frozen grade and fee become this one). All or nothing: 409 when one would end with a
+            negative remaining.
+      required:
+        - grade
+        - fee
+      example:
+        grade: الصف الأول الابتدائي
+        fee: 1500000
+        apply_to_existing: false
+    TuitionFeeWriteResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+          enum:
+            - Fee saved
+        data:
+          type: object
+          properties:
+            academic_year:
+              type: string
+              pattern: ^20[0-9]{2}-20[0-9]{2}$
+            grade:
+              type: string
+            fee:
+              type: integer
+              format: int64
+            updated_accounts:
+              type: integer
+              format: int64
+              minimum: 0
+              description: Accounts re-priced by `apply_to_existing` (0 without it).
+          required:
+            - academic_year
+            - grade
+            - fee
+            - updated_accounts
+      required:
+        - status
+        - message
+        - data
+      example:
+        status: success
+        message: Fee saved
+        data:
+          academic_year: 2026-2027
+          grade: الصف الأول الابتدائي
+          fee: 1500000
+          updated_accounts: 0
+    TuitionDiscountRequest:
+      type: object
+      description: A full replacement; `discount` 0 without a note clears it.
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        academic_year:
+          type: string
+          pattern: ^20[0-9]{2}-20[0-9]{2}$
+          description: Default the current year; another year needs an existing account.
+        discount:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 1000000000
+          description: A fixed amount; it may not exceed the fee, nor the fee minus the payments.
+        note:
+          type: string
+          nullable: true
+          maxLength: 200
+          description: Trimmed; blank or omitted is stored as null.
+      required:
+        - student_id
+        - discount
+      example:
+        student_id: 42
+        discount: 100000
+        note: خصم الأخوة
+    TuitionPaymentRequest:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        academic_year:
+          type: string
+          pattern: ^20[0-9]{2}-20[0-9]{2}$
+          description: Default the current year; another year needs an existing account (for example last year's unpaid balance).
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 1000000000
+          description: Whole dinars; may not exceed the remaining balance (409).
+        paid_at:
+          type: string
+          format: date
+          description: Default today (Asia/Baghdad); never in the future.
+        note:
+          type: string
+          nullable: true
+          maxLength: 200
+      required:
+        - student_id
+        - amount
+      example:
+        student_id: 42
+        amount: 500000
+        paid_at: '2026-10-01'
+        note: القسط الأول
+    TuitionVoidRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The payment.
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Required; trimmed.
+      required:
+        - id
+        - reason
+      example:
+        id: 6
+        reason: صفر زائد
+    MobileTuitionItem:
+      type: object
+      description: What a parent sees of a child's tuition. Never the fee, discount or payments.
+      properties:
+        student_id:
+          type: integer
+          format: int32
+          minimum: 1
+        full_name:
+          type: string
+        academic_year:
+          type: string
+          pattern: ^20[0-9]{2}-20[0-9]{2}$
+        remaining:
+          type: integer
+          format: int64
+          nullable: true
+          description: Whole Iraqi dinars still to pay; null when no fee is set (`fee_set` false).
+        fee_set:
+          type: boolean
+        last_updated:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the child's balance last changed (a fee, discount, payment or void); null when nothing is set.
+      required:
+        - student_id
+        - full_name
+        - academic_year
+        - remaining
+        - fee_set
+        - last_updated
+      example:
+        student_id: 42
+        full_name: أحمد علي حسن
+        academic_year: 2026-2027
+        remaining: 900000
+        fee_set: true
+        last_updated: '2026-10-01T09:30:00+03:00'
+    MobileTuitionResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MobileTuitionItem'
+      required:
+        - status
+        - data
+      example:
+        status: success
+        data:
+          - student_id: 42
+            full_name: أحمد علي حسن
+            academic_year: 2026-2027
+            remaining: 900000
+            fee_set: true
+            last_updated: '2026-10-01T09:30:00+03:00'
+          - student_id: 43
+            full_name: سارة علي حسن
+            academic_year: 2026-2027
+            remaining: null
+            fee_set: false
+            last_updated: null
     ActivityLogItem:
       type: object
       properties:
@@ -6323,6 +7367,8 @@ components:
             - broadcast
             - closure
             - date
+            - fee
+            - payment
             - null
           description: What the action was on; null when it has no target.
         target_id:
@@ -6330,7 +7376,7 @@ components:
           nullable: true
           maxLength: 64
           description: |
-            The target's identifier: a student, banner, broadcast or closure id, a device serial
+            The target's identifier: a student, banner, broadcast, closure, tuition fee or payment id, a device serial
             number, setting keys (comma-separated), a class as `grade/section`, or a date. Never
             a name.
         detail:
@@ -6338,7 +7384,7 @@ components:
           nullable: true
           maxLength: 200
           description: |
-            Identifiers and counts only, for example `date=2026-09-24`, `periods=30`,
+            Identifiers and counts only (never an amount), for example `date=2026-09-24`, `periods=30`,
             `audience=class recipients=24`, `kind=holiday` or `dry_run` (the request was a
             preview and changed nothing). The one exception is `parent.account_delete`: the name
             of the unlinked child (or `no linked students`), so the school knows whom to link again.
@@ -6691,6 +7737,119 @@ components:
               value:
                 status: error
                 message: rfid_tag is already used by a student
+    TuitionQueryBadRequest:
+      description: '`academic_year` is not two consecutive years, `has_remaining` is not `true` or `false`, or `student_id` is not a positive integer.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            year:
+              summary: Malformed academic_year
+              value:
+                status: error
+                message: academic_year must be two consecutive years, for example 2026-2027
+            remaining:
+              summary: Malformed has_remaining
+              value:
+                status: error
+                message: has_remaining must be true or false
+            student:
+              summary: Malformed student_id
+              value:
+                status: error
+                message: student_id must be a positive student id
+    TuitionWriteBadRequest:
+      description: |
+        Malformed JSON (including an amount that is not a whole number, such as `1.5`, `"100"` or
+        `1e30`); a required field missing; an amount out of range; `paid_at` malformed or in the
+        future; `academic_year` malformed; a text longer than its limit. Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            required:
+              summary: A required field missing
+              value:
+                status: error
+                message: amount is required
+            range:
+              summary: An amount out of range
+              value:
+                status: error
+                message: amount must be from 1 to 1000000000
+            future:
+              summary: paid_at after today
+              value:
+                status: error
+                message: paid_at cannot be in the future
+            malformed:
+              summary: Not valid JSON, or an amount that is not a whole number
+              value:
+                status: error
+                message: Invalid request body
+    TuitionNotFound:
+      description: No student (or, when voiding, no payment) has this id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            student:
+              summary: Unknown student
+              value:
+                status: error
+                message: Student not found
+            payment:
+              summary: Unknown payment
+              value:
+                status: error
+                message: Payment not found
+    TuitionConflict:
+      description: The stored figures do not allow this write. Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            feeNotSet:
+              summary: No fee for the student's grade (or no account in another year)
+              value:
+                status: error
+                message: Set the fee for this grade first
+            overpay:
+              summary: Payment above the remaining balance
+              value:
+                status: error
+                message: Payment exceeds the remaining balance
+            discountFee:
+              summary: Discount above the fee
+              value:
+                status: error
+                message: Discount exceeds the fee
+            discountRemaining:
+              summary: Discount plus payments above the fee
+              value:
+                status: error
+                message: Discount exceeds the remaining balance
+            voided:
+              summary: Payment voided before
+              value:
+                status: error
+                message: Payment is already voided
+    TuitionFeeConflict:
+      description: |
+        `apply_to_existing` would leave at least one account with a negative remaining (its
+        payments and discount exceed the new fee). `message` gives how many, and the ids of the
+        first 10 students, in ascending order. Nothing was written, not even the grade's fee.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: 'apply_to_existing would make 2 balances negative (student ids: 42, 57)'
     StudentWriteBadRequest:
       description: |
         Malformed JSON; `id` (update) missing or 0; `name`, `parent_name` or `parent_phone`

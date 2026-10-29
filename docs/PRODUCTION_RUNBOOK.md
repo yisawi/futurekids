@@ -32,10 +32,10 @@ Set these on the API service **in the production environment** before the first 
 3. **Time zone (audit W2):** no database step is needed. The server pins every connection to `timezone=Asia/Baghdad` (`config.BuildDBURL`) and never relies on the database's default time zone (UTC on Railway).
    - **Keep `DATABASE_URL` free of a `timezone` parameter:** one in the URL is kept and overrides the pin.
    - **Manual SQL** must convert explicitly, for example `(now() AT TIME ZONE 'Asia/Baghdad')::date`.
-4. **Build the schema from empty with every migration** (golang-migrate CLI). The repository has **33** (`000001` to `000033`):
+4. **Build the schema from empty with every migration** (golang-migrate CLI). The repository has **35** (`000001` to `000035`):
    ```bash
    migrate -path db/migrations -database "$PROD_DB" up
-   migrate -path db/migrations -database "$PROD_DB" version     # expect 33
+   migrate -path db/migrations -database "$PROD_DB" version     # expect 35
    ```
 
 ## 3. Rotate the admin password before the first deploy
@@ -102,6 +102,8 @@ curl -s -X PUT "$BASE_URL/api/admin/settings" -H "Authorization: Bearer $ADMIN" 
   -d '{"key":"school_name","value":"<school name>"}'
 curl -s "$BASE_URL/api/mobile/settings"     # public: shows both
 ```
+
+The migrations also seed `academic_year` = `2026-2027` (tuition). Leave it until the school year ends. When it does, **switch the year first, then change the students' grades**: the switch freezes each active student's unpaid balance at their grade's fee for the old year. Promoting first freezes it at the new grade's fee. A missing or invalid `academic_year` row makes every tuition route answer 500 with an ERROR log (`the academic_year setting is missing or invalid`).
 
 ## 7. Devices
 

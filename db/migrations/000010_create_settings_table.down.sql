@@ -3,6 +3,7 @@
 -- Running this down-migration against the current main branch will break:
 --   internal/handlers/admin.go — AdminSettingsHandler reads and writes settings.
 --   internal/handlers/mobile.go — MobileSettingsHandler reads settings.
+--   internal/handlers/tuition.go — every tuition route reads the academic_year setting.
 -- Data loss: every setting (for example whatsapp_number). Re-applying 000010 re-seeds only the placeholder.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first

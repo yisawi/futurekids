@@ -10,6 +10,8 @@
 --     and AdminScheduleImportHandler count active students.
 --   internal/notify/broadcast.go — broadcasts to a class match only active students.
 --   internal/handlers/manual_attendance.go — manual attendance only for active students.
+--   internal/handlers/tuition.go — the tuition list, the fees grades and the year switch use
+--     students.is_active.
 -- Data loss: which students were deleted; soft-deleted students become indistinguishable from active ones.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first

@@ -45,6 +45,7 @@ const (
 	limitedPhone  = "+9647000000505"
 	leaverPhone   = "+9647000000606"
 	lockedPhone   = "+9647000000707"
+	tuitionPhone  = "+9647000000808"
 )
 
 type exchange struct {
@@ -1683,6 +1684,67 @@ func (r *runner) scenario() {
 	r.expect("specializations include the teacher's", strings.Contains(fmt.Sprint(at(d, "data")), "الرياضيات"), true)
 	adminDenied("GET /api/admin/teachers/specializations", "", nil)
 
+	// ── Tuition ────────────────────────────────────────────────────────────────
+	tuitionGrade := "الصف الأول الابتدائي"
+	idT, _ := create("tuition child", map[string]any{"name": "Huda Example", "parent_name": "Ali Example", "parent_phone": tuitionPhone, "parent_pin": "Tq5#mR8w!Lc2vX7n", "rfid_tag": "9021", "grade": tuitionGrade, "section": "A"})
+	_, d = r.call("GET /api/admin/tuition/fees", "before any fee", "", admin, nil, 200)
+	r.expect("unset fee listed", strings.Contains(fmt.Sprint(at(d, "data")), tuitionGrade), true)
+	adminDenied("GET /api/admin/tuition/fees", "", nil)
+	_, d = r.call("PUT /api/admin/tuition/fees", "set a fee", "", admin, map[string]any{"grade": tuitionGrade, "fee": 1500000}, 200)
+	r.expect("fee saved", []int{toInt(at(d, "data", "fee")), toInt(at(d, "data", "updated_accounts"))}, []int{1500000, 0})
+	r.call("PUT /api/admin/tuition/fees", "fee 0", "", admin, map[string]any{"grade": tuitionGrade, "fee": 0}, 400)
+	r.call("PUT /api/admin/tuition/fees", "oversized body", "", admin, oversized(), 413)
+	adminDenied("PUT /api/admin/tuition/fees", "", map[string]any{"grade": tuitionGrade, "fee": 1})
+
+	_, d = r.call("PUT /api/admin/tuition/discount", "discount with a note", "", admin, map[string]any{"student_id": idT, "discount": 100000, "note": "خصم الأخوة"}, 200)
+	r.expect("discount applied", toInt(at(d, "data", "remaining")), 1400000)
+	r.call("PUT /api/admin/tuition/discount", "negative discount", "", admin, map[string]any{"student_id": idT, "discount": -1}, 400)
+	r.call("PUT /api/admin/tuition/discount", "unknown student", "", admin, map[string]any{"student_id": 999999, "discount": 0}, 404)
+	r.call("PUT /api/admin/tuition/discount", "discount above the fee", "", admin, map[string]any{"student_id": idT, "discount": 1500001}, 409)
+	r.call("PUT /api/admin/tuition/discount", "oversized body", "", admin, oversized(), 413)
+	adminDenied("PUT /api/admin/tuition/discount", "", map[string]any{"student_id": idT, "discount": 0})
+
+	_, d = r.call("POST /api/admin/tuition/payments", "cash payment", "", admin, map[string]any{"student_id": idT, "amount": 500000, "paid_at": today, "note": "القسط الأول"}, 200)
+	paymentID := toInt(at(d, "data", "payments", 0, "id"))
+	r.expect("payment counted", []int{toInt(at(d, "data", "paid")), toInt(at(d, "data", "remaining"))}, []int{500000, 900000})
+	r.call("POST /api/admin/tuition/payments", "amount 0", "", admin, map[string]any{"student_id": idT, "amount": 0}, 400)
+	r.call("POST /api/admin/tuition/payments", "amount not a whole number", "", admin, `{"student_id":1,"amount":1.5}`, 400)
+	r.call("POST /api/admin/tuition/payments", "unknown student", "", admin, map[string]any{"student_id": 999999, "amount": 1}, 404)
+	_, d = r.call("POST /api/admin/tuition/payments", "above the remaining balance", "", admin, map[string]any{"student_id": idT, "amount": 9000000}, 409)
+	r.expect("overpayment message", at(d, "message"), "Payment exceeds the remaining balance")
+	r.call("POST /api/admin/tuition/payments", "oversized body", "", admin, oversized(), 413)
+	adminDenied("POST /api/admin/tuition/payments", "", map[string]any{"student_id": idT, "amount": 1})
+	_, d = r.call("PUT /api/admin/tuition/fees", "re-pricing below a payment", "", admin, map[string]any{"grade": tuitionGrade, "fee": 400000, "apply_to_existing": true}, 409)
+	r.expect("re-pricing message", at(d, "message"), fmt.Sprintf("apply_to_existing would make 1 balances negative (student ids: %d)", idT))
+
+	_, d = r.call("POST /api/admin/tuition/payments/void", "void with a reason", "", admin, map[string]any{"id": paymentID, "reason": "صفر زائد"}, 200)
+	r.expect("voided payment", fmt.Sprint(at(d, "data", "payments", 0, "status"), " ", toInt(at(d, "data", "remaining"))), "voided 1400000")
+	r.call("POST /api/admin/tuition/payments/void", "reason missing", "", admin, map[string]any{"id": paymentID}, 400)
+	r.call("POST /api/admin/tuition/payments/void", "unknown payment", "", admin, map[string]any{"id": 999999, "reason": "x"}, 404)
+	r.call("POST /api/admin/tuition/payments/void", "voided before", "", admin, map[string]any{"id": paymentID, "reason": "x"}, 409)
+	r.call("POST /api/admin/tuition/payments/void", "oversized body", "", admin, oversized(), 413)
+	adminDenied("POST /api/admin/tuition/payments/void", "", map[string]any{"id": paymentID, "reason": "x"})
+
+	_, d = r.call("GET /api/admin/tuition", "current year", "", admin, nil, 200)
+	r.expect("tuition summary collected", toInt(at(d, "summary", "total_collected")), 0)
+	r.call("GET /api/admin/tuition", "filters", "?grade="+url.QueryEscape(tuitionGrade)+"&section=A&search=Huda&has_remaining=true", admin, nil, 200)
+	r.call("GET /api/admin/tuition", "another year", "?academic_year=2025-2026", admin, nil, 200)
+	r.call("GET /api/admin/tuition", "malformed academic_year", "?academic_year=2026-2028", admin, nil, 400)
+	adminDenied("GET /api/admin/tuition", "", nil)
+	_, d = r.call("GET /api/admin/tuition/student", "one student", fmt.Sprintf("?student_id=%d", idT), admin, nil, 200)
+	r.expect("payment history keeps the voided payment", len(list(at(d, "data", "payments"))), 1)
+	r.call("GET /api/admin/tuition/student", "malformed student_id", "?student_id=x&academic_year=2026-2027", admin, nil, 400)
+	r.call("GET /api/admin/tuition/student", "unknown student", "?student_id=999999", admin, nil, 404)
+	adminDenied("GET /api/admin/tuition/student", fmt.Sprintf("?student_id=%d", idT), nil)
+	r.call("PUT /api/admin/settings", "malformed academic_year", "", admin, map[string]string{"key": "academic_year", "value": "2026/2027"}, 400)
+	r.call("PUT /api/admin/settings", "the same academic_year", "", admin, map[string]string{"key": "academic_year", "value": "2026-2027"}, 200)
+
+	_, d = r.call("POST /api/mobile/login", "tuition parent", "", "", map[string]string{"phone": tuitionPhone, "pin": "Tq5#mR8w!Lc2vX7n"}, 200)
+	tuitionParent := str(at(d, "data", "token"))
+	_, d = r.call("GET /api/mobile/tuition", "remaining per child", "", tuitionParent, nil, 200)
+	r.expect("parent sees the remaining balance", fmt.Sprint(toInt(at(d, "data", 0, "student_id")), " ", toInt(at(d, "data", 0, "remaining")), " ", at(d, "data", 0, "fee_set")), fmt.Sprint(idT, " 1400000 true"))
+	parentDenied("GET /api/mobile/tuition", "")
+
 	// ── System ─────────────────────────────────────────────────────────────────
 	r.call("GET /health", "liveness", "", "", nil, 200)
 
@@ -1738,7 +1800,7 @@ func (r *runner) databaseFailures() {
 	for _, op := range []string{
 		"GET /api/mobile/students", "GET /api/mobile/attendance/today", "GET /api/mobile/attendance/summary",
 		"GET /api/mobile/attendance/monthly", "GET /api/mobile/schedule", "GET /api/mobile/notifications",
-		"GET /api/mobile/banners", "PUT /api/mobile/notifications/read-all", "GET /api/mobile/holidays",
+		"GET /api/mobile/banners", "PUT /api/mobile/notifications/read-all", "GET /api/mobile/holidays", "GET /api/mobile/tuition",
 	} {
 		r.call(op, "database error", "", parent, nil, 500)
 	}
@@ -1771,6 +1833,13 @@ func (r *runner) databaseFailures() {
 	r.call("PUT /api/admin/teachers", "database error", "", admin, map[string]any{"id": 1, "first_name": "D", "father_name": "D", "grandfather_name": "D", "phone": "07701239099", "gender": "male", "status": "active"}, 500)
 	r.call("GET /api/admin/teachers/attendance", "database error", "", admin, nil, 500)
 	r.call("GET /api/admin/teachers/specializations", "database error", "", admin, nil, 500)
+	r.call("GET /api/admin/tuition", "database error", "", admin, nil, 500)
+	r.call("GET /api/admin/tuition/student", "database error", "?student_id=1", admin, nil, 500)
+	r.call("GET /api/admin/tuition/fees", "database error", "", admin, nil, 500)
+	r.call("PUT /api/admin/tuition/fees", "database error", "", admin, map[string]any{"grade": "G1", "fee": 1000}, 500)
+	r.call("PUT /api/admin/tuition/discount", "database error", "", admin, map[string]any{"student_id": 1, "discount": 0}, 500)
+	r.call("POST /api/admin/tuition/payments", "database error", "", admin, map[string]any{"student_id": 1, "amount": 1}, 500)
+	r.call("POST /api/admin/tuition/payments/void", "database error", "", admin, map[string]any{"id": 1, "reason": "x"}, 500)
 	r.call("POST /api/admin/attendance/manual", "database error", "", admin, map[string]any{"student_id": 1, "date": contractNow().AddDate(0, 0, -1).Format("2006-01-02"), "type": "in"}, 500)
 	r.call("DELETE /api/admin/attendance/manual", "database error", "?id=1", admin, nil, 500)
 	r.call("POST /api/admin/holidays", "database error", "", admin, map[string]any{"kind": "holiday", "start_date": "2099-01-04", "title": "Down", "notify": false}, 500)
@@ -2395,6 +2464,11 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 			teacher := node(schemas(root), "Teacher")
 			delete(obj(teacher["properties"]), "full_name")
 			teacher["required"] = []any{"id", "first_name", "father_name", "grandfather_name", "phone", "gender", "status", "specialization", "notes", "rfid_tag", "created_at", "updated_at"}
+		}},
+		{"a tuition row's remaining is undocumented", []string{"responses"}, func(root map[string]any) {
+			row := node(schemas(root), "TuitionRow")
+			delete(obj(row["properties"]), "remaining")
+			row["required"] = []any{"student_id", "full_name", "grade", "section", "is_active", "fee", "discount", "paid", "fee_set"}
 		}},
 		{"the device-token response loses registered", []string{"responses"}, func(root map[string]any) {
 			resp := node(schemas(root), "DeviceTokenRegisterResponse")

@@ -165,6 +165,7 @@ func run() int {
 	mux.HandleFunc("GET /api/mobile/notification-settings", appEnv.AuthMiddleware(appEnv.NotificationSettingsHandler))
 	mux.HandleFunc("PUT /api/mobile/notification-settings", appEnv.AuthMiddleware(appEnv.NotificationSettingsHandler))
 	mux.HandleFunc("POST /api/mobile/account/delete", appEnv.AuthMiddleware(appEnv.AccountDeleteHandler))
+	mux.HandleFunc("GET /api/mobile/tuition", appEnv.AuthMiddleware(appEnv.MobileTuitionHandler))
 
 	// Admin dashboard.
 	mux.HandleFunc("POST /api/admin/login", appEnv.ActivityLog(appEnv.AdminLoginHandler))
@@ -206,6 +207,13 @@ func run() int {
 	mux.HandleFunc("PUT /api/admin/teachers", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTeachersHandler)))
 	mux.HandleFunc("GET /api/admin/teachers/attendance", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTeachersAttendanceHandler)))
 	mux.HandleFunc("GET /api/admin/teachers/specializations", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTeacherSpecializationsHandler)))
+	mux.HandleFunc("GET /api/admin/tuition", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionHandler)))
+	mux.HandleFunc("GET /api/admin/tuition/student", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionStudentHandler)))
+	mux.HandleFunc("GET /api/admin/tuition/fees", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionFeesHandler)))
+	mux.HandleFunc("PUT /api/admin/tuition/fees", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionFeesHandler)))
+	mux.HandleFunc("PUT /api/admin/tuition/discount", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionDiscountHandler)))
+	mux.HandleFunc("POST /api/admin/tuition/payments", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionPaymentsHandler)))
+	mux.HandleFunc("POST /api/admin/tuition/payments/void", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionVoidHandler)))
 
 	if cfg.FakeToday != "" {
 		day, _ := time.ParseInLocation("2006-01-02", cfg.FakeToday, tz.Baghdad)

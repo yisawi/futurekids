@@ -1039,6 +1039,10 @@ func (app *AppEnv) AdminSettingsHandler(w http.ResponseWriter, r *http.Request) 
 			respondError(w, http.StatusBadRequest, msg)
 			return
 		}
+		if req.Key == AcademicYearSetting {
+			app.changeAcademicYear(w, r, req.Value)
+			return
+		}
 
 		query := `
 			INSERT INTO settings (setting_key, setting_value, updated_at) 
