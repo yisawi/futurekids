@@ -379,6 +379,35 @@ migrate -path db/migrations -database "$DATABASE_URL" up         # 000029, after
 - **The code:** redeploy the previous version. It runs on 35; the old settings endpoint then stores `academic_year` without validation, so don't change it meanwhile.
 - **The migration:** `migrate goto 34`, only after the code is rolled back. It deletes every fee, discount and payment, and the `academic_year` setting.
 
+### Deploying migration 000036 (API 1.22.0: expenses and salaries)
+
+000036 only adds the tables `expense_categories` (seeded with رواتب, إيجار, مولد كهرباء, تواصل اجتماعي, كافتريا, إنترنت and أخرى; رواتب is the salary category) and `expenses`. The old code runs unchanged on it. The server never runs migrations itself: run them with the `migrate` CLI **before** deploying the code. No expense is seeded: the school manager enters them on Production.
+
+**What changes with the code:**
+- **New admin routes:** `/api/admin/expenses` (`GET`, `POST`), `/api/admin/expenses/void`, `/api/admin/expenses/categories` (`GET`, `POST`) and `/api/admin/expenses/summary`.
+- **Expenses are never edited or deleted, only voided with a reason.** A salary may name a teacher (salary category only); teacher records and endpoints hold no salary.
+- **The report's difference** is the tuition collected minus the expenses, per academic year and month. It's cash-based, not a profit.
+- **No silent default:** like tuition, the expense list, the report and recording an expense answer 500 with an ERROR log while the `academic_year` setting is missing or invalid.
+
+**Order** (Staging is at 35; the same on Production):
+1. **Preflight, read-only:**
+   ```sql
+   SELECT setting_value FROM settings WHERE setting_key = 'academic_year';                                     -- expect 2026-2027
+   SELECT count(*) FROM information_schema.tables WHERE table_name IN ('expenses', 'expense_categories');  -- expect 0
+   ```
+2. **Back up:** `pg_dump "$DATABASE_URL" > backup.sql`.
+3. **Migrate** while the old code runs:
+   ```bash
+   migrate -path db/migrations -database "$DATABASE_URL" version    # expect 35
+   migrate -path db/migrations -database "$DATABASE_URL" goto 36
+   ```
+4. **Deploy the new code.** On 35 it would answer 500 on every expense route. So the order matters.
+5. **Smoke checks** (`$ADMIN` is an admin token): `GET /api/admin/expenses/categories` lists the 7 categories with only رواتب `is_salary`; `GET /api/admin/expenses` and `GET /api/admin/expenses/summary` give 200. Don't record a test expense on Production: expenses can't be deleted.
+
+**Rolling back:**
+- **The code:** redeploy the previous version; it runs on 36 unchanged.
+- **The migration:** `migrate goto 35`, only after the code is rolled back. It deletes every expense and every category the admin added.
+
 ### Seeding Staging with fake data
 
 `cmd/seed-staging` fills Staging with fake data for the Flutter developers: 47 students (`rfid_tag` 1004 to 1050) for 37 parents (`+9647000002001` to `+9647000002037`, parent credential `Sd7!Kx4p#Wm9qT2h`; parents seeded before that keep their earlier `314159`), weekly schedules, the fake device `SEED-FAKE-0001`, leaves, attendance history since the first day of the previous month, and 3 banners. Everything goes through the real API; it never touches students 1001 to 1003, the real device or the settings. It refuses any `BASE_URL` other than `https://futurekids-staging.up.railway.app`.

@@ -561,16 +561,24 @@ func TestTuitionActivityLog(t *testing.T) {
 	c := tuiClient{t, srv, admin}
 	sid := tuiStudent(t, db, "اسم سري للطالب", tuiG1, "أ")
 	tuiStudent(t, db, "طالب بلا دفعات", tuiG1, "أ")
+	// Activity rows are inserted in the background after each answer, so wait for every row
+	// before the next request: only then does the id order follow the request order.
+	logged := 1
+	recorded := func() { t.Helper(); logged++; l1WaitCount(t, db, logged) }
 	fee := c.fee(tuiG1, 1234567, false)
+	recorded()
 	feeID := k1Count(t, db, `SELECT id FROM tuition_fees`)
 	c.do("PUT", tuiDiscPath, tuiBody("student_id", sid, "discount", 34567, "note", "ملاحظة خصم سرية"))
+	recorded()
 	pid := tuiPaymentID(t, c.pay(sid, 765432, "note", "ملاحظة دفعة سرية"))
+	recorded()
 	c.do("POST", tuiVoidPath, tuiBody("id", pid, "reason", "سبب إلغاء سري"))
+	recorded()
 	c.setYear(tuiNextYear)
+	recorded()
 	if fee.status != 200 {
 		t.Fatalf("fee: %d %s", fee.status, fee.body)
 	}
-	l1WaitCount(t, db, 6)
 	rows := l1Rows(t, db, `action <> 'login.success'`)
 	var got []string
 	for _, r := range rows {
@@ -631,6 +639,11 @@ func TestTuitionAcademicYearMissing(t *testing.T) {
 	}
 	k1Exec(t, db, `DELETE FROM settings WHERE setting_key = 'academic_year'`)
 	check("missing")
+	// The server logs before it answers, but its output reaches the test through a pipe: wait
+	// for the lines (bounded) instead of counting them at once.
+	for deadline := time.Now().Add(10 * time.Second); errorLines() < 7 && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
 	if n := errorLines(); n != 7 {
 		t.Errorf("%d ERROR lines for the missing setting, want 7:\n%s", n, srv.out.String())
 	}

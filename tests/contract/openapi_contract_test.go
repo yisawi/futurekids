@@ -1546,6 +1546,8 @@ func (r *runner) scenario() {
 	r.call("POST /api/admin/holidays/cancel", "already cancelled", "", admin, map[string]any{"id": futureHoliday}, 404)
 	_, d = r.call("POST /api/admin/holidays/cancel", "a holiday already over", "", admin, map[string]any{"id": pastHoliday}, 409)
 	r.expect("already over message", at(d, "message"), "This closure is already over")
+	var cancel400 int
+	r.db.QueryRow(`SELECT COUNT(*) FROM admin_activity_log WHERE action = 'holiday.cancel' AND status = 400`).Scan(&cancel400)
 	for _, tc := range []struct {
 		name string
 		body any
@@ -1559,6 +1561,18 @@ func (r *runner) scenario() {
 	} {
 		_, d = r.call("POST /api/admin/holidays/cancel", tc.name, "", admin, tc.body, 400)
 		r.expect("message for "+tc.name, at(d, "message"), tc.msg)
+	}
+	// Activity rows are inserted in the background after each answer: wait for the five 400 rows
+	// before the 413, so the 413 is certainly the newest entry checked below.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		var n int
+		r.db.QueryRow(`SELECT COUNT(*) FROM admin_activity_log WHERE action = 'holiday.cancel' AND status = 400`).Scan(&n)
+		if n == cancel400+5 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the holiday.cancel 400 rows were not recorded within 10s (%d of %d)", n-cancel400, 5)
+		}
 	}
 	r.call("POST /api/admin/holidays/cancel", "oversized body", "", admin, oversized(), 413)
 	adminDenied("POST /api/admin/holidays/cancel", "", map[string]any{"id": pastHoliday})
@@ -1745,6 +1759,54 @@ func (r *runner) scenario() {
 	r.expect("parent sees the remaining balance", fmt.Sprint(toInt(at(d, "data", 0, "student_id")), " ", toInt(at(d, "data", 0, "remaining")), " ", at(d, "data", 0, "fee_set")), fmt.Sprint(idT, " 1400000 true"))
 	parentDenied("GET /api/mobile/tuition", "")
 
+	// ── Expenses ───────────────────────────────────────────────────────────────
+	var salaryCategory, rentCategory int
+	r.db.QueryRow(`SELECT id FROM expense_categories WHERE is_salary`).Scan(&salaryCategory)
+	r.db.QueryRow(`SELECT id FROM expense_categories WHERE name = 'إيجار'`).Scan(&rentCategory)
+	_, d = r.call("GET /api/admin/expenses/categories", "seeded categories", "", admin, nil, 200)
+	r.expect("seeded categories", fmt.Sprint(len(list(at(d, "data"))), " ", at(d, "data", 0, "name"), " ", at(d, "data", 0, "is_salary")), "7 رواتب true")
+	adminDenied("GET /api/admin/expenses/categories", "", nil)
+	_, d = r.call("POST /api/admin/expenses/categories", "add a category", "", admin, map[string]any{"name": " صيانة   المبنى "}, 200)
+	r.expect("added category", fmt.Sprint(at(d, "data", "name"), " ", at(d, "data", "is_salary")), "صيانة المبنى false")
+	r.call("POST /api/admin/expenses/categories", "blank name", "", admin, map[string]any{"name": " "}, 400)
+	r.call("POST /api/admin/expenses/categories", "duplicate name", "", admin, map[string]any{"name": "صيانة المبنى"}, 409)
+	r.call("POST /api/admin/expenses/categories", "oversized body", "", admin, oversized(), 413)
+	adminDenied("POST /api/admin/expenses/categories", "", map[string]any{"name": "x"})
+
+	_, d = r.call("POST /api/admin/expenses", "a teacher's salary", "", admin, map[string]any{"category_id": salaryCategory, "amount": 750000, "expense_date": today, "note": "راتب", "teacher_id": teacherA}, 200)
+	salaryExpense := toInt(at(d, "data", "id"))
+	r.expect("salary teacher", toInt(at(d, "data", "teacher", "id")), teacherA)
+	_, d = r.call("POST /api/admin/expenses", "rent with defaults", "", admin, map[string]any{"category_id": rentCategory, "amount": 500000}, 200)
+	rentExpense := toInt(at(d, "data", "id"))
+	r.call("POST /api/admin/expenses", "amount 0", "", admin, map[string]any{"category_id": rentCategory, "amount": 0}, 400)
+	r.call("POST /api/admin/expenses", "unknown category", "", admin, map[string]any{"category_id": 999999, "amount": 1}, 404)
+	_, d = r.call("POST /api/admin/expenses", "teacher on rent", "", admin, map[string]any{"category_id": rentCategory, "amount": 1, "teacher_id": teacherA}, 409)
+	r.expect("teacher on rent message", at(d, "message"), "teacher_id is allowed only for the salary category")
+	r.call("POST /api/admin/expenses", "oversized body", "", admin, oversized(), 413)
+	adminDenied("POST /api/admin/expenses", "", map[string]any{"category_id": rentCategory, "amount": 1})
+
+	_, d = r.call("POST /api/admin/expenses/void", "void with a reason", "", admin, map[string]any{"id": rentExpense, "reason": "مبلغ خاطئ"}, 200)
+	r.expect("voided expense", fmt.Sprint(at(d, "data", "status"), " ", at(d, "data", "void_reason")), "voided مبلغ خاطئ")
+	r.call("POST /api/admin/expenses/void", "reason missing", "", admin, map[string]any{"id": rentExpense}, 400)
+	r.call("POST /api/admin/expenses/void", "unknown expense", "", admin, map[string]any{"id": 999999, "reason": "x"}, 404)
+	r.call("POST /api/admin/expenses/void", "voided before", "", admin, map[string]any{"id": rentExpense, "reason": "x"}, 409)
+	r.call("POST /api/admin/expenses/void", "oversized body", "", admin, oversized(), 413)
+	adminDenied("POST /api/admin/expenses/void", "", map[string]any{"id": rentExpense, "reason": "x"})
+
+	_, d = r.call("GET /api/admin/expenses", "current year", "", admin, nil, 200)
+	r.expect("expenses total", toInt(at(d, "summary", "total")), 750000)
+	r.call("GET /api/admin/expenses", "filters", fmt.Sprintf("?category_id=%d&month=%s&teacher_id=%d&academic_year=2026-2027", salaryCategory, today[:7], teacherA), admin, nil, 200)
+	r.call("GET /api/admin/expenses", "malformed month", "?month=2026-9", admin, nil, 400)
+	adminDenied("GET /api/admin/expenses", "", nil)
+	_, d = r.call("GET /api/admin/expenses/summary", "the year", "", admin, nil, 200)
+	r.expect("summary difference", toInt(at(d, "totals", "difference")), toInt(at(d, "totals", "collected"))-750000)
+	_, d = r.call("GET /api/admin/expenses/summary", "salaries only", fmt.Sprintf("?category_id=%d&academic_year=2026-2027", salaryCategory), admin, nil, 200)
+	r.expect("filtered summary", fmt.Sprint(toInt(at(d, "category_id")), " ", toInt(at(d, "totals", "expenses")), " ", at(d, "totals", "collected"), " ", at(d, "totals", "difference")), fmt.Sprint(salaryCategory, " 750000 <nil> <nil>"))
+	r.call("GET /api/admin/expenses/summary", "malformed category_id", "?category_id=x&academic_year=2026-2027", admin, nil, 400)
+	r.call("GET /api/admin/expenses/summary", "unknown category", "?category_id=999999&academic_year=2026-2027", admin, nil, 404)
+	adminDenied("GET /api/admin/expenses/summary", "", nil)
+	r.expect("salary expense id", salaryExpense > 0, true)
+
 	// ── System ─────────────────────────────────────────────────────────────────
 	r.call("GET /health", "liveness", "", "", nil, 200)
 
@@ -1840,6 +1902,12 @@ func (r *runner) databaseFailures() {
 	r.call("PUT /api/admin/tuition/discount", "database error", "", admin, map[string]any{"student_id": 1, "discount": 0}, 500)
 	r.call("POST /api/admin/tuition/payments", "database error", "", admin, map[string]any{"student_id": 1, "amount": 1}, 500)
 	r.call("POST /api/admin/tuition/payments/void", "database error", "", admin, map[string]any{"id": 1, "reason": "x"}, 500)
+	r.call("GET /api/admin/expenses", "database error", "", admin, nil, 500)
+	r.call("POST /api/admin/expenses", "database error", "", admin, map[string]any{"category_id": 1, "amount": 1}, 500)
+	r.call("POST /api/admin/expenses/void", "database error", "", admin, map[string]any{"id": 1, "reason": "x"}, 500)
+	r.call("GET /api/admin/expenses/categories", "database error", "", admin, nil, 500)
+	r.call("POST /api/admin/expenses/categories", "database error", "", admin, map[string]any{"name": "x"}, 500)
+	r.call("GET /api/admin/expenses/summary", "database error", "", admin, nil, 500)
 	r.call("POST /api/admin/attendance/manual", "database error", "", admin, map[string]any{"student_id": 1, "date": contractNow().AddDate(0, 0, -1).Format("2006-01-02"), "type": "in"}, 500)
 	r.call("DELETE /api/admin/attendance/manual", "database error", "?id=1", admin, nil, 500)
 	r.call("POST /api/admin/holidays", "database error", "", admin, map[string]any{"kind": "holiday", "start_date": "2099-01-04", "title": "Down", "notify": false}, 500)
@@ -2464,6 +2532,9 @@ func selfTest(t *testing.T, raw []byte, s *apiSpec, served map[string]route, xs,
 			teacher := node(schemas(root), "Teacher")
 			delete(obj(teacher["properties"]), "full_name")
 			teacher["required"] = []any{"id", "first_name", "father_name", "grandfather_name", "phone", "gender", "status", "specialization", "notes", "rfid_tag", "created_at", "updated_at"}
+		}},
+		{"the summary's collected is documented as never null", []string{"responses"}, func(root map[string]any) {
+			delete(node(schemas(root), "ExpenseTotals", "properties", "collected"), "nullable")
 		}},
 		{"a tuition row's remaining is undocumented", []string{"responses"}, func(root map[string]any) {
 			row := node(schemas(root), "TuitionRow")

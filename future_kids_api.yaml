@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Future Kids Attendance System API
-  version: "1.21.0"
+  version: "1.22.0"
   license:
     name: Proprietary (all rights reserved)
   description: |
@@ -322,6 +322,35 @@ components:
         format: int32
         minimum: 1
       example: 42
+    ExpenseCategoryIdQuery:
+      name: category_id
+      in: query
+      required: false
+      description: Only this category. Not a positive integer gives 400.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+      example: 1
+    ExpenseTeacherIdQuery:
+      name: teacher_id
+      in: query
+      required: false
+      description: Only salaries paid to this teacher. Not a positive integer gives 400.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+      example: 3
+    ExpenseMonthQuery:
+      name: month
+      in: query
+      required: false
+      description: Only expenses dated in this month (`YYYY-MM`). Omitted, every month of the year.
+      schema:
+        type: string
+        pattern: '^[0-9]{4}-[0-9]{2}$'
+      example: "2026-09"
     ActivityLogBefore:
       name: before
       in: query
@@ -3959,14 +3988,15 @@ components:
         paid_at: "2026-10-01"
         note: القسط الأول
 
-    TuitionVoidRequest:
+    VoidRequest:
       type: object
+      description: Voids a tuition payment or an expense; it stays in the history and leaves every sum.
       properties:
         id:
           type: integer
           format: int64
           minimum: 1
-          description: The payment.
+          description: The payment (tuition) or the expense to void.
         reason:
           type: string
           minLength: 1
@@ -4038,6 +4068,370 @@ components:
             fee_set: false
             last_updated: null
 
+    ExpenseCategory:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+        name:
+          type: string
+        is_salary:
+          type: boolean
+          description: True only for the seeded salary category (رواتب); only its expenses may name a teacher.
+      required: [id, name, is_salary]
+      example:
+        id: 1
+        name: رواتب
+        is_salary: true
+
+    ExpenseCategoryListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExpenseCategory'
+      required: [status, data]
+      example:
+        status: success
+        data:
+          - id: 1
+            name: رواتب
+            is_salary: true
+          - id: 2
+            name: إيجار
+            is_salary: false
+
+    ExpenseCategoryRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Trimmed, inner spaces collapsed; unique ignoring case and spaces.
+      required: [name]
+      example:
+        name: صيانة المبنى
+
+    ExpenseCategoryWriteResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          enum: [Category added]
+        data:
+          $ref: '#/components/schemas/ExpenseCategory'
+      required: [status, message, data]
+      example:
+        status: success
+        message: Category added
+        data:
+          id: 8
+          name: صيانة المبنى
+          is_salary: false
+
+    Expense:
+      type: object
+      description: An expense, in whole Iraqi dinars. Never edited or deleted; a wrong one is voided and stays here.
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        category:
+          type: object
+          properties:
+            id:
+              type: integer
+              format: int32
+            name:
+              type: string
+          required: [id, name]
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+        expense_date:
+          type: string
+          format: date
+        note:
+          type: string
+          nullable: true
+        teacher:
+          type: object
+          nullable: true
+          description: The teacher a salary was paid to; null otherwise.
+          properties:
+            id:
+              type: integer
+              format: int32
+            full_name:
+              type: string
+          required: [id, full_name]
+        academic_year:
+          type: string
+          pattern: '^20[0-9]{2}-20[0-9]{2}$'
+        status:
+          type: string
+          enum: [active, voided]
+          description: A voided expense counts in no sum.
+        created_at:
+          type: string
+          format: date-time
+        voided_at:
+          type: string
+          format: date-time
+          nullable: true
+        void_reason:
+          type: string
+          nullable: true
+      required: [id, category, amount, expense_date, note, teacher, academic_year, status, created_at, voided_at, void_reason]
+      example:
+        id: 12
+        category:
+          id: 1
+          name: رواتب
+        amount: 750000
+        expense_date: "2026-09-30"
+        note: راتب أيلول
+        teacher:
+          id: 3
+          full_name: أحمد علي حسن
+        academic_year: "2026-2027"
+        status: active
+        created_at: "2026-09-30T10:00:00+03:00"
+        voided_at: null
+        void_reason: null
+
+    ExpenseRequest:
+      type: object
+      properties:
+        category_id:
+          type: integer
+          format: int32
+          minimum: 1
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 1000000000
+          description: Whole dinars.
+        expense_date:
+          type: string
+          format: date
+          description: Default today (Asia/Baghdad); never in the future.
+        note:
+          type: string
+          nullable: true
+          maxLength: 200
+          description: Trimmed; blank is stored as null. For a salary not paid to a teacher (a guard, a cleaner), the person's name goes here.
+        teacher_id:
+          type: integer
+          format: int32
+          minimum: 1
+          nullable: true
+          description: Only for the salary category (409 otherwise); a teacher of any status.
+        academic_year:
+          type: string
+          pattern: '^20[0-9]{2}-20[0-9]{2}$'
+          description: Default the current academic year.
+      required: [category_id, amount]
+      example:
+        category_id: 1
+        amount: 750000
+        expense_date: "2026-09-30"
+        note: راتب أيلول
+        teacher_id: 3
+
+    ExpenseWriteResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          enum: [Expense recorded, Expense voided]
+        data:
+          $ref: '#/components/schemas/Expense'
+      required: [status, message, data]
+      example:
+        status: success
+        message: Expense recorded
+        data:
+          id: 12
+          category:
+            id: 1
+            name: رواتب
+          amount: 750000
+          expense_date: "2026-09-30"
+          note: راتب أيلول
+          teacher:
+            id: 3
+            full_name: أحمد علي حسن
+          academic_year: "2026-2027"
+          status: active
+          created_at: "2026-09-30T10:00:00+03:00"
+          voided_at: null
+          void_reason: null
+
+    ExpenseListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        academic_year:
+          type: string
+          pattern: '^20[0-9]{2}-20[0-9]{2}$'
+        summary:
+          type: object
+          properties:
+            total:
+              type: integer
+              format: int64
+              description: The non-voided listed expenses.
+          required: [total]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Expense'
+      required: [status, academic_year, summary, data]
+      example:
+        status: success
+        academic_year: "2026-2027"
+        summary:
+          total: 0
+        data: []
+
+    ExpenseTotals:
+      type: object
+      description: |
+        Figures for a year. `collected` and `difference` are null while a category filter is
+        applied: next to one category's expenses they would mislead.
+      properties:
+        expenses:
+          type: integer
+          format: int64
+          description: Non-voided expenses.
+        collected:
+          type: integer
+          format: int64
+          nullable: true
+          description: Non-voided tuition payments of the year's accounts, students who left included.
+        difference:
+          type: integer
+          format: int64
+          nullable: true
+          description: '`collected - expenses`. Cash-based: not a profit (unpaid tuition is ignored).'
+      required: [expenses, collected, difference]
+      example:
+        expenses: 830000
+        collected: 600000
+        difference: -230000
+
+    ExpenseMonth:
+      type: object
+      description: One month (by expense date and tuition payment date); same nulls as `ExpenseTotals`.
+      properties:
+        month:
+          type: string
+          pattern: '^[0-9]{4}-[0-9]{2}$'
+        expenses:
+          type: integer
+          format: int64
+        collected:
+          type: integer
+          format: int64
+          nullable: true
+        difference:
+          type: integer
+          format: int64
+          nullable: true
+      required: [month, expenses, collected, difference]
+      example:
+        month: "2026-09"
+        expenses: 430000
+        collected: 300000
+        difference: -130000
+
+    ExpenseCategoryTotal:
+      type: object
+      properties:
+        category_id:
+          type: integer
+          format: int32
+        name:
+          type: string
+        total:
+          type: integer
+          format: int64
+          description: Non-voided expenses of the year in this category (0 when none).
+      required: [category_id, name, total]
+      example:
+        category_id: 1
+        name: رواتب
+        total: 400000
+
+    ExpenseSummaryResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        academic_year:
+          type: string
+          pattern: '^20[0-9]{2}-20[0-9]{2}$'
+        category_id:
+          type: integer
+          format: int32
+          nullable: true
+          description: The applied category filter; null when there is none.
+        totals:
+          $ref: '#/components/schemas/ExpenseTotals'
+        by_category:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExpenseCategoryTotal'
+        by_month:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExpenseMonth'
+      required: [status, academic_year, category_id, totals, by_category, by_month]
+      example:
+        status: success
+        academic_year: "2026-2027"
+        category_id: null
+        totals:
+          expenses: 830000
+          collected: 600000
+          difference: -230000
+        by_category:
+          - category_id: 1
+            name: رواتب
+            total: 400000
+          - category_id: 2
+            name: إيجار
+            total: 400000
+        by_month:
+          - month: "2026-08"
+            expenses: 0
+            collected: 300000
+            difference: 300000
+          - month: "2026-09"
+            expenses: 430000
+            collected: 300000
+            difference: -130000
+
     ActivityLogItem:
       type: object
       properties:
@@ -4082,14 +4476,14 @@ components:
         target_type:
           type: string
           nullable: true
-          enum: [student, teacher, device, setting, class, banner, broadcast, closure, date, fee, payment, null]
+          enum: [student, teacher, device, setting, class, banner, broadcast, closure, date, fee, payment, category, expense, null]
           description: What the action was on; null when it has no target.
         target_id:
           type: string
           nullable: true
           maxLength: 64
           description: |
-            The target's identifier: a student, banner, broadcast, closure, tuition fee or payment id, a device serial
+            The target's identifier: a student, banner, broadcast, closure, tuition fee, payment, expense category or expense id, a device serial
             number, setting keys (comma-separated), a class as `grade/section`, or a date. Never
             a name.
         detail:
@@ -4540,6 +4934,116 @@ components:
           example:
             status: error
             message: "apply_to_existing would make 2 balances negative (student ids: 42, 57)"
+    ExpenseQueryBadRequest:
+      description: '`academic_year`, `month`, `category_id` or `teacher_id` is malformed.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            year:
+              summary: Malformed academic_year
+              value:
+                status: error
+                message: academic_year must be two consecutive years, for example 2026-2027
+            month:
+              summary: Malformed month
+              value:
+                status: error
+                message: month must be formatted as YYYY-MM
+            category:
+              summary: Malformed category_id
+              value:
+                status: error
+                message: category_id must be a positive category id
+    ExpenseWriteBadRequest:
+      description: |
+        Malformed JSON (including an amount that is not a whole number, such as `1.5`, `"100"` or
+        `1e30`); a required field missing; an id that is not positive; an amount out of range;
+        `expense_date` malformed or in the future; `academic_year` malformed; a text longer than
+        its limit. Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            required:
+              summary: A required field missing
+              value:
+                status: error
+                message: amount is required
+            range:
+              summary: An amount out of range
+              value:
+                status: error
+                message: amount must be from 1 to 1000000000
+            future:
+              summary: expense_date after today
+              value:
+                status: error
+                message: expense_date cannot be in the future
+            malformed:
+              summary: Not valid JSON, or an amount that is not a whole number
+              value:
+                status: error
+                message: Invalid request body
+    ExpenseNotFound:
+      description: No category, teacher or expense has this id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            category:
+              summary: Unknown category
+              value:
+                status: error
+                message: Category not found
+            teacher:
+              summary: Unknown teacher
+              value:
+                status: error
+                message: Teacher not found
+            expense:
+              summary: Unknown expense
+              value:
+                status: error
+                message: Expense not found
+    ExpenseConflict:
+      description: The stored data does not allow this write. Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            notSalary:
+              summary: teacher_id on a category other than the salary one
+              value:
+                status: error
+                message: teacher_id is allowed only for the salary category
+            voided:
+              summary: Expense voided before
+              value:
+                status: error
+                message: Expense is already voided
+    ExpenseCategoryConflict:
+      description: Another category has this name (ignoring case and spaces). Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: name is already used by another category
+    ExpenseCategoryNotFound:
+      description: No category has this `category_id`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            message: Category not found
     StudentWriteBadRequest:
       description: |
         Malformed JSON; `id` (update) missing or 0; `name`, `parent_name` or `parent_phone`
@@ -7503,7 +8007,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/TuitionVoidRequest'
+              $ref: '#/components/schemas/VoidRequest'
       responses:
         '200':
           description: Voided; `data` is the student's updated tuition for the payment's year.
@@ -7523,6 +8027,304 @@ paths:
           $ref: '#/components/responses/TuitionConflict'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/expenses:
+    get:
+      tags: [Admin Dashboard]
+      operationId: listExpenses
+      summary: A year's expenses
+      description: |
+        Every expense of the academic year (default the current one), voided ones included,
+        newest first (by `expense_date`, then id), with the total of the non-voided listed rows.
+        No pagination: a year holds a few hundred expenses. A missing or invalid `academic_year` setting gives 500 (and an error log); it is never replaced by a default.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/AcademicYearQuery'
+        - $ref: '#/components/parameters/ExpenseCategoryIdQuery'
+        - $ref: '#/components/parameters/ExpenseMonthQuery'
+        - $ref: '#/components/parameters/ExpenseTeacherIdQuery'
+      responses:
+        '200':
+          description: The expenses and their total.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseListResponse'
+              example:
+                status: success
+                academic_year: "2026-2027"
+                summary:
+                  total: 750000
+                data:
+                  - id: 12
+                    category:
+                      id: 1
+                      name: رواتب
+                    amount: 750000
+                    expense_date: "2026-09-30"
+                    note: راتب أيلول
+                    teacher:
+                      id: 3
+                      full_name: أحمد علي حسن
+                    academic_year: "2026-2027"
+                    status: active
+                    created_at: "2026-09-30T10:00:00+03:00"
+                    voided_at: null
+                    void_reason: null
+                  - id: 11
+                    category:
+                      id: 3
+                      name: مولد كهرباء
+                    amount: 70000
+                    expense_date: "2026-09-08"
+                    note: null
+                    teacher: null
+                    academic_year: "2026-2027"
+                    status: voided
+                    created_at: "2026-09-08T09:00:00+03:00"
+                    voided_at: "2026-09-08T09:05:00+03:00"
+                    void_reason: مبلغ خاطئ
+        '400':
+          $ref: '#/components/responses/ExpenseQueryBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Admin Dashboard]
+      operationId: createExpense
+      summary: Record an expense
+      description: |
+        What was actually paid. Expenses are never edited or deleted: void a wrong one and record
+        the right one. `teacher_id` is allowed only in the salary category (`is_salary`); a salary
+        to someone who is not a teacher names the person in `note`. Recorded in the activity log
+        as `expense.create`. A missing or invalid `academic_year` setting gives 500 (and an error log); it is never replaced by a default.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpenseRequest'
+      responses:
+        '200':
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseWriteResponse'
+        '400':
+          $ref: '#/components/responses/ExpenseWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/ExpenseNotFound'
+        '409':
+          $ref: '#/components/responses/ExpenseConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/expenses/void:
+    post:
+      tags: [Admin Dashboard]
+      operationId: voidExpense
+      summary: Void an expense
+      description: |
+        The expense stays in the history with `status` `voided`, `voided_at` and the reason, and
+        leaves every sum. Recorded in the activity log as `expense.void`.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoidRequest'
+      responses:
+        '200':
+          description: Voided; `data` is the stored expense.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseWriteResponse'
+        '400':
+          $ref: '#/components/responses/ExpenseWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/ExpenseNotFound'
+        '409':
+          $ref: '#/components/responses/ExpenseConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/expenses/categories:
+    get:
+      tags: [Admin Dashboard]
+      operationId: listExpenseCategories
+      summary: Expense categories
+      description: Every category, by id. Exactly one is the salary category (`is_salary`).
+      security:
+        - AdminJWT: []
+      responses:
+        '200':
+          description: The categories.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseCategoryListResponse'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Admin Dashboard]
+      operationId: createExpenseCategory
+      summary: Add an expense category
+      description: |
+        Name only; an added category is never a salary category. There is no rename or delete.
+        Recorded in the activity log as `expense.category_create`.
+      security:
+        - AdminJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpenseCategoryRequest'
+      responses:
+        '200':
+          description: Added.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseCategoryWriteResponse'
+        '400':
+          $ref: '#/components/responses/ExpenseWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '409':
+          $ref: '#/components/responses/ExpenseCategoryConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '431':
+          $ref: '#/components/responses/HeaderTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/expenses/summary:
+    get:
+      tags: [Admin Dashboard]
+      operationId: getExpensesSummary
+      summary: The year's expenses, tuition collected and their difference
+      description: |
+        For the academic year (default the current one): the totals, every category's total (0
+        when none), and every month with expenses or tuition collected, ascending (months by
+        expense date and payment date).
+
+        `collected` is the non-voided tuition payments of that year's accounts, students who left
+        included. `difference` is `collected - expenses`: cash-based, not a profit, because unpaid
+        tuition is ignored.
+
+        With `category_id`, `totals.expenses`, every `by_month[].expenses` and `by_category` cover
+        that category only (and `by_month` lists only months with its expenses), while
+        `collected` and `difference` are null everywhere, since they would mislead next to one
+        category's expenses; `category_id` echoes the filter. Use it for monthly and annual salary
+        totals. A missing or invalid `academic_year` setting gives 500 (and an error log); it is never replaced by a default.
+      security:
+        - AdminJWT: []
+      parameters:
+        - $ref: '#/components/parameters/AcademicYearQuery'
+        - $ref: '#/components/parameters/ExpenseCategoryIdQuery'
+      responses:
+        '200':
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseSummaryResponse'
+              examples:
+                year:
+                  summary: The whole year
+                  value:
+                    status: success
+                    academic_year: "2026-2027"
+                    category_id: null
+                    totals:
+                      expenses: 830000
+                      collected: 600000
+                      difference: -230000
+                    by_category:
+                      - category_id: 1
+                        name: رواتب
+                        total: 400000
+                      - category_id: 2
+                        name: إيجار
+                        total: 430000
+                    by_month:
+                      - month: "2026-08"
+                        expenses: 0
+                        collected: 300000
+                        difference: 300000
+                      - month: "2026-09"
+                        expenses: 830000
+                        collected: 300000
+                        difference: -530000
+                salaries:
+                  summary: Salaries only (category_id=1)
+                  value:
+                    status: success
+                    academic_year: "2026-2027"
+                    category_id: 1
+                    totals:
+                      expenses: 400000
+                      collected: null
+                      difference: null
+                    by_category:
+                      - category_id: 1
+                        name: رواتب
+                        total: 400000
+                    by_month:
+                      - month: "2026-09"
+                        expenses: 400000
+                        collected: null
+                        difference: null
+        '400':
+          $ref: '#/components/responses/ExpenseQueryBadRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/ExpenseCategoryNotFound'
         '431':
           $ref: '#/components/responses/HeaderTooLarge'
         '500':
@@ -7573,6 +8375,8 @@ paths:
         | `tuition.fee_set` | `PUT /api/admin/tuition/fees` | `fee` id; `detail` has the year and the re-priced account count |
         | `tuition.discount_set` | `PUT /api/admin/tuition/discount` | `student` id; `detail` has the year |
         | `tuition.payment_create`, `tuition.payment_void` | `POST /api/admin/tuition/payments`, `POST /api/admin/tuition/payments/void` | `payment` id; `detail` has the student id (and the year on create) |
+        | `expense.category_create` | `POST /api/admin/expenses/categories` | `category` id |
+        | `expense.create`, `expense.void` | `POST /api/admin/expenses`, `POST /api/admin/expenses/void` | `expense` id; on create `detail` has the category id and the year |
         | `export.attendance` | `GET /api/admin/export/excel` | `date` |
         | `export.schedule` | `GET /api/admin/schedule/export` | `class` |
         | `parent.account_delete` | `POST /api/mobile/account/delete` (the parent app; `actor` is `parent`, `ip` null) | one entry per unlinked child: `student` id, `detail` the child's name; a parent without children gives one entry with no target and `detail` `no linked students` |

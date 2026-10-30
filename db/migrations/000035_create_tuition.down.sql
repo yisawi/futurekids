@@ -5,6 +5,7 @@
 --     500, and so does PUT /api/admin/settings for the academic_year key (the setting is missing).
 --   internal/handlers/admin.go — AdminSettingsHandler hands the academic_year key to the year switch,
 --     which writes tuition_accounts.
+--   internal/handlers/expenses.go — GET /api/admin/expenses/summary reads the tuition collected.
 -- Data loss: every grade fee, discount and payment (voided ones included), and the academic year.
 -- Before running it: back up the database (pg_dump "$DATABASE_URL" > backup.sql) and redeploy
 -- app code that no longer uses these objects. Do not run this migrate-down without first

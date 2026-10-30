@@ -102,7 +102,7 @@ func m1Fresh(t *testing.T, label string) (*sql.DB, func(args ...string) (string,
 		t.Skip("golang-migrate CLI not installed")
 	}
 	cli, cliDSN := setupThrowawayDB(t, label)
-	for _, tbl := range []string{"tuition_payments", "tuition_accounts", "tuition_fees", "teacher_attendance_logs", "teachers", "admin_activity_log", "school_closures", "broadcasts", "announcements", "banner_images", "device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
+	for _, tbl := range []string{"expenses", "expense_categories", "tuition_payments", "tuition_accounts", "tuition_fees", "teacher_attendance_logs", "teachers", "admin_activity_log", "school_closures", "broadcasts", "announcements", "banner_images", "device_tokens", "settings", "notifications", "weekly_schedules", "student_leaves", "banners", "admins", "attendance_logs", "devices", "students", "parents"} {
 		m1Exec(t, cli, "DROP TABLE IF EXISTS "+tbl+" CASCADE")
 	}
 	cli.Exec(`DROP FUNCTION IF EXISTS get_student_status(INT, DATE)`)

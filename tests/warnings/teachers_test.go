@@ -161,12 +161,22 @@ func TestTeachersConflicts(t *testing.T) {
 // status required, updated_at refreshed, 404 for an unknown id, and the activity log entries.
 func TestTeachersUpdate(t *testing.T) {
 	srv, db, admin := l1Server(t, "tchupdate", true)
+	// Activity rows are inserted in the background after each answer, so wait for every row
+	// before the next request: only then does the id order follow the request order.
+	logged := 1
+	recorded := func() { t.Helper(); logged++; l1WaitCount(t, db, logged) }
 	id := tchCreate(t, srv, admin, tchBody("rfid_tag", "21", "specialization", "العلوم", "notes", "n"))
+	recorded()
 	r := a14Do(t, srv, "GET", tchPath+fmt.Sprintf("?id=%d", id), l1Header(admin), nil)
 	created := tchList(t, r)[0]
 	time.Sleep(1100 * time.Millisecond)
 
-	put := func(body map[string]any) a14Response { return a14Do(t, srv, "PUT", tchPath, l1Header(admin), body) }
+	put := func(body map[string]any) a14Response {
+		t.Helper()
+		r := a14Do(t, srv, "PUT", tchPath, l1Header(admin), body)
+		recorded()
+		return r
+	}
 	tchExpect(t, "status missing", put(tchBody("id", id)), 400, "status is required")
 	tchExpect(t, "id missing", put(tchBody("status", "active")), 400, handlers.TeacherIDMessage)
 	tchExpect(t, "id negative", put(tchBody("id", -1, "status", "active")), 400, handlers.TeacherIDMessage)
@@ -185,7 +195,6 @@ func TestTeachersUpdate(t *testing.T) {
 		t.Errorf("updated_at %v did not advance past %v", d["updated_at"], created["updated_at"])
 	}
 
-	l1WaitCount(t, db, 7)
 	rows := l1Rows(t, db, "action LIKE 'teacher.%'")
 	var got []string
 	for _, row := range rows {
@@ -658,10 +667,13 @@ func TestTeachersDeviceResponsesUnchanged(t *testing.T) {
 	t.Logf("%d device requests byte-identical; student punches and notifications identical; current binary stored %d teacher punches", len(xs), len(curTeachers))
 }
 
-// TestTeachersMigration verifies that 000034 goes down and up again cleanly.
+// TestTeachersMigration verifies that 000034 goes down and up again cleanly. Later migrations
+// that reference teachers (000036, expenses.teacher_id) go down first and up after, as migrate does.
 func TestTeachersMigration(t *testing.T) {
 	db, _ := setupThrowawayDB(t, "tchmigr")
 	up, down := a14Migration(t, "000034_create_teachers.up.sql"), a14Migration(t, "000034_create_teachers.down.sql")
+	k1Exec(t, db, a14Migration(t, "000036_create_expenses.down.sql"))
+	defer k1Exec(t, db, a14Migration(t, "000036_create_expenses.up.sql"))
 	tables := func() int {
 		return k1Count(t, db, `SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('teachers', 'teacher_attendance_logs')`)
 	}

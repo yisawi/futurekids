@@ -876,6 +876,9 @@ New codes may appear later without an API change.
 | `tuition.discount_set` | تحديد خصم |
 | `tuition.payment_create` | تسجيل دفعة |
 | `tuition.payment_void` | إلغاء دفعة |
+| `expense.category_create` | إضافة فئة مصروفات |
+| `expense.create` | تسجيل مصروف |
+| `expense.void` | إلغاء مصروف |
 
 **Result colours:** `success` green, `rejected` (the server refused the request: 4xx) amber,
 `failed` (server error: 5xx) red.
@@ -987,6 +990,30 @@ The school records tuition here, in **whole Iraqi dinars** (integers, never deci
 - **Dashboard, student detail:** the figures, the discount (with its note) and the payments history, voided ones greyed out with their reason. The actions: record a payment, void a payment (reason required), set the discount.
 - **Parent app, "remaining":** for each child, the remaining amount (or "not set yet") and when it was last updated. Nothing else: no fee, discount or payments.
 
+### Expenses and salaries (المصروفات)
+
+The manager records what the school **actually paid**, in **whole Iraqi dinars**, per academic year, and reads reports with the **difference** (الفرق) between tuition collected and expenses. Admin only.
+
+**Endpoints** (admin token):
+
+| Call | Body or query | Answer |
+|---|---|---|
+| `GET /api/admin/expenses/categories` | — | `data`: `{id, name, is_salary}` by id |
+| `POST /api/admin/expenses/categories` | `name` | `data`: the new category |
+| `POST /api/admin/expenses` | `category_id`, `amount`, optional `expense_date`, `note`, `teacher_id`, `academic_year` | `data`: the expense |
+| `POST /api/admin/expenses/void` | `id`, `reason` | `data`: the voided expense |
+| `GET /api/admin/expenses` | `?academic_year=`, `?category_id=`, `?month=YYYY-MM`, `?teacher_id=` | `summary.total` and the expenses, newest first (no paging) |
+| `GET /api/admin/expenses/summary` | `?academic_year=`, `?category_id=` | `totals`, `by_category`, `by_month` |
+
+**Rules:**
+- **Categories:** seven are seeded. The admin can add one (name only), but not rename or delete. Exactly one has `is_salary: true` (رواتب): **rely on `is_salary`, never on the name.**
+- **Salaries:** `teacher_id` is allowed only with the salary category (409 otherwise), for a teacher of any status. A salary to someone else (a guard) names the person in `note`. Teacher screens never show salaries.
+- **Never edited or deleted:** a wrong expense is **voided** with a reason. It stays in the list (`status` `voided`) and counts in no total.
+- **Difference:** `difference` = tuition `collected` (non-voided payments of that year, students who left included) − expenses. Label it **الفرق**, never الربح: it is cash-based.
+- **Category filter on the report:** with `category_id`, the expense figures cover that category and `collected`/`difference` are **null** (the response echoes `category_id`). Choosing رواتب gives the monthly (`by_month`) and annual (`totals.expenses`) salary totals in one view.
+
+**Screens:** the expenses list (filters, total, void with a reason), add expense (the teacher picker only for the salary category), add category, and the report (annual totals, by month, by category, the difference). Details and examples are in the task notes.
+
 ### Banners
 
 The pictures the school shows parents as a carousel on the home screen (dashboard label
@@ -1055,7 +1082,14 @@ dashboard; there are no pasted URLs.
 
 ## Breaking changes since earlier drafts
 
-**In API 1.21.0 (this release):** tuition (see [Tuition](#tuition-الأقساط)). New: `GET /api/admin/tuition`,
+**In API 1.22.0 (this release):** expenses and salaries (see [Expenses and salaries](#expenses-and-salaries-المصروفات)).
+New: `GET` and `POST /api/admin/expenses`, `POST /api/admin/expenses/void`, `GET` and
+`POST /api/admin/expenses/categories`, `GET /api/admin/expenses/summary`; activity codes
+`expense.category_create`, `expense.create` and `expense.void`, with targets `category` and
+`expense`. In the spec, the tuition void body's schema is renamed `VoidRequest` (shared with
+expenses; same shape). Nothing else changes.
+
+**In API 1.21.0:** tuition (see [Tuition](#tuition-الأقساط)). New: `GET /api/admin/tuition`,
 `GET /api/admin/tuition/student`, `GET` and `PUT /api/admin/tuition/fees`, `PUT /api/admin/tuition/discount`,
 `POST /api/admin/tuition/payments`, `POST /api/admin/tuition/payments/void` and, in the parent app,
 `GET /api/mobile/tuition`; activity codes `tuition.fee_set`, `tuition.discount_set`,

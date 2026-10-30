@@ -54,6 +54,7 @@ var w14Rollbacks = map[string]w14Rollback{
 	"000033": {true, []string{"parents.push_enabled"}, `push_enabled`},
 	"000034": {true, []string{"teachers", "teacher_attendance_logs"}, `teacher_attendance_logs|(?:FROM|JOIN|INTO|UPDATE)\s+teachers\b`},
 	"000035": {true, []string{"tuition_payments", "tuition_accounts", "tuition_fees", "academic_year"}, `(?:FROM|JOIN|INTO|UPDATE)\s+tuition_(?:fees|accounts|payments)\b|AcademicYearSetting`},
+	"000036": {true, []string{"expenses", "expense_categories"}, `(?:FROM|JOIN|INTO|UPDATE)\s+expense(?:s|_categories)\b`},
 }
 
 var (

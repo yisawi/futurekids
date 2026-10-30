@@ -214,6 +214,12 @@ func run() int {
 	mux.HandleFunc("PUT /api/admin/tuition/discount", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionDiscountHandler)))
 	mux.HandleFunc("POST /api/admin/tuition/payments", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionPaymentsHandler)))
 	mux.HandleFunc("POST /api/admin/tuition/payments/void", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminTuitionVoidHandler)))
+	mux.HandleFunc("GET /api/admin/expenses", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminExpensesHandler)))
+	mux.HandleFunc("POST /api/admin/expenses", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminExpensesHandler)))
+	mux.HandleFunc("POST /api/admin/expenses/void", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminExpenseVoidHandler)))
+	mux.HandleFunc("GET /api/admin/expenses/categories", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminExpenseCategoriesHandler)))
+	mux.HandleFunc("POST /api/admin/expenses/categories", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminExpenseCategoriesHandler)))
+	mux.HandleFunc("GET /api/admin/expenses/summary", appEnv.AdminMiddleware(appEnv.ActivityLog(appEnv.AdminExpensesSummaryHandler)))
 
 	if cfg.FakeToday != "" {
 		day, _ := time.ParseInLocation("2006-01-02", cfg.FakeToday, tz.Baghdad)

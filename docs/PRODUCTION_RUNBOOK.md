@@ -32,10 +32,10 @@ Set these on the API service **in the production environment** before the first 
 3. **Time zone (audit W2):** no database step is needed. The server pins every connection to `timezone=Asia/Baghdad` (`config.BuildDBURL`) and never relies on the database's default time zone (UTC on Railway).
    - **Keep `DATABASE_URL` free of a `timezone` parameter:** one in the URL is kept and overrides the pin.
    - **Manual SQL** must convert explicitly, for example `(now() AT TIME ZONE 'Asia/Baghdad')::date`.
-4. **Build the schema from empty with every migration** (golang-migrate CLI). The repository has **35** (`000001` to `000035`):
+4. **Build the schema from empty with every migration** (golang-migrate CLI). The repository has **36** (`000001` to `000036`):
    ```bash
    migrate -path db/migrations -database "$PROD_DB" up
-   migrate -path db/migrations -database "$PROD_DB" version     # expect 35
+   migrate -path db/migrations -database "$PROD_DB" version     # expect 36
    ```
 
 ## 3. Rotate the admin password before the first deploy
